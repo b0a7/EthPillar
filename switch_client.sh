@@ -59,6 +59,21 @@ function switchClient(){
 
     # 3) Get network before stopping anything (requires EL to be running if switching CC)
     getNetwork
+    if [ "$NETWORK" == "Network Syncing" ] || [ -z "$NETWORK" ]; then
+        # Fallback: scrape from existing systemd file
+        if [ -f ${SYSTEMD_DIR}/${SERVICE} ]; then
+            NETWORK=$(grep "Description=" "${SYSTEMD_DIR}/${SERVICE}" | grep -oEi "(MAINNET|HOLESKY|SEPOLIA|HOODI|EPHEMERY)" | head -1)
+        fi
+        # If still not found, try the other service file
+        if [ -z "$NETWORK" ]; then
+            OTHER_SERVICE="execution.service"
+            if [ "$SERVICE" == "execution.service" ]; then OTHER_SERVICE="consensus.service"; fi
+            if [ -f ${SYSTEMD_DIR}/${OTHER_SERVICE} ]; then
+                NETWORK=$(grep "Description=" "${SYSTEMD_DIR}/${OTHER_SERVICE}" | grep -oEi "(MAINNET|HOLESKY|SEPOLIA|HOODI|EPHEMERY)" | head -1)
+            fi
+        fi
+    fi
+
     NETWORK_ARG=""
     if [ "$NETWORK" != "Network Syncing" ] && [ -n "$NETWORK" ]; then
         NETWORK_ARG="--network $NETWORK"

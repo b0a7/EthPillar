@@ -179,3 +179,23 @@ teardown() {
     # Check remove datadir matches fallback
     [[ "$output" == *"sudo rm -rf ${BASE_DATA_DIR}/reth"* ]]
 }
+
+@test "switchClient execution with systemd scraping fallback" {
+    export EL="Nethermind"
+    export CL="Teku"
+    
+    # Mock getNetwork to return Network Syncing
+    getNetwork() { NETWORK="Network Syncing"; }
+    
+    # Create fake systemd service with network in Description
+    echo "Description=Nethermind Execution Layer Client service for HOLESKY" > "${SYSTEMD_DIR}/execution.service"
+    
+    WHIPTAIL_EXIT_CODE=0 # Yes
+
+    switchClient execution
+
+    run cat "$COMMAND_LOG"
+    
+    # Check deploy script call has HOLESKY
+    [[ "$output" == *"runScript deploy/install-node.sh deploy/deploy-node.py --switch_client execution --cc Teku --network HOLESKY"* ]]
+}
