@@ -94,7 +94,23 @@ ec_name = None
 cc_name = None
 vc_name = None
 
-if flags['validator_only']:
+if args.switch_client == "execution":
+    if not args.ec:
+        ec_menu = get_ec_menu()
+        index = SelectionMenu.get_selection(ec_menu, title='Switch Execution Client', subtitle='Select your new Execution Client:', show_exit_option=False)
+        ec_name = ec_menu[index]
+    else:
+        ec_name = args.ec
+    cc_name = args.cc
+elif args.switch_client == "consensus":
+    if not args.cc:
+        cc_menu = get_cc_menu(args.ec)
+        index = SelectionMenu.get_selection(cc_menu, title='Switch Consensus Client', subtitle='Select your new Consensus Client:', show_exit_option=False)
+        cc_name = cc_menu[index]
+    else:
+        cc_name = args.cc
+    ec_name = args.ec
+elif flags['validator_only']:
     # VC Only Path
     if not args.vc:
         vc_menu = get_vc_menu()
@@ -168,22 +184,6 @@ else:
     # For predefined roles, VC is usually same as CC if validator is enabled
     if flags['validator']:
         vc_name = cc_name
-elif args.switch_client == "execution":
-    if not args.ec:
-        ec_menu = get_ec_menu()
-        index = SelectionMenu.get_selection(ec_menu, title='Switch Execution Client', subtitle='Select your new Execution Client:', show_exit_option=False)
-        ec_name = ec_menu[index]
-    else:
-        ec_name = args.ec
-    cc_name = args.cc
-elif args.switch_client == "consensus":
-    if not args.cc:
-        cc_menu = get_cc_menu(args.ec)
-        index = SelectionMenu.get_selection(cc_menu, title='Switch Consensus Client', subtitle='Select your new Consensus Client:', show_exit_option=False)
-        cc_name = cc_menu[index]
-    else:
-        cc_name = args.cc
-    ec_name = args.ec
 
 # 4. Role-specific prompts
 beacon_node_address = args.vc_only_bn_address
