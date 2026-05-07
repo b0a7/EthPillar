@@ -2,7 +2,7 @@
 
 # Author: coincashew.eth | coincashew.com
 # License: GNU GPL
-# Source: https://github.com/coincashew
+# Source: https://github.com/mjkeating
 #
 
 BASE_DIR=$(pwd)
