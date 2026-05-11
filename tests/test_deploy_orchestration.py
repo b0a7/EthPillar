@@ -245,3 +245,17 @@ class TestSetupNode:
         # update + upgrade + autoremove + install = 4
         setup_node('/secrets/jwtsecret', validator_only=True)
         assert mock_run.call_count == 4
+
+    @patch('subprocess.run')
+    @patch('os.path.exists')
+    def test_existing_jwt_not_regenerated(self, mock_exists, mock_run):
+        """When jwtsecret already exists (e.g., switching CC), don't regenerate it."""
+        mock_exists.return_value = True
+        setup_node('/secrets/jwtsecret', validator_only=False)
+        calls_as_str = [str(c) for c in mock_run.call_args_list]
+        # Should NOT create jwt directory
+        assert not any('mkdir' in s and '-p' in s for s in calls_as_str)
+        # Should NOT run openssl
+        assert not any('openssl' in s for s in calls_as_str)
+        # Should still run apt commands
+        assert any('apt' in s and 'update' in s for s in calls_as_str)

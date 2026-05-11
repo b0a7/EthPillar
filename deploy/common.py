@@ -170,13 +170,15 @@ def setup_node(jwt_secret_path: str, validator_only: bool = False) -> None:
         validator_only: If True, only setup validator-specific parts.
     """
     if not validator_only:
-        # Create JWT directory
-        jwt_dir = os.path.dirname(jwt_secret_path)
-        subprocess.run(['sudo', 'mkdir', '-p', jwt_dir], check=True)
+        # Generate JWT secret only if it doesn't exist (don't regenerate on client switch)
+        if not os.path.exists(jwt_secret_path):
+            # Create JWT directory
+            jwt_dir = os.path.dirname(jwt_secret_path)
+            subprocess.run(['sudo', 'mkdir', '-p', jwt_dir], check=True)
 
-        # Generate random hex string and save to file
-        rand_hex = subprocess.run(['openssl', 'rand', '-hex', '32'], stdout=subprocess.PIPE, check=True)
-        subprocess.run(['sudo', 'tee', jwt_secret_path], input=rand_hex.stdout, stdout=subprocess.DEVNULL, check=True)
+            # Generate random hex string and save to file
+            rand_hex = subprocess.run(['openssl', 'rand', '-hex', '32'], stdout=subprocess.PIPE, check=True)
+            subprocess.run(['sudo', 'tee', jwt_secret_path], input=rand_hex.stdout, stdout=subprocess.DEVNULL, check=True)
 
     # Update and upgrade packages
     subprocess.run(['sudo', 'apt', '-y', '-qq', 'update'])
