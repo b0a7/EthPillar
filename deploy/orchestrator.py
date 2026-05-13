@@ -9,6 +9,7 @@ import deploy.lighthouse as lighthouse
 import deploy.nimbus as nimbus
 import deploy.teku as teku
 import deploy.lodestar as lodestar
+import deploy.grandine as grandine
 import deploy.mevboost as mevboost
 
 VALID_ROLES = [
@@ -22,7 +23,7 @@ VALID_ROLES = [
 ]
 
 EXECUTION_CLIENTS = ['Besu', 'Nethermind', 'Reth', 'Erigon', 'Geth']
-CONSENSUS_CLIENTS = ['Lighthouse', 'Nimbus', 'Teku', 'Lodestar']
+CONSENSUS_CLIENTS = ['Lighthouse', 'Nimbus', 'Teku', 'Lodestar', 'Grandine']
 
 PREDEFINED_COMBOS = {
     'Nimbus-Nethermind': ('Nethermind', 'Nimbus'),
@@ -78,7 +79,13 @@ def get_combo_menu() -> List[str]:
     return list(PREDEFINED_COMBOS.keys())
 
 def get_vc_menu() -> List[str]:
-    return CONSENSUS_CLIENTS.copy()
+    choices = CONSENSUS_CLIENTS.copy()
+    # Grandine does not support running as a standalone Validator Client.
+    # It only functions as an all-in-one Beacon Node + Validator Client process.
+    # Therefore, it is excluded from the general Validator Client selection menu.
+    if 'Grandine' in choices:
+        choices.remove('Grandine')
+    return choices
 
 def get_ec_menu() -> List[str]:
     return EXECUTION_CLIENTS.copy()
@@ -91,9 +98,14 @@ def get_cc_menu(ec_name: str) -> List[str]:
 
 def get_vc_options_for_cc(cc_name: str) -> List[str]:
     if cc_name == 'Caplin' or cc_name == 'Caplin (integrated)':
-        return CONSENSUS_CLIENTS.copy()
+        return get_vc_menu()
     
-    return ['Same as CC'] + CONSENSUS_CLIENTS.copy()
+    if cc_name == 'Grandine':
+        # Grandine can run its embedded validator client seamlessly alongside its beacon node.
+        # "Grandine (integrated)" bypasses standalone VC installation.
+        return ['Grandine (integrated)'] + get_vc_menu()
+
+    return ['Same as CC'] + get_vc_menu()
 
 def resolve_vc_name(cc_name: str, vc_choice: str) -> str:
     if vc_choice == 'Same as CC':
@@ -138,7 +150,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
         common.setup_ephemery_network("ephemery-testnet/ephemery-genesis")
 
     mev_ver, mev_path = "", ""
-    if flags['mevboost'] and not flags['validator_only']:
+    if flags['mevboost'] and not flags['validator_only'] and not flags.get('switch_client'):
         # Need to load config properly or pass it
         import config
         relay_options = getattr(config, f"{network}_relay_options", [])
@@ -189,6 +201,12 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             mev_params = '--builder --builder.urls http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = lodestar.download_lodestar(network)
             cl_path = lodestar.install_lodestar_bn(network, sync_url, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params)
+        elif cc_name == 'Grandine':
+            fee_params = f'--suggested-fee-recipient={fee_recipient}'
+            mev_params = '--builder-api-url=http://127.0.0.1:18550' if flags['mevboost'] else ''
+            cl_ver = grandine.download_grandine(network)
+            is_integrated_vc = (vc_name == 'Grandine (integrated)' and flags['validator'])
+            cl_path = grandine.install_grandine_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, is_integrated_vc=is_integrated_vc)
 
     val_path = ""
     val_ver = ""

@@ -9,6 +9,7 @@ import pytest
 import sys
 import os
 from unittest.mock import patch, MagicMock
+from contextlib import ExitStack
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -86,7 +87,8 @@ class TestCsmOverrides:
 class TestCustomClientMenuLogic:
     def test_vc_only_shows_only_vc_clients(self):
         menu = get_vc_menu()
-        assert set(menu) == set(CONSENSUS_CLIENTS)
+        expected = set(CONSENSUS_CLIENTS) - {'Grandine'}
+        assert set(menu) == expected
 
     def test_custom_ec_menu_includes_all_clients(self):
         menu = get_ec_menu()
@@ -126,29 +128,38 @@ class TestRunInstallRouting:
     
     def _run(self, role, ec, cc, vc=None, flags_override=None):
         flags = resolve_role_flags(role, "mainnet")
-        if flags_override:
-            flags.update(flags_override)
+        flags.update(flags_override or {})
             
-        with patch('deploy.reth.download_and_install_reth', return_value=("v1", "p")) as r_ec, \
-             patch('deploy.besu.download_and_install_besu', return_value=("v1", "p")) as b_ec, \
-             patch('deploy.nethermind.download_and_install_nethermind', return_value=("v1", "p")) as n_ec, \
-             patch('deploy.erigon.download_and_install_erigon', return_value=("v1", "p")) as e_ec, \
-             patch('deploy.geth.download_and_install_geth', return_value=("v1", "p")) as g_ec, \
-             patch('deploy.lighthouse.download_lighthouse', return_value="v1") as lh_dl, \
-             patch('deploy.lighthouse.install_lighthouse_bn', return_value="p") as lh_bn, \
-             patch('deploy.lighthouse.install_lighthouse_vc', return_value="p") as lh_vc, \
-             patch('deploy.nimbus.download_nimbus', return_value="v1") as nb_dl, \
-             patch('deploy.nimbus.install_nimbus_bn', return_value="p") as nb_bn, \
-             patch('deploy.nimbus.install_nimbus_vc', return_value="p") as nb_vc, \
-             patch('deploy.teku.download_teku', return_value="v1") as tk_dl, \
-             patch('deploy.teku.install_teku_bn', return_value="p") as tk_bn, \
-             patch('deploy.teku.install_teku_vc', return_value="p") as tk_vc, \
-             patch('deploy.lodestar.download_lodestar', return_value="v1") as ls_dl, \
-             patch('deploy.lodestar.install_lodestar_bn', return_value="p") as ls_bn, \
-             patch('deploy.lodestar.install_lodestar_vc', return_value="p") as ls_vc, \
-             patch('deploy.mevboost.install_mevboost', return_value=("v1", "p")) as mv_dl, \
-             patch('deploy.common.setup_node'), \
-             patch('deploy.common.finish_install'):
+        with ExitStack() as stack:
+            r_ec = stack.enter_context(patch('deploy.reth.download_and_install_reth', return_value=("v1", "p")))
+            b_ec = stack.enter_context(patch('deploy.besu.download_and_install_besu', return_value=("v1", "p")))
+            n_ec = stack.enter_context(patch('deploy.nethermind.download_and_install_nethermind', return_value=("v1", "p")))
+            e_ec = stack.enter_context(patch('deploy.erigon.download_and_install_erigon', return_value=("v1", "p")))
+            g_ec = stack.enter_context(patch('deploy.geth.download_and_install_geth', return_value=("v1", "p")))
+            
+            lh_dl = stack.enter_context(patch('deploy.lighthouse.download_lighthouse', return_value="v1"))
+            lh_bn = stack.enter_context(patch('deploy.lighthouse.install_lighthouse_bn', return_value="p"))
+            lh_vc = stack.enter_context(patch('deploy.lighthouse.install_lighthouse_vc', return_value="p"))
+            
+            nb_dl = stack.enter_context(patch('deploy.nimbus.download_nimbus', return_value="v1"))
+            nb_bn = stack.enter_context(patch('deploy.nimbus.install_nimbus_bn', return_value="p"))
+            nb_vc = stack.enter_context(patch('deploy.nimbus.install_nimbus_vc', return_value="p"))
+            
+            tk_dl = stack.enter_context(patch('deploy.teku.download_teku', return_value="v1"))
+            tk_bn = stack.enter_context(patch('deploy.teku.install_teku_bn', return_value="p"))
+            tk_vc = stack.enter_context(patch('deploy.teku.install_teku_vc', return_value="p"))
+            
+            ls_dl = stack.enter_context(patch('deploy.lodestar.download_lodestar', return_value="v1"))
+            ls_bn = stack.enter_context(patch('deploy.lodestar.install_lodestar_bn', return_value="p"))
+            ls_vc = stack.enter_context(patch('deploy.lodestar.install_lodestar_vc', return_value="p"))
+            
+            gr_dl = stack.enter_context(patch('deploy.grandine.download_grandine', return_value="v1"))
+            gr_bn = stack.enter_context(patch('deploy.grandine.install_grandine_bn', return_value="p"))
+            
+            mv_dl = stack.enter_context(patch('deploy.mevboost.install_mevboost', return_value=("v1", "p")))
+            
+            stack.enter_context(patch('deploy.common.setup_node'))
+            stack.enter_context(patch('deploy.common.finish_install'))
             
             run_install(role, "mainnet", ec, cc, vc or cc, flags, MOCK_PARAMS.copy(), MOCK_ENV.copy())
             
@@ -158,6 +169,7 @@ class TestRunInstallRouting:
                 'nb_bn': nb_bn, 'nb_vc': nb_vc, 'nb_dl': nb_dl,
                 'tk_bn': tk_bn, 'tk_vc': tk_vc, 'tk_dl': tk_dl,
                 'ls_bn': ls_bn, 'ls_vc': ls_vc, 'ls_dl': ls_dl,
+                'gr_bn': gr_bn, 'gr_dl': gr_dl,
                 'mev': mv_dl
             }
     def _verify_only_called(self, mocks, expected_keys):
@@ -226,6 +238,63 @@ class TestRunInstallRouting:
         self._verify_only_called(mocks, ['nethermind'])
 
     def test_switch_consensus_client_only(self):
-        # When switching CC, ec_name is None, and validator/mevboost flags are False
+        # When switching CC, ec_name and vc_name are None, and validator/mevboost flags are False
         mocks = self._run("Switch Consensus Client", None, "Lighthouse", None, flags_override={"validator": False, "mevboost": False})
         self._verify_only_called(mocks, ['lh_dl', 'lh_bn'])
+        # Verify NO MEV params are passed to the BN installation
+        call_kwargs = mocks['lh_bn'].call_args
+        mev_params = call_kwargs.kwargs.get('mev_parameters', '')
+        assert mev_params == '', f"Expected no MEV params when mevboost=False, got: {mev_params}"
+
+    def test_switch_consensus_client_with_mevboost(self):
+        # When switching CC with mevboost enabled, mevboost.service is preserved
+        # and should NOT be reconfigured. The new CC service file MUST include MEV params.
+        mocks = self._run("Switch Consensus Client", None, "Lighthouse", None, flags_override={"validator": False, "mevboost": True, "switch_client": "consensus"})
+        # Verify only BN is installed (no VC, no mevboost reinstall)
+        self._verify_only_called(mocks, ['lh_dl', 'lh_bn'])
+        # Verify MEV params are passed to the BN installation
+        mev_url = 'http://127.0.0.1:18550'
+        mev_params_expected = f'--builder {mev_url}'
+        mocks['lh_bn'].assert_called_once()
+        call_kwargs = mocks['lh_bn'].call_args
+        assert mev_params_expected in call_kwargs.kwargs.get('mev_parameters', ''), \
+            f"Expected MEV params '{mev_params_expected}' in lighthouse install, got: {call_kwargs}"
+
+    def test_switch_consensus_client_nimbus_with_mevboost(self):
+        # Verify Nimbus gets MEV params when switching with mevboost enabled
+        mocks = self._run("Switch Consensus Client", None, "Nimbus", None, flags_override={"validator": False, "mevboost": True, "switch_client": "consensus"})
+        self._verify_only_called(mocks, ['nb_dl', 'nb_bn'])
+        mev_url = 'http://127.0.0.1:18550'
+        mev_params_expected = f'--payload-builder=true --payload-builder-url={mev_url}'
+        call_kwargs = mocks['nb_bn'].call_args
+        assert mev_params_expected in call_kwargs.kwargs.get('mev_parameters', ''), \
+            f"Expected MEV params '{mev_params_expected}' in nimbus install, got: {call_kwargs}"
+
+    def test_switch_consensus_client_teku_with_mevboost(self):
+        # Verify Teku gets MEV params when switching with mevboost enabled
+        mocks = self._run("Switch Consensus Client", None, "Teku", None, flags_override={"validator": False, "mevboost": True, "switch_client": "consensus"})
+        self._verify_only_called(mocks, ['tk_dl', 'tk_bn'])
+        mev_url = 'http://127.0.0.1:18550'
+        mev_params_expected = f'--validators-builder-registration-default-enabled=true --builder-endpoint={mev_url}'
+        call_kwargs = mocks['tk_bn'].call_args
+        assert mev_params_expected in call_kwargs.kwargs.get('mev_parameters', ''), \
+            f"Expected MEV params '{mev_params_expected}' in teku install, got: {call_kwargs}"
+
+    def test_switch_consensus_client_grandine_with_mevboost(self):
+        # Verify Grandine gets MEV params when switching with mevboost enabled
+        mocks = self._run("Switch Consensus Client", None, "Grandine", None, flags_override={"validator": False, "mevboost": True, "switch_client": "consensus"})
+        self._verify_only_called(mocks, ['gr_dl', 'gr_bn'])
+        mev_url = 'http://127.0.0.1:18550'
+        mev_params_expected = f'--builder-api-url={mev_url}'
+        call_kwargs = mocks['gr_bn'].call_args
+        assert mev_params_expected in call_kwargs.kwargs.get('mev_parameters', ''), \
+            f"Expected MEV params '{mev_params_expected}' in grandine install, got: {call_kwargs}"
+
+    def test_custom_grandine_routing(self):
+        mocks = self._run("Custom Setup", "Besu", "Grandine", "Lighthouse", flags_override={"validator": True, "mevboost": True})
+        self._verify_only_called(mocks, ['besu', 'gr_dl', 'gr_bn', 'lh_dl', 'lh_vc', 'mev'])
+
+    def test_custom_grandine_integrated_routing(self):
+        mocks = self._run("Custom Setup", "Besu", "Grandine", "Grandine (integrated)", flags_override={"validator": True, "mevboost": True})
+        # Grandine integrated skips VC setup completely and appends flags to BN
+        self._verify_only_called(mocks, ['besu', 'gr_dl', 'gr_bn', 'mev'])

@@ -24,6 +24,15 @@ function switchClient(){
     local SYSTEMD_DIR=${SYSTEMD_DIR:-/etc/systemd/system}
     local BASE_DATA_DIR=${BASE_DATA_DIR:-/var/lib}
 
+    # Safety check: if switching away from Grandine while using the integrated VC,
+    # the new consensus client will NOT have a validator configured. Warn the user.
+    if [ "$TARGET_CLIENT" == "consensus" ] && grep -q 'keystore-dir' "${SYSTEMD_DIR}/consensus.service" 2>/dev/null; then
+        if ! whiptail --title "⚠️ Grandine Integrated Validator Warning" --yesno \
+            "Your current Grandine consensus.service has an INTEGRATED VALIDATOR CLIENT.\n\nSwitching the consensus client will leave your validators INACTIVE until you manually reconfigure the new client with your keystore files.\n\nProceed anyway?" 12 78; then
+            exit 0
+        fi
+    fi
+
     # 1) Backup systemd file
     if [ -f ${SYSTEMD_DIR}/${SERVICE} ]; then
         if whiptail --title "Switch $TARGET_CLIENT Client" --yesno "Backup existing ${SERVICE} file to ${SERVICE}.bak?" 8 78; then
@@ -48,6 +57,7 @@ function switchClient(){
         Teku) DATADIR="${BASE_DATA_DIR}/teku" ;;
         Lodestar) DATADIR="${BASE_DATA_DIR}/lodestar" ;;
         Caplin) DATADIR="${BASE_DATA_DIR}/erigon" ;;
+        Grandine) DATADIR="${BASE_DATA_DIR}/grandine" ;;
     esac
 
     if [ -n "$DATADIR" ] && [ -d "$DATADIR" ]; then
@@ -82,11 +92,17 @@ function switchClient(){
     # 4) Stop the service before installing the new one
     sudo systemctl stop ${TARGET_CLIENT} > /dev/null 2>&1
 
-    # 5) Launch the python script to select new client and install
+    # 5) Detect if MEV-Boost is enabled (only relevant when switching CC)
+    MEVBOOST_FLAG=""
+    if [ "$TARGET_CLIENT" == "consensus" ] && [ -f /etc/systemd/system/mevboost.service ]; then
+        MEVBOOST_FLAG="--with_mevboost"
+    fi
+
+    # 6) Launch the python script to select new client and install
     if [ "$TARGET_CLIENT" == "execution" ]; then
         runScript deploy/install-node.sh deploy/deploy-node.py --switch_client execution --cc "$CL" $NETWORK_ARG
     elif [ "$TARGET_CLIENT" == "consensus" ]; then
-        runScript deploy/install-node.sh deploy/deploy-node.py --switch_client consensus --ec "$EL" $NETWORK_ARG
+        runScript deploy/install-node.sh deploy/deploy-node.py --switch_client consensus --ec "$EL" $MEVBOOST_FLAG $NETWORK_ARG
     fi
 }
 
