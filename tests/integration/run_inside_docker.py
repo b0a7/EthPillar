@@ -109,6 +109,8 @@ def parse_expected_artifacts(args: Any) -> Tuple[List[str], List[str], List[str]
             pass
         if "grandine" in combo or "grandine" in cc:
             binaries.append("grandine"); users.append("consensus"); services.append("consensus")
+        if "prysm" in combo or "prysm" in cc:
+            binaries.append("prysm-beacon-chain"); users.append("consensus"); services.append("consensus")
             
     # MEV Boost
     if mev_enabled and not is_validator_only:
@@ -131,6 +133,8 @@ def parse_expected_artifacts(args: Any) -> Tuple[List[str], List[str], List[str]
         if "teku" in target_vc:
             if is_staking or is_validator_only:
                 services.append("validator"); users.append("validator")
+        if "prysm" in target_vc:
+            binaries.append("prysm-validator"); users.append("validator"); services.append("validator")
 
     return list(set(binaries)), list(set(users)), list(set(services))
 
@@ -207,8 +211,8 @@ def check_service_start(service_name: str) -> bool:
             return False
         print(f"  ✅ Service {service_name} is active")
 
-        # Step 4: stop cleanly
-        subprocess.run(["systemctl", "stop", service_name], capture_output=True)
+        # Skip stopping the service - leave it running for the test
+        # The container will be destroyed after the test anyway
         return True
 
     else:
