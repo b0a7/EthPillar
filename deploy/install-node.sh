@@ -165,6 +165,15 @@ linux_install_validator-install() {
     sudo usermod -a -G systemd-journal ${USER:-root}
     ohai "Install complete!"
     exit_on_error $?
+
+    # Offer monitoring install if not already installed and not in non-interactive mode
+    if [[ -z "$skip_prompt" ]] && [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then
+        if whiptail --title "Enable Monitoring?" --yesno \
+            "Would you like to install monitoring?\n\n🚨 Grafana + Prometheus + node-exporter\n\n- View dashboards for your node's performance\n- Set up alerts for any issues\n- All runs locally on your node" \
+            14 70; then
+            bash "${ETHPILLAR_DIR}/ethereum-metrics-exporter.sh" -i
+        fi
+    fi
 }
 
 # Check OS and CPU requirements
