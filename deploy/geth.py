@@ -1,10 +1,9 @@
 import os
 import requests
 import subprocess
-from tqdm import tqdm
 from typing import Tuple, Optional
 from deploy.service_generators import generate_geth_service
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file
 from client_requirements import validate_version_for_network
 
 def download_and_install_geth(eth_network: str, el_p2p_port: str, el_rpc_port: str, 
@@ -53,28 +52,8 @@ def download_and_install_geth(eth_network: str, el_p2p_port: str, el_rpc_port: s
 
 
     # Download the latest release binary
-    print(f">> Downloading Geth > URL: {download_url}")
     download_path = f"{DOWNLOAD_DIR}/{filename}"
-
-    try:
-        # Download the file
-        response = requests.get(download_url, stream=True)
-        response.raise_for_status()  # Raise an exception for HTTP errors
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024
-        t = tqdm(total=total_size, unit='B', unit_scale=True)
-
-        with open(download_path, "wb") as f:
-            for chunk in response.iter_content(block_size):
-                if chunk:
-                    t.update(len(chunk))
-                    f.write(chunk)
-        t.close()
-        print(f">> Successfully downloaded: {filename}")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error: Unable to download file. Try again later. {e}")
-        exit(1)
+    download_file(download_url, download_path, "Geth")
 
     # Extract the binary to /usr/local/bin/geth using sudo
     

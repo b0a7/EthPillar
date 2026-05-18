@@ -1,11 +1,9 @@
 import os
 import requests
 import subprocess
-from tqdm import tqdm
 from deploy.service_generators import generate_grandine_bn_service
-from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, get_raw_architecture, setup_client_user_and_dir
+from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, get_raw_architecture, setup_client_user_and_dir, download_file
 from client_requirements import validate_version_for_network
-import requests
 
 # ==============================================================================
 # Grandine Client Support Note:
@@ -64,27 +62,8 @@ def download_grandine(eth_network: str) -> str:
     filename = f"grandine-{clean_version}-linux-{binary_arch}"
     download_url = f"https://github.com/grandinetech/grandine/releases/download/{gr_version}/{filename}"
 
-    print(f">> Downloading Grandine > URL: {download_url}")
     download_path = f"{DOWNLOAD_DIR}/{filename}"
-
-    try:
-        response = requests.get(download_url, stream=True)
-        response.raise_for_status()
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024
-        t = tqdm(total=total_size, unit='B', unit_scale=True)
-
-        with open(download_path, "wb") as f:
-            for chunk in response.iter_content(block_size):
-                if chunk:
-                    t.update(len(chunk))
-                    f.write(chunk)
-        t.close()
-        print(f">> Successfully downloaded: {filename}")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error: Unable to download file. Try again later. {e}")
-        exit(1)
+    download_file(download_url, download_path, "Grandine")
 
     subprocess.run(["sudo", "mv", download_path, f"{INSTALL_DIR}/{filename}"], check=True)
     subprocess.run(["sudo", "chmod", "+x", f"{INSTALL_DIR}/{filename}"], check=True)

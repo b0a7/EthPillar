@@ -1,10 +1,9 @@
 import os
 import requests
 import subprocess
-from tqdm import tqdm
 from typing import Tuple
 from deploy.service_generators import generate_erigon_service, generate_erigon_standalone_service
-from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir
+from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file
 from client_requirements import validate_version_for_network
 
 def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port: str, el_max_peer_count: str, 
@@ -49,28 +48,8 @@ def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port:
         exit(1)
 
     # Download the latest release binary
-    print(f">> Downloading Erigon > URL: {download_url}")
     download_path = f"{DOWNLOAD_DIR}/{filename}"
-
-    try:
-        # Download the file
-        response = requests.get(download_url, stream=True)
-        response.raise_for_status()  # Raise an exception for HTTP errors
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024
-        t = tqdm(total=total_size, unit='B', unit_scale=True)
-
-        with open(download_path, "wb") as f:
-            for chunk in response.iter_content(block_size):
-                if chunk:
-                    t.update(len(chunk))
-                    f.write(chunk)
-        t.close()
-        print(f">> Successfully downloaded: {filename}")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error: Unable to download file. Try again later. {e}")
-        exit(1)
+    download_file(download_url, download_path, "Erigon")
 
     # Extract the binary using sudo
     # Erigon tarball typically contains a folder, so we strip one component and extract to /usr/local/bin
@@ -135,28 +114,8 @@ def download_and_install_erigon_standalone(eth_network: str, el_p2p_port: str, e
         exit(1)
 
     # Download the latest release binary
-    print(f">> Downloading Erigon > URL: {download_url}")
     download_path = f"{DOWNLOAD_DIR}/{filename}"
-
-    try:
-        # Download the file
-        response = requests.get(download_url, stream=True)
-        response.raise_for_status()  # Raise an exception for HTTP errors
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024
-        t = tqdm(total=total_size, unit='B', unit_scale=True)
-
-        with open(download_path, "wb") as f:
-            for chunk in response.iter_content(block_size):
-                if chunk:
-                    t.update(len(chunk))
-                    f.write(chunk)
-        t.close()
-        print(f">> Successfully downloaded: {filename}")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error: Unable to download file. Try again later. {e}")
-        exit(1)
+    download_file(download_url, download_path, "Erigon Standalone")
 
     # Extract the binary using sudo
     subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}", "--strip-components=1"])

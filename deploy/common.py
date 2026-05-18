@@ -53,6 +53,36 @@ def setup_client_user_and_dir(user: str, client_name: str) -> None:
     subprocess.run(["sudo", "chown", "-R", f"{user}:{user}", data_dir], check=True)
 
 
+def download_file(url: str, dest_path: str, label: str = "file") -> None:
+    """Download a file with a progress bar and basic error handling.
+
+    Args:
+        url: The URL to download from.
+        dest_path: Absolute destination file path.
+        label: Descriptive label for the download.
+    """
+    from tqdm import tqdm
+    print(f">> Downloading {label} > URL: {url}")
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        total_size = int(response.headers.get('content-length', 0))
+        block_size = 1024
+        t = tqdm(total=total_size, unit='B', unit_scale=True)
+
+        with open(dest_path, "wb") as f:
+            for chunk in response.iter_content(block_size):
+                if chunk:
+                    t.update(len(chunk))
+                    f.write(chunk)
+        t.close()
+        filename = os.path.basename(dest_path)
+        print(f">> Successfully downloaded: {filename}")
+    except requests.exceptions.RequestException as e:
+        print(f"Error: Unable to download file. Try again later. {e}")
+        exit(1)
+
+
 def clear_screen() -> None:
     """Clear the terminal screen based on the operating system."""
     if os.name == 'posix':  # Unix-based systems (e.g., Linux, macOS)
@@ -360,3 +390,18 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
 
     if skip_prompts:
         exit(0)
+
+
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser(description="EthPillar Common CLI Utilities")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    download_parser = subparsers.add_parser("download", help="Download a file with progress bar")
+    download_parser.add_argument("url", type=str, help="URL to download from")
+    download_parser.add_argument("dest", type=str, help="Destination file path")
+    download_parser.add_argument("label", type=str, nargs="?", default="file", help="Descriptive label")
+
+    args = parser.parse_args()
+    if args.command == "download":
+        download_file(args.url, args.dest, args.label)

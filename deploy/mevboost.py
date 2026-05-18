@@ -2,10 +2,9 @@ import os
 import requests
 import tarfile
 import subprocess
-from tqdm import tqdm
 from typing import List, Dict, Tuple
 from deploy.service_generators import generate_mevboost_service
-from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, get_computer_platform
+from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, get_computer_platform, download_file
 
 def install_mevboost(eth_network: str, mev_min_bid: str, relay_options: List[Dict[str, str]]) -> Tuple[str, str]:
     """Install MEV-Boost binary and service.
@@ -43,28 +42,8 @@ def install_mevboost(eth_network: str, mev_min_bid: str, relay_options: List[Dic
         exit(1)
 
     # Download the latest release binary
-    print(f">> Downloading mevboost > URL: {download_url}")
     download_path = f"{DOWNLOAD_DIR}/mev-boost.tar.gz"
-
-    try:
-        # Download the file
-        response = requests.get(download_url, stream=True)
-        response.raise_for_status()  # Raise an exception for HTTP errors
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024
-        t = tqdm(total=total_size, unit='B', unit_scale=True)
-
-        with open(download_path, "wb") as f:
-            for chunk in response.iter_content(block_size):
-                if chunk:
-                    t.update(len(chunk))
-                    f.write(chunk)
-        t.close()
-        print(f">> Successfully downloaded: mev-boost.tar.gz")
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error: Unable to download file. Try again later. {e}")
-        exit(1)
+    download_file(download_url, download_path, "mevboost")
 
     # Extract the binary
     subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"])
