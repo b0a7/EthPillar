@@ -292,7 +292,7 @@ def check_p2p_ports(expected_services: List[str]) -> bool:
     return True  # Advisory — never fails the integration test
 
 
-def verify(args: Any):\
+def verify(args: Any):
     print(f"\n🔍 Verifying Artifacts...")
     expected_binaries, expected_users, expected_services = parse_expected_artifacts(args)
     success = True
