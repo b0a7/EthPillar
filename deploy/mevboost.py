@@ -1,10 +1,35 @@
 import os
-import requests
-import tarfile
 import subprocess
 from typing import List, Dict, Tuple
 from deploy.service_generators import generate_mevboost_service
-from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, get_computer_platform, download_file
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, download_file, get_machine_architecture
+
+def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
+    """Get MEV-Boost release version, download URL, and filename.
+
+    Args:
+        version_tag: 'LATEST' or a specific version tag.
+        arch_amd64: True if the architecture is amd64/x86_64, False for arm64.
+
+    Returns:
+        A dictionary with keys 'version', 'download_urls', and 'filenames'.
+    """
+    from deploy.common import get_github_release
+    data = get_github_release("flashbots/mev-boost", version_tag)
+    tag = data["tag_name"]
+    arch = "amd64" if arch_amd64 else "arm64"
+    download_url = None
+    filename = None
+    for asset in data["assets"]:
+        if asset["name"].lower().endswith(f"linux_{arch}.tar.gz"):
+            download_url = asset["browser_download_url"]
+            filename = asset["name"]
+            break
+    if not download_url:
+        raise ValueError(f"Could not find mev-boost asset for linux_{arch}")
+    return {"version": tag, "download_urls": [download_url], "filenames": [filename]}
+
+
 
 def install_mevboost(eth_network: str, mev_min_bid: str, relay_options: List[Dict[str, str]]) -> Tuple[str, str]:
     """Install MEV-Boost binary and service.
@@ -13,36 +38,20 @@ def install_mevboost(eth_network: str, mev_min_bid: str, relay_options: List[Dic
         mevboost_version: The version string of the installed MEV-Boost
         service_file_path: The path to the created service file
     """
-    binary_arch = get_machine_architecture()
-    platform_arch = get_computer_platform()
-
     # Step 1: Create mevboost service account
     subprocess.run(["sudo", "useradd", "--no-create-home", "--shell", "/bin/false", "mevboost"])
 
     # Step 2: Install mevboost
-    # Define the Github API endpoint to get the latest release
-    url = 'https://api.github.com/repos/flashbots/mev-boost/releases/latest'
+    # Resolve version and download URL
+    arch_amd64 = get_machine_architecture() == "amd64"
+    info = get_release_info("LATEST", arch_amd64)
+    mevboost_version = info["version"]
 
-    # Send a GET request to the API endpoint
-    response = requests.get(url)
-    mevboost_version = response.json()['tag_name']
-
-    # Search for the asset with the name that ends in {platform_arch}_{binary_arch}.tar.gz
-    assets = response.json()['assets']
-    download_url = None
-    asset_name = None
-    for asset in assets:
-        if asset['name'].endswith(f'{platform_arch.lower()}_{binary_arch}.tar.gz'):
-            download_url = asset['browser_download_url']
-            asset_name = asset['name']
-            break
-
-    if download_url is None:
-        print("Error: Could not find the download URL for the latest release.")
-        exit(1)
+    download_url = info["download_urls"][0]
+    filename = info["filenames"][0]
 
     # Download the latest release binary
-    download_path = f"{DOWNLOAD_DIR}/mev-boost.tar.gz"
+    download_path = f"{DOWNLOAD_DIR}/{filename}"
     download_file(download_url, download_path, "mevboost")
 
     # Extract the binary

@@ -1,23 +1,55 @@
-import os
-import requests
 import subprocess
 from deploy.service_generators import generate_prysm_bn_service, generate_prysm_vc_service
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, get_machine_architecture, setup_client_user_and_dir, download_file
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture
 from client_requirements import validate_version_for_network
 
-def download_prysm(eth_network: str) -> str:
-    binary_arch = get_machine_architecture()
+def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
+    """Get Prysm release version, download URLs, and filenames.
 
+    Args:
+        version_tag: 'LATEST' or a specific version tag.
+        arch_amd64: True if the architecture is amd64/x86_64, False for arm64.
+
+    Returns:
+        A dictionary with keys 'version', 'download_urls', and 'filenames'.
+    """
+    from deploy.common import get_github_release
+    data = get_github_release("prysmaticlabs/prysm", version_tag)
+    tag = data["tag_name"]
+    arch = "amd64" if arch_amd64 else "arm64"
+    
+    bn_url = None
+    vc_url = None
+    for asset in data["assets"]:
+        if asset["name"] == f"beacon-chain-{tag}-linux-{arch}":
+            bn_url = asset["browser_download_url"]
+        elif asset["name"] == f"validator-{tag}-linux-{arch}":
+            vc_url = asset["browser_download_url"]
+            
+    if not bn_url or not vc_url:
+        for asset in data["assets"]:
+            name = asset["name"]
+            if "beacon-chain" in name and arch in name:
+                bn_url = asset["browser_download_url"]
+            elif "validator" in name and arch in name:
+                vc_url = asset["browser_download_url"]
+                
+    if not bn_url or not vc_url:
+        raise ValueError(f"Could not find Prysm assets for linux-{arch}")
+        
+    return {"version": tag, "download_urls": [bn_url, vc_url], "filenames": [f"beacon-chain-{tag}-linux-{arch}", f"validator-{tag}-linux-{arch}"]}
+
+
+
+def download_prysm(eth_network: str) -> str:
     # Create User and directories
     setup_client_user_and_dir("consensus", "prysm")
     setup_client_user_and_dir("validator", "prysm_validator")
 
-    # Define the Github API endpoint to get the latest release
-    url = 'https://api.github.com/repos/prysmaticlabs/prysm/releases/latest'
-
-    # Send a GET request to the API endpoint
-    response = requests.get(url)
-    pr_version = response.json()['tag_name']
+    # Resolve version and download URL
+    arch_amd64 = get_machine_architecture() == "amd64"
+    info = get_release_info("LATEST", arch_amd64)
+    pr_version = info["version"]
 
     # Validate version for network requirements
     is_valid, error_msg = validate_version_for_network('prysm', pr_version, eth_network)
@@ -25,23 +57,10 @@ def download_prysm(eth_network: str) -> str:
         print(error_msg)
         exit(1)
 
-    assets = response.json()['assets']
-    bn_download_url = None
-    vc_download_url = None
-    bn_filename = None
-    vc_filename = None
-    
-    for asset in assets:
-        if asset['name'] == f'beacon-chain-{pr_version}-linux-{binary_arch}':
-            bn_download_url = asset['browser_download_url']
-            bn_filename = asset['name']
-        elif asset['name'] == f'validator-{pr_version}-linux-{binary_arch}':
-            vc_download_url = asset['browser_download_url']
-            vc_filename = asset['name']
-
-    if bn_download_url is None or vc_download_url is None:
-        print("Error: Could not find the download URL for the latest release.")
-        exit(1)
+    bn_download_url = info["download_urls"][0]
+    vc_download_url = info["download_urls"][1]
+    bn_filename = info["filenames"][0]
+    vc_filename = info["filenames"][1]
 
     # Download the beacon node
     bn_download_path = f"{DOWNLOAD_DIR}/{bn_filename}"

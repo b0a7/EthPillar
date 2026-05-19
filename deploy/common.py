@@ -1,4 +1,5 @@
 import os
+import sys
 import re
 import platform
 import subprocess
@@ -392,6 +393,53 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         exit(0)
 
 
+def get_github_release(repo: str, version_tag: str) -> dict:
+    """Helper function to fetch release info from GitHub API."""
+    import requests
+    if version_tag.upper() == "LATEST":
+        suffix = "latest"
+    else:
+        suffix = f"tags/{version_tag}"
+    url = f"https://api.github.com/repos/{repo}/releases/{suffix}"
+    res = requests.get(url)
+    res.raise_for_status()
+    return res.json()
+
+
+def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
+    """Get the correct release version, download URL(s), and filename(s) for a given client.
+
+    Args:
+        client: The name of the client (case-insensitive).
+        version_tag: 'LATEST' or a specific tag name.
+
+    Returns:
+        A dictionary with keys 'version', 'download_urls', and 'filenames'.
+    """
+    client = client.lower()
+    
+    # Normalize client name to module name
+    if client in ["mevboost", "mev-boost"]:
+        module_name = "mevboost"
+    else:
+        module_name = client
+
+    import importlib
+    try:
+        module = importlib.import_module(f"deploy.{module_name}")
+    except ImportError:
+        raise ValueError(f"Unsupported client: {client}")
+
+    import platform
+    raw_arch = platform.machine().lower()
+    arch_amd64 = raw_arch in ['x86_64', 'amd64']
+
+    if hasattr(module, "get_release_info"):
+        return module.get_release_info(version_tag, arch_amd64)
+    else:
+        raise ValueError(f"Client module deploy.{module_name} does not implement get_release_info")
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description="EthPillar Common CLI Utilities")
@@ -402,6 +450,17 @@ if __name__ == '__main__':
     download_parser.add_argument("dest", type=str, help="Destination file path")
     download_parser.add_argument("label", type=str, nargs="?", default="file", help="Descriptive label")
 
+    info_parser = subparsers.add_parser("release_info", help="Get client release version and download URLs")
+    info_parser.add_argument("client", type=str, help="Client name")
+    info_parser.add_argument("version_tag", type=str, nargs="?", default="LATEST", help="Version tag or LATEST")
+
     args = parser.parse_args()
     if args.command == "download":
         download_file(args.url, args.dest, args.label)
+    elif args.command == "release_info":
+        try:
+            info = get_client_release_info(args.client, args.version_tag)
+            print(json.dumps(info))
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            exit(1)

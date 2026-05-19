@@ -107,33 +107,8 @@ function promptViewLogs(){
 }
 
 function getLatestVersion(){
-	case $EL in
-	  Nethermind)
-	    TAG_URL="https://api.github.com/repos/NethermindEth/nethermind/releases/latest"
-	    CHANGES_URL="https://github.com/NethermindEth/nethermind/releases"
-	    ;;
-	  Besu)
-	    TAG_URL="https://api.github.com/repos/besu-eth/besu/releases/latest"
-	    CHANGES_URL="https://github.com/besu-eth/besu/releases"
-	    ;;
-	  Erigon)
-	    TAG_URL="https://api.github.com/repos/erigontech/erigon/releases/latest"
-	    CHANGES_URL="https://github.com/erigontech/erigon/releases"
-	    ;;
-	  Geth)
-	    TAG_URL="https://api.github.com/repos/ethereum/go-ethereum/releases/latest"
-	    CHANGES_URL="https://github.com/ethereum/go-ethereum/releases"
-	    ;;
-	  Reth)
-	    TAG_URL="https://api.github.com/repos/paradigmxyz/reth/releases/latest"
-	    CHANGES_URL="https://github.com/paradigmxyz/reth/releases"
-	    ;;
-	  *)
-	    error "❌ Unsupported or unknown client '$EL'."
-	    ;;	    
-	esac
-	#Get tag name
-	TAG=$(curl -s "$TAG_URL" | jq -r .tag_name)
+	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "$EL" "LATEST")
+	TAG=$(echo "$RELEASE_DATA" | jq -r .version)
 	# Exit in case of null tag
 	if [[ -z $TAG ]] || [[ $TAG == "null" ]]; then
 		error "❌ Couldn't find the latest version tag"
@@ -141,39 +116,25 @@ function getLatestVersion(){
 }
 
 function updateClient(){
+	local _target_tag
 	if [[ "$1" == "LATEST" ]]; then
-		_URL_SUFFIX="releases/latest"
+		_target_tag="LATEST"
 	else
-		_URL_SUFFIX="releases/tags/$1"
+		_target_tag="$1"
 	fi
+
+	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "$EL" "$_target_tag")
+	TAG=$(echo "$RELEASE_DATA" | jq -r .version)
+	
 	case $EL in
 	  Nethermind)
-		[[ "${_arch}" == "amd64" ]] && _architecture="x64" || _architecture="arm64"
-
-		# Force lowercase platform (important!)
-		_platform_lower=$(echo "${_platform}" | tr '[:upper:]' '[:lower:]')
-
-		RELEASE_URL="https://api.github.com/repos/NethermindEth/nethermind/$_URL_SUFFIX"
-
-		BINARIES_URL=$(curl -s "$RELEASE_URL" | \
-		jq -r --arg plat "$_platform_lower" --arg arch "${_architecture}" \
-		'.assets[] | select(.name | endswith("-\($plat)-\($arch).zip")) | .browser_download_url' | \
-		head -n 1 | tr -d '\r\n ')
-
-		if [[ -z "$BINARIES_URL" ]]; then
-			curl -s "$RELEASE_URL" | jq -r '.assets[].name' >&2
-			error "❌ Could not find download URL for ${_platform_lower}-${_architecture}.zip in release $_URL_SUFFIX"
-		fi
-
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
-
 		cd "$HOME" || true
-
-		wget -O nethermind.zip "$BINARIES_URL" || error "❌ Unable to wget file"
-
-		unzip -o nethermind.zip -d "$HOME"/nethermind || error "❌ Unable to unzip file"
-		rm -f nethermind.zip
-
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		unzip -o "$FILENAME" -d "$HOME"/nethermind || error "❌ Unable to unzip file"
+		rm -f "$FILENAME"
 		sudo systemctl stop execution
 		sudo rm -rf /usr/local/bin/nethermind
 		sudo mv "$HOME"/nethermind /usr/local/bin/nethermind || error "❌ Unable to move file"
@@ -181,86 +142,65 @@ function updateClient(){
 		;;
 	  Besu)
 		updateJRE
-		RELEASE_URL="https://api.github.com/repos/besu-eth/besu/$_URL_SUFFIX"
-		TAG=$(curl -s "$RELEASE_URL" | jq -r .tag_name)
-		BINARIES_URL="https://github.com/besu-eth/besu/releases/download/$TAG/besu-$TAG.tar.gz"
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O besu.tar.gz "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf besu.tar.gz -C "$HOME" || error "❌ Unable to untar file"
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
 		sudo mv besu-"${TAG}" besu
 		sudo systemctl stop execution
 		sudo rm -rf /usr/local/bin/besu
 		sudo mv "$HOME"/besu /usr/local/bin/besu || error "❌ Unable to move file"
 		sudo systemctl start execution
-		rm besu.tar.gz
+		rm "$FILENAME"
 	    ;;
 	  Erigon)
-		RELEASE_URL="https://api.github.com/repos/erigontech/erigon/$_URL_SUFFIX"
-		BINARIES_URL=$(curl -s "$RELEASE_URL" | jq -r ".assets[] | select(.name) | .browser_download_url" | grep --ignore-case "${_platform}"_"${_arch}".tar.gz)
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O erigon.tar.gz "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf erigon.tar.gz -C "$HOME" || error "❌ Unable to untar file"
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
 		mv erigon_*_"${_arch}" erigon
 		sudo systemctl stop execution
 		sudo mv "$HOME"/erigon/erigon /usr/local/bin || error "❌ Unable to move file"
 		sudo systemctl start execution
-		rm -rf erigon erigon.tar.gz
+		rm -rf erigon "$FILENAME"
 		;;
 	  Geth)
-		# Convert to lower case
-		_platform=${_platform,,}
-		RELEASE_URL="https://geth.ethereum.org/downloads"
-		#https://gethstore.blob.core.windows.net/builds/geth-linux-386-1.16.3-09786041.tar.gz
-		# Remove front v if present
-		if [[ "$1" == "LATEST" ]]; then
-			_URL_SUFFIX=""
-		else
-			_URL_SUFFIX="-${1#v}-"
-		fi
-		FILE="https://gethstore.blob.core.windows.net/builds/geth-${_platform}-${_arch}${_URL_SUFFIX}[a-zA-Z0-9./?=_%:-]*.tar.gz"
-		BINARIES_URL=$(curl -s $RELEASE_URL | grep -Eo "$FILE" | head -1)
-		if [[ -z "$BINARIES_URL" ]]; then
-			error "❌ Could not find download URL for geth-${_platform}-${_arch} in release $_URL_SUFFIX"
-		fi
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O geth.tar.gz "$BINARIES_URL" || error "❌ Unable to wget file"
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
 		EXTRACTED_DIR="geth_temp"
 		mkdir -p "$EXTRACTED_DIR"
-		tar -xzvf geth.tar.gz -C "$EXTRACTED_DIR" || error "❌ Unable to untar file"
-		
-		# Find the geth binary
+		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" || error "❌ Unable to untar file"
 		GETH_BIN=$(find "./$EXTRACTED_DIR" -type f -name "geth" | head -n 1)
 		if [ -z "$GETH_BIN" ]; then
 			error "❌ Could not find the extracted geth binary"
 		fi
-		
 		sudo systemctl stop execution
 		sudo mv "$GETH_BIN" /usr/local/bin/geth || error "❌ Unable to move file"
 		sudo chmod +x /usr/local/bin/geth
 		sudo chown execution:execution /usr/local/bin/geth
 		sudo systemctl start execution
-		rm -rf "$EXTRACTED_DIR" geth.tar.gz
+		rm -rf "$EXTRACTED_DIR" "$FILENAME"
 	    ;;
   	  Reth)
-		# Convert to lower case
-		_platform=${_platform,,}
-		[[ "${_arch}" == "amd64" ]] && _architecture="x86_64" || _architecture="aarch64"
-		RELEASE_URL="https://api.github.com/repos/paradigmxyz/reth/$_URL_SUFFIX"
-		TAG=$(curl -s "$RELEASE_URL" | jq -r .tag_name)
-		BINARIES_URL="https://github.com/paradigmxyz/reth/releases/download/$TAG/reth-$TAG-${_architecture}-unknown-${_platform}-gnu.tar.gz"
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O reth.tar.gz "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf reth.tar.gz -C "$HOME" || error "❌ Unable to untar file"
-		rm reth.tar.gz
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
+		rm "$FILENAME"
 		sudo systemctl stop execution
 		sudo mv "$HOME"/reth /usr/local/bin || error "❌ Unable to move file"
 		sudo systemctl start execution
 	    ;;
-	  esac
+	esac
 }
 
 function updateJRE(){

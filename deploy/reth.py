@@ -1,10 +1,37 @@
 import os
-import requests
 import subprocess
 from deploy.service_generators import generate_reth_service
-from deploy.common import write_service_file, get_raw_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture
 from client_requirements import validate_version_for_network
 from typing import Tuple, Optional
+
+def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
+    """Get Reth release version, download URL, and filename.
+
+    Args:
+        version_tag: 'LATEST' or a specific version tag.
+        arch_amd64: True if the architecture is amd64/x86_64, False for arm64.
+
+    Returns:
+        A dictionary with keys 'version', 'download_urls', and 'filenames'.
+    """
+    from deploy.common import get_github_release
+    data = get_github_release("paradigmxyz/reth", version_tag)
+    tag = data["tag_name"]
+    arch = "x86_64" if arch_amd64 else "aarch64"
+    download_url = None
+    filename = None
+    for asset in data["assets"]:
+        if asset["name"].lower().endswith(f"{arch}-unknown-linux-gnu.tar.gz"):
+            download_url = asset["browser_download_url"]
+            filename = asset["name"]
+            break
+    if not download_url:
+        filename = f"reth-{tag}-{arch}-unknown-linux-gnu.tar.gz"
+        download_url = f"https://github.com/paradigmxyz/reth/releases/download/{tag}/{filename}"
+    return {"version": tag, "download_urls": [download_url], "filenames": [filename]}
+
+
 
 def download_and_install_reth(eth_network: str, el_p2p_port: str, el_p2p_port_2: str,
                                 el_rpc_port: str, el_max_peer_count: str, jwtsecret_path: str,
@@ -15,17 +42,13 @@ def download_and_install_reth(eth_network: str, el_p2p_port: str, el_p2p_port_2:
         reth_version: The version string of the installed Reth
         service_file_path: The path to the created service file
     """
-    binary_arch = get_raw_architecture()
-
     # Create User and directories
     setup_client_user_and_dir("execution", "reth")
 
-    # Define the Github API endpoint to get the latest release
-    url = 'https://api.github.com/repos/paradigmxyz/reth/releases/latest'
-
-    # Send a GET request to the API endpoint
-    response = requests.get(url)
-    reth_version = response.json()['tag_name']
+    # Resolve version and download URL
+    arch_amd64 = get_machine_architecture() == "amd64"
+    info = get_release_info("LATEST", arch_amd64)
+    reth_version = info["version"]
 
     # Validate version for network requirements
     is_valid, error_msg = validate_version_for_network('reth', reth_version, eth_network)
@@ -33,19 +56,8 @@ def download_and_install_reth(eth_network: str, el_p2p_port: str, el_p2p_port_2:
         print(error_msg)
         exit(1)
 
-    assets = response.json()['assets']
-    download_url = None
-    filename = None
-    # Reth asset: reth-v1.2.3-x86_64-unknown-linux-gnu.tar.gz
-    for asset in assets:
-        if asset['name'].endswith(f'{binary_arch}-unknown-linux-gnu.tar.gz'):
-            download_url = asset['browser_download_url']
-            filename = asset['name']
-            break
-
-    if download_url is None:
-        print("Error: Could not find the download URL for the latest release.")
-        exit(1)
+    download_url = info["download_urls"][0]
+    filename = info["filenames"][0]
 
     # Download the latest release binary
     download_path = f"{DOWNLOAD_DIR}/{filename}"

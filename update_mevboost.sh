@@ -85,29 +85,34 @@ function promptViewLogs(){
 }
 
 function getLatestVersion(){
-	TAG=$(curl -s https://api.github.com/repos/flashbots/mev-boost/releases/latest | jq -r .tag_name | sed 's/^v//')  # strip leading 'v' → "1.10.1"
+	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "mevboost" "LATEST")
+	TAG=$(echo "$RELEASE_DATA" | jq -r .version | sed 's/^v//')
 	# Exit in case of null tag
 	[[ -z $TAG ]] || [[ $TAG == "null"  ]] && echo "ERROR: Couldn't find the latest version tag" && exit 1
 	CHANGES_URL="https://github.com/flashbots/mev-boost/releases"
 }
 
 function updateClient(){
+	local _target_tag
 	if [[ "$1" == "LATEST" ]]; then
-		_URL_SUFFIX="releases/latest"
+		_target_tag="LATEST"
 	else
-		_URL_SUFFIX="releases/tags/$1"
+		_target_tag="$1"
 	fi
-	RELEASE_URL="https://api.github.com/repos/flashbots/mev-boost/${_URL_SUFFIX}"
-	BINARIES_URL="$(curl -s "$RELEASE_URL" | jq -r ".assets[] | select(.name) | .browser_download_url" | grep --ignore-case "${_platform}"_"${_arch}"\.tar\.gz$)"
-	[[ -z "$BINARIES_URL" ]] && error "❌ Could not determine download URL for ${_platform}_${_arch}."	
+
+	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "mevboost" "$_target_tag")
+	TAG=$(echo "$RELEASE_DATA" | jq -r .version | sed 's/^v//')
+	BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+	FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
+
 	info "ℹ️  Downloading URL: $BINARIES_URL"
 	cd "$HOME" || true
 	# Download
-	wget -O mev-boost.tar.gz "$BINARIES_URL" || error "❌ Failed to download mev-boost binary."
+	wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Failed to download mev-boost binary."
 	# Untar
-	tar -xzvf mev-boost.tar.gz -C "$HOME" || error "❌ Failed to extract mev-boost archive."
+	tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Failed to extract mev-boost archive."
 	# Cleanup
-	rm mev-boost.tar.gz LICENSE README.md
+	rm "$FILENAME" LICENSE README.md 2>/dev/null || true
 	sudo systemctl stop mevboost
 	sudo mv "$HOME"/mev-boost /usr/local/bin || error "❌ Failed to move mev-boost binary to /usr/local/bin."
 	sudo systemctl start mevboost

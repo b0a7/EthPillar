@@ -97,37 +97,10 @@ function promptViewLogs(){
 }
 
 function getLatestVersion(){
-	case "$CLIENT" in
-	  Lighthouse)
-	    TAG_URL="https://api.github.com/repos/sigp/lighthouse/releases/latest"
-	    CHANGES_URL="https://github.com/sigp/lighthouse/releases"
-	    ;;
-	  Lodestar)
-	    TAG_URL="https://api.github.com/repos/ChainSafe/lodestar/releases/latest"
-	    CHANGES_URL="https://github.com/ChainSafe/lodestar/releases"
-	    ;;
-	  Teku)
-	    TAG_URL="https://api.github.com/repos/ConsenSys/teku/releases/latest"
-	    CHANGES_URL="https://github.com/ConsenSys/teku/releases"
-	    ;;
-	  Nimbus)
-	    TAG_URL="https://api.github.com/repos/status-im/nimbus-eth2/releases/latest"
-	    CHANGES_URL="https://github.com/status-im/nimbus-eth2/releases"
-	    ;;
-	  Prysm)
-	    TAG_URL="https://api.github.com/repos/OffchainLabs/prysm/releases/latest"
-	    CHANGES_URL="https://github.com/OffchainLabs/prysm/releases"
-	    ;;
-	  Grandine)
-	    TAG_URL="https://api.github.com/repos/grandinetech/grandine/releases/latest"
-	    CHANGES_URL="https://github.com/grandinetech/grandine/releases"
-	    ;;
-	  *)
-	    error "❌ Unsupported or unknown client '$CLIENT'."
-	    ;;
-	esac
-	#Get tag name and remove leading 'v'
-	TAG=$(curl -s $TAG_URL | jq -r .tag_name | sed 's/.*\(v[0-9]*\.[0-9]*\.[0-9]*\).*/\1/')
+	local _client_lower
+	_client_lower=$(echo "$CLIENT" | tr '[:upper:]' '[:lower:]')
+	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "$_client_lower" "LATEST")
+	TAG=$(echo "$RELEASE_DATA" | jq -r .version)
 	# Exit in case of null tag
 	if [[ -z $TAG ]] || [[ $TAG == "null" ]]; then
 		error "❌ Couldn't find the latest version tag"
@@ -135,21 +108,28 @@ function getLatestVersion(){
 }
 
 function updateClient(){
+	local _target_tag
 	if [[ "$1" == "LATEST" ]]; then
-		_URL_SUFFIX="releases/latest"
+		_target_tag="LATEST"
 	else
-		_URL_SUFFIX="releases/tags/$1"
+		_target_tag="$1"
 	fi
+
+	local _client_lower
+	_client_lower=$(echo "$CLIENT" | tr '[:upper:]' '[:lower:]')
+
+	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "$_client_lower" "$_target_tag")
+	TAG=$(echo "$RELEASE_DATA" | jq -r .version)
+	
 	case "$CLIENT" in
 	  Lighthouse)
-		[[ "${_arch}" == "amd64" ]] && _architecture="x86_64" || _architecture="aarch64"
-		RELEASE_URL="https://api.github.com/repos/sigp/lighthouse/$_URL_SUFFIX"
-		BINARIES_URL=$(curl -s "$RELEASE_URL" | jq -r ".assets[] | select(.name) | .browser_download_url" | grep --ignore-case "${_architecture}"-unknown-"${_platform}"-gnu.tar.gz$)
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O lighthouse.tar.gz "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf lighthouse.tar.gz -C "$HOME" || error "❌ Unable to untar file"
-		rm lighthouse.tar.gz
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
+		rm "$FILENAME"
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator stop
 		sudo rm /usr/local/bin/lighthouse
@@ -158,14 +138,13 @@ function updateClient(){
 		test -f /etc/systemd/system/validator.service && sudo service validator start
 	    ;;
 	  Lodestar)
-		RELEASE_URL="https://api.github.com/repos/ChainSafe/lodestar/$_URL_SUFFIX"
-		LATEST_TAG=$(curl -s "$RELEASE_URL" | jq -r ".tag_name")
-		BINARIES_URL="https://github.com/ChainSafe/lodestar/releases/download/${LATEST_TAG}/lodestar-${LATEST_TAG}-${_platform}-${_arch}.tar.gz"
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O lodestar.tar.gz "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf lodestar.tar.gz -C "$HOME" || error "❌ Unable to untar file"
-		rm lodestar.tar.gz
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
+		rm "$FILENAME"
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator stop
 		sudo rm -rf /usr/local/bin/lodestar
@@ -176,18 +155,16 @@ function updateClient(){
 	    ;;
 	  Teku)
 		updateJRE
-		RELEASE_URL="https://api.github.com/repos/ConsenSys/teku/$_URL_SUFFIX"
-		# Get the tag and strip any leading 'v' for the artifact URL
-		_RAW_TAG=$(curl -s "$RELEASE_URL" | jq -r ".tag_name")
-		LATEST_TAG=${_RAW_TAG#v}
-		BINARIES_URL="https://artifacts.consensys.net/public/teku/raw/names/teku.tar.gz/versions/${LATEST_TAG}/teku-${LATEST_TAG}.tar.gz"
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O teku.tar.gz "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf teku.tar.gz -C "$HOME" || error "❌ Unable to untar file"
-		# Directory name inside tarball usually matches the version
-		mv teku-"${LATEST_TAG}" teku
-		rm teku.tar.gz
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
+		local _teku_v_num
+		_teku_v_num=${TAG#v}
+		mv teku-"${_teku_v_num}" teku
+		rm "$FILENAME"
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator stop
 		sudo rm -rf /usr/local/bin/teku
@@ -196,12 +173,12 @@ function updateClient(){
 		test -f /etc/systemd/system/validator.service && sudo service validator start
 		;;
 	  Nimbus)
-		RELEASE_URL="https://api.github.com/repos/status-im/nimbus-eth2/$_URL_SUFFIX"
-		BINARIES_URL=$(curl -s "$RELEASE_URL" | jq -r ".assets[] | select(.name) | .browser_download_url" | grep --ignore-case "_${_platform}_${_arch}.*.tar.gz$")
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O nimbus.tar.gz "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf nimbus.tar.gz -C "$HOME" || error "❌ Unable to untar file"
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
 		mv nimbus-eth2_"${_platform}"_"${_arch}"* nimbus
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator stop
@@ -212,23 +189,23 @@ function updateClient(){
 		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator start
 		rm -r nimbus
-		rm nimbus.tar.gz
+		rm "$FILENAME"
 	    ;;
   	  Prysm)
 		cd "$HOME" || true
-		if [[ "$1" == "LATEST" ]]; then
-			prysm_version=$(curl -f -s https://prysmaticlabs.com/releases/latest)
-		else
-			prysm_version="$1"
-		fi
-		# Convert to lower case
-		_platform=${_platform,,}
-		file_beacon=beacon-chain-${prysm_version}-${_platform}-${_arch}
-		file_validator=validator-${prysm_version}-${_platform}-${_arch}
-		file_prysmctl=prysmctl-${prysm_version}-${_platform}-${_arch}
-		curl -f -L "https://prysmaticlabs.com/releases/${file_beacon}" -o beacon-chain || error "❌ Unable to download beacon-chain"
-		curl -f -L "https://prysmaticlabs.com/releases/${file_validator}" -o validator || error "❌ Unable to download validator"
-		curl -f -L "https://prysmaticlabs.com/releases/${file_prysmctl}" -o prysmctl || error "❌ Unable to download prysmctl"
+		local _bn_url _vc_url _bn_file _vc_file
+		_bn_url=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		_vc_url=$(echo "$RELEASE_DATA" | jq -r '.download_urls[1]')
+		_bn_file=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
+		_vc_file=$(echo "$RELEASE_DATA" | jq -r '.filenames[1]')
+
+		local _prysmctl_url
+		_prysmctl_url="${_bn_url/beacon-chain/prysmctl}"
+
+		curl -L -f "${_bn_url}" -o beacon-chain || error "❌ Unable to download beacon-chain"
+		curl -L -f "${_vc_url}" -o validator || error "❌ Unable to download validator"
+		curl -L -f "${_prysmctl_url}" -o prysmctl || error "❌ Unable to download prysmctl"
+		
 		chmod +x beacon-chain validator prysmctl
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator stop
@@ -242,10 +219,8 @@ function updateClient(){
 		test -f /etc/systemd/system/validator.service && sudo systemctl start validator
 	    ;;
 	  Grandine)
-		[[ "${_arch}" == "amd64" ]] && _architecture="x64" || _architecture="arm64"
-		RELEASE_URL="https://api.github.com/repos/grandinetech/grandine/$_URL_SUFFIX"
-		LATEST_TAG=$(curl -s "$RELEASE_URL" | jq -r ".tag_name")
-		BINARIES_URL="https://github.com/grandinetech/grandine/releases/download/${LATEST_TAG}/grandine-${LATEST_TAG#v}-linux-${_architecture}"
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O grandine "$BINARIES_URL" || error "❌ Unable to wget file"
@@ -257,7 +232,7 @@ function updateClient(){
 		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator start
 	    ;;
-	  esac
+	esac
 }
 
 function updateJRE(){

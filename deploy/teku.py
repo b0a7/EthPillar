@@ -1,32 +1,39 @@
 import os
-import requests
 import subprocess
 from deploy.service_generators import generate_teku_bn_service, generate_teku_vc_service
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture
 from client_requirements import validate_version_for_network
 from typing import Optional
 
-def download_teku(eth_network: str) -> str:
-    """Download and install Teku binary.
+def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
+    """Get Teku release version, download URL, and filename.
 
     Args:
-        eth_network: Network name.
+        version_tag: 'LATEST' or a specific version tag.
+        arch_amd64: True if the architecture is amd64/x86_64, False for arm64.
 
     Returns:
-        Installed Teku version.
+        A dictionary with keys 'version', 'download_urls', and 'filenames'.
     """
+    from deploy.common import get_github_release
+    data = get_github_release("ConsenSys/teku", version_tag)
+    tag = data["tag_name"]
+    version = tag.lstrip("v")
+    filename = f"teku-{version}.tar.gz"
+    download_url = f"https://artifacts.consensys.net/public/teku/raw/names/teku.tar.gz/versions/{version}/{filename}"
+    return {"version": tag, "download_urls": [download_url], "filenames": [filename]}
+
+
+
+def download_teku(eth_network: str) -> str:
     # Create User and directories
     setup_client_user_and_dir("consensus", "teku")
     setup_client_user_and_dir("validator", "teku_validator")
 
-    # Define the Github API endpoint to get the latest release
-    url = 'https://api.github.com/repos/Consensys/teku/releases/latest'
-
-    # Send a GET request to the API endpoint
-    response = requests.get(url)
-    response.raise_for_status()
-    data = response.json()
-    teku_version = data['tag_name']
+    # Resolve version and download URL
+    arch_amd64 = get_machine_architecture() == "amd64"
+    info = get_release_info("LATEST", arch_amd64)
+    teku_version = info["version"]
 
     # Validate version for network requirements
     is_valid, error_msg = validate_version_for_network('teku', teku_version, eth_network)
@@ -34,32 +41,8 @@ def download_teku(eth_network: str) -> str:
         print(error_msg)
         exit(1)
 
-    # Consensys now hosts Teku binaries on their own artifacts server
-    v_num = teku_version.lstrip("v")
-    download_url = f"https://artifacts.consensys.net/public/teku/raw/names/teku.tar.gz/versions/{v_num}/teku-{v_num}.tar.gz"
-    filename = f"teku-{v_num}.tar.gz"
-
-    # Verify the artifacts URL exists, if not fallback to GitHub assets
-    try:
-        head_check = requests.head(download_url, allow_redirects=True)
-        if head_check.status_code != 200:
-            download_url = None
-    except requests.RequestException:
-        download_url = None
-
-    if download_url is None:
-        # Fallback to GitHub assets (for older versions or forks)
-        assets = data.get('assets', [])
-        for asset in assets:
-            asset_name = asset['name'].lower()
-            if "teku" in asset_name and asset_name.endswith(".tar.gz") and "source" not in asset_name:
-                download_url = asset['browser_download_url']
-                filename = asset['name']
-                break
-
-    if download_url is None:
-        print(f"Error: Could not find the download URL for Teku {teku_version} on Consensys Artifacts or GitHub.")
-        exit(1)
+    download_url = info["download_urls"][0]
+    filename = info["filenames"][0]
 
     # Download the latest release binary
     download_path = f"{DOWNLOAD_DIR}/{filename}"
