@@ -57,7 +57,7 @@ results_db="$results_dir/results.tmp"
 touch "$results_db"
 
 pids=()
-MAX_CONCURRENT=5
+MAX_CONCURRENT=1
 
 # Helper function to track concurrency
 manage_concurrency() {
