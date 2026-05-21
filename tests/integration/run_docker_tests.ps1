@@ -62,6 +62,22 @@ $customTests = @(
         DockerCmd = "python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Geth --cc Lodestar --network SEPOLIA --config `"Full Node Only`" --test-updates"
     },
     [PSCustomObject]@{
+        Label     = "Updates-Reth-Lighthouse-SEPOLIA"
+        DockerCmd = "python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config `"Full Node Only`" --test-updates"
+    },
+    [PSCustomObject]@{
+        Label     = "Updates-Erigon-Caplin-SEPOLIA"
+        DockerCmd = "python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Erigon --cc Caplin --network SEPOLIA --config `"Full Node Only`" --test-updates"
+    },
+    [PSCustomObject]@{
+        Label     = "Updates-Besu-Teku-SEPOLIA"
+        DockerCmd = "python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Besu --cc Teku --network SEPOLIA --config `"Full Node Only`" --test-updates"
+    },
+    [PSCustomObject]@{
+        Label     = "Updates-Nethermind-Nimbus-EPHEMERY"
+        DockerCmd = "python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Nethermind --cc Nimbus --network EPHEMERY --config `"Solo Staking Node`" --test-updates"
+    },
+    [PSCustomObject]@{
         Label     = "Prysm-Reth-Custom-Setup-SEPOLIA"
         DockerCmd = "python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config `"Custom Setup`" --test-updates"
     }

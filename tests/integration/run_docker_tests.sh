@@ -31,21 +31,25 @@ combos=(
 )
 
 variations=(
-    "--network HOLESKY --mev --config 'Solo Staking Node'"
-    "--network SEPOLIA --config 'Full Node Only'"
-    "--network HOLESKY --mev --config 'Lido CSM Staking Node'"
-    "--network HOLESKY --mev --config 'Lido CSM Validator Client Only' --vc_only_bn_address http://192.168.1.123:5052"
-    "--network HOLESKY --mev --config 'Validator Client Only' --vc_only_bn_address http://192.168.1.123:5052"
-    "--network HOLESKY --mev --config 'Failover Staking Node'"
+    "--network HOLESKY --mev --config 'Solo Staking Node' --test-updates"
+    "--network SEPOLIA --config 'Full Node Only' --test-updates"
+    "--network HOLESKY --mev --config 'Lido CSM Staking Node' --test-updates"
+    "--network HOLESKY --mev --config 'Lido CSM Validator Client Only' --vc_only_bn_address http://192.168.1.123:5052 --test-updates"
+    "--network HOLESKY --mev --config 'Validator Client Only' --vc_only_bn_address http://192.168.1.123:5052 --test-updates"
+    "--network HOLESKY --mev --config 'Failover Staking Node' --test-updates"
 )
 
 # Custom setup tests
 custom_tests=(
-    "Geth-Lighthouse-Custom-Setup-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"
-    "Geth-Teku-FullNodeOnly-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Geth --cc Teku --network SEPOLIA --config 'Full Node Only'"
-    "Nethermind-Grandine-Custom-Setup-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Nethermind --cc Grandine --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"
+    "Geth-Lighthouse-Custom-Setup-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup' --test-updates"
+    "Geth-Teku-FullNodeOnly-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Geth --cc Teku --network SEPOLIA --config 'Full Node Only' --test-updates"
+    "Nethermind-Grandine-Custom-Setup-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Nethermind --cc Grandine --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup' --test-updates"
     "Updates-Geth-Lodestar-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Geth --cc Lodestar --network SEPOLIA --config 'Full Node Only' --test-updates"
-    "Prysm-Reth-Custom-Setup-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config 'Custom Setup'"
+    "Updates-Reth-Lighthouse-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-updates"
+    "Updates-Erigon-Caplin-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Erigon --cc Caplin --network SEPOLIA --config 'Full Node Only' --test-updates"
+    "Updates-Besu-Teku-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Besu --cc Teku --network SEPOLIA --config 'Full Node Only' --test-updates"
+    "Updates-Nethermind-Nimbus-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Nethermind --cc Nimbus --network EPHEMERY --config 'Solo Staking Node' --test-updates"
+    "Prysm-Reth-Custom-Setup-SEPOLIA|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config 'Custom Setup' --test-updates"
 )
 
 # Use a temporary file to store results from parallel processes
@@ -98,7 +102,8 @@ for combo in "${combos[@]}"; do
             sleep 3  # wait for systemd to initialize
             
             # Run the test via exec
-            docker exec "$container_name" python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --combo "$combo" $actual_var > "$log_file" 2>&1
+            # Use eval to properly handle quoted arguments (e.g., --config 'Solo Staking Node')
+            eval "docker exec \"$container_name\" python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --combo \"$combo\" $actual_var > \"$log_file\" 2>&1"
             status=$?
             
             # Always clean up the container

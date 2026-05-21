@@ -7,7 +7,14 @@
 #
 # Made for home and solo stakers 🏠🥩
 
-BASE_DIR=$HOME/git/ethpillar
+# Resolve BASE_DIR relative to this script's location, fallback to legacy path
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/functions.sh" ]]; then
+    BASE_DIR="$SCRIPT_DIR"
+else
+    BASE_DIR="$HOME/git/ethpillar"
+fi
+
 __OTHERTAG=""
 
 # Load functions
@@ -128,14 +135,20 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
+		EXTRACT_DIR="$HOME/lighthouse_temp"
+		mkdir -p "$EXTRACT_DIR"
+		tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
 		rm "$FILENAME"
+		LH_BIN=$(find "$EXTRACT_DIR" -type f -name "lighthouse" | head -n 1)
+		if [ -z "$LH_BIN" ]; then
+			error "❌ Could not find the extracted lighthouse binary"
+		fi
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lighthouse")
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator stop
 		sudo rm -f "$EXEC_PATH"
 		sudo mkdir -p "$(dirname "$EXEC_PATH")"
-		sudo mv "$HOME"/lighthouse "$EXEC_PATH" || error "❌ Unable to move file"
+		sudo mv "$LH_BIN" "$EXEC_PATH" || error "❌ Unable to move file"
 		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator start
 	    ;;
@@ -168,18 +181,21 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
-		local _teku_v_num
-		_teku_v_num=${TAG#v}
-		mv teku-"${_teku_v_num}" teku
+		EXTRACT_DIR="$HOME/teku_temp"
+		mkdir -p "$EXTRACT_DIR"
+		tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
 		rm "$FILENAME"
+		TEKU_BIN=$(find "$EXTRACT_DIR" -type f -name "teku" | head -n 1)
+		if [ -z "$TEKU_BIN" ]; then
+			error "❌ Could not find the extracted teku binary"
+		fi
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/teku/bin/teku")
 		BASE_DIR=$(dirname "$(dirname "$EXEC_PATH")")
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator stop
 		sudo rm -rf "$BASE_DIR"
 		sudo mkdir -p "$(dirname "$BASE_DIR")"
-		sudo mv teku "$BASE_DIR" || error "❌ Unable to move file"
+		sudo mv "$TEKU_BIN" "$EXEC_PATH" || error "❌ Unable to move file"
 		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator start
 		;;
@@ -189,21 +205,26 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
-		mv nimbus-eth2_"${_platform}"_"${_arch}"* nimbus
+		EXTRACT_DIR="$HOME/nimbus_temp"
+		mkdir -p "$EXTRACT_DIR"
+		tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
+		rm "$FILENAME"
+		BN_BIN=$(find "$EXTRACT_DIR" -type f -name "nimbus_beacon_node" | head -n 1)
+		VC_BIN=$(find "$EXTRACT_DIR" -type f -name "nimbus_validator_client" | head -n 1)
+		if [ -z "$BN_BIN" ] || [ -z "$VC_BIN" ]; then
+			error "❌ Could not find the extracted nimbus binaries"
+		fi
 		BN_EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/nimbus_beacon_node")
 		VC_EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/validator.service" "/usr/local/bin/nimbus_validator_client")
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator stop
-		sudo rm -f "$BN_EXEC_PATH"
-		sudo rm -f "$VC_EXEC_PATH"
+		sudo rm -f "$BN_EXEC_PATH" "$VC_EXEC_PATH"
 		sudo mkdir -p "$(dirname "$BN_EXEC_PATH")" "$(dirname "$VC_EXEC_PATH")"
-		sudo mv nimbus/build/nimbus_beacon_node "$BN_EXEC_PATH" || error "❌ Unable to move file"
-		sudo mv nimbus/build/nimbus_validator_client "$VC_EXEC_PATH" || error "❌ Unable to move file"
+		sudo mv "$BN_BIN" "$BN_EXEC_PATH" || error "❌ Unable to move file"
+		sudo mv "$VC_BIN" "$VC_EXEC_PATH" || error "❌ Unable to move file"
 		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator start
-		rm -r nimbus
-		rm "$FILENAME"
+		rm -rf "$EXTRACT_DIR"
 	    ;;
   	  Prysm)
 		cd "$HOME" || true

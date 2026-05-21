@@ -7,7 +7,13 @@
 #
 # Made for home and solo stakers 🏠🥩
 
-BASE_DIR=$HOME/git/ethpillar
+# Resolve BASE_DIR relative to this script's location, fallback to legacy path
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/functions.sh" ]]; then
+    BASE_DIR="$SCRIPT_DIR"
+else
+    BASE_DIR="$HOME/git/ethpillar"
+fi
 
 # Load functions
 # shellcheck disable=SC1091

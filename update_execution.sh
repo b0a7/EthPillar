@@ -7,7 +7,14 @@
 #
 # Made for home and solo stakers 🏠🥩
 
-BASE_DIR=$HOME/git/ethpillar
+# Resolve BASE_DIR relative to this script's location, fallback to legacy path
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/functions.sh" ]]; then
+    BASE_DIR="$SCRIPT_DIR"
+else
+    BASE_DIR="$HOME/git/ethpillar"
+fi
+
 __OTHERTAG=""
 
 # Load functions
@@ -26,7 +33,7 @@ function getCurrentVersion(){
     VERSION="Client not running or still starting up. Unable to query version."
     return
   fi
-  VERSION=$(sed -E 's/.*[v/]([0-9]+\.[0-9]+\.[0-9]+).*/\1/' <<< "$EL_INSTALLED")
+  VERSION=$(sed -E 's/.*[v\/]([0-9]+\.[0-9]+\.[0-9]+).*/\1/' <<< "$EL_INSTALLED")
 }
 
 function getClient(){
@@ -208,14 +215,22 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
+		EXTRACTED_DIR="$HOME/reth_temp"
+		mkdir -p "$EXTRACTED_DIR"
+		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" || error "❌ Unable to untar file"
 		rm "$FILENAME"
+		RETH_BIN=$(find "$EXTRACTED_DIR" -type f \( -name "reth" -o -name "reth-*" \) | head -n 1)
+		if [ -z "$RETH_BIN" ]; then
+			error "❌ Could not find the extracted reth binary"
+		fi
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/reth")
 		sudo systemctl stop execution
 		sudo rm -f "$EXEC_PATH"
 		sudo mkdir -p "$(dirname "$EXEC_PATH")"
-		sudo mv "$HOME"/reth "$EXEC_PATH" || error "❌ Unable to move file"
+		sudo mv "$RETH_BIN" "$EXEC_PATH" || error "❌ Unable to move file"
+		sudo chmod +x "$EXEC_PATH"
 		sudo systemctl start execution
+		rm -rf "$EXTRACTED_DIR"
 	    ;;
 	esac
 }
