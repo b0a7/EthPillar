@@ -112,6 +112,15 @@ function getLatestVersion(){
 	if [[ -z $TAG ]] || [[ $TAG == "null" ]]; then
 		error "❌ Couldn't find the latest version tag"
 	fi
+	case "$CLIENT" in
+	  Lighthouse) CHANGES_URL="https://github.com/sigp/lighthouse/releases" ;;
+	  Lodestar)   CHANGES_URL="https://github.com/ChainSafe/lodestar/releases" ;;
+	  Teku)       CHANGES_URL="https://github.com/ConsenSys/teku/releases" ;;
+	  Nimbus)     CHANGES_URL="https://github.com/status-im/nimbus-eth2/releases" ;;
+	  Prysm)      CHANGES_URL="https://github.com/OffchainLabs/prysm/releases" ;;
+	  Grandine)   CHANGES_URL="https://github.com/grandinetech/grandine/releases" ;;
+	  *)          CHANGES_URL="" ;;
+	esac
 }
 
 function updateClient(){

@@ -120,6 +120,14 @@ function getLatestVersion(){
 	if [[ -z $TAG ]] || [[ $TAG == "null" ]]; then
 		error "❌ Couldn't find the latest version tag"
 	fi
+	case $EL in
+	  Nethermind) CHANGES_URL="https://github.com/NethermindEth/nethermind/releases" ;;
+	  Besu)       CHANGES_URL="https://github.com/besu-eth/besu/releases" ;;
+	  Erigon)     CHANGES_URL="https://github.com/erigontech/erigon/releases" ;;
+	  Geth)       CHANGES_URL="https://github.com/ethereum/go-ethereum/releases" ;;
+	  Reth)       CHANGES_URL="https://github.com/paradigmxyz/reth/releases" ;;
+	  *)          CHANGES_URL="" ;;
+	esac
 }
 
 function updateClient(){
