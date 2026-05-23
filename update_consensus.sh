@@ -294,7 +294,7 @@ function updateJRE(){
 	fi
 }
 
-if [[ "$1" == "--auto" ]]; then
+if [[ "${1:-}" == "--auto" ]]; then
     getClient
     getLatestVersion
     updateClient "LATEST"

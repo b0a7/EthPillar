@@ -127,7 +127,7 @@ function updateClient(){
 	sudo systemctl start mevboost
 }
 
-if [[ "$1" == "--auto" ]]; then
+if [[ "${1:-}" == "--auto" ]]; then
     getLatestVersion
     updateClient "LATEST"
 else
