@@ -190,12 +190,15 @@ class PlotRenderer:
         self._place_label(grid, height - 1, max(0, width - len(f"{x_max:.0f} MGas")), f"{x_max:.0f} MGas")
 
         green, yellow, red = calculate_tier_percentages(point.elapsed_time_ms for point in points)
+        latest_mgas = points[-1].gas_used_mgas if points else 0.0
+        latest_ms = points[-1].elapsed_time_ms if points else 0.0
         footer = [
             f"X-Axis: Gas Used | Range: 0 to {x_max:.2f} MGas",
             f"Y-Axis: Elapsed Time | Range: 0 to {self.y_max_ms:.0f} ms",
             f"Tiers: < 300ms: {green:.1f}% | 300ms - 750ms: {yellow:.1f}% | > 750ms: {red:.1f}%",
             "'#' = Clamped at Max",
         ]
+        summary_line = f"Plot updated with {len(points)} points - Latest: {latest_mgas:.2f} MGas, {latest_ms:.1f}ms"
 
         if RICH_AVAILABLE:
             text = Text()
@@ -217,6 +220,7 @@ class PlotRenderer:
                     text.append("\n")
                 else:
                     text.append(line + "\n")
+            text.append(summary_line + "\n")
             return text
 
         lines = ["-" * (width + 2)]
@@ -224,6 +228,7 @@ class PlotRenderer:
             lines.append("|" + "".join(char for char, _style in row) + "|")
         lines.append("-" * (width + 2))
         lines.extend(footer)
+        lines.append(summary_line)
         return "\n".join(lines)
 
     def _x_axis_max(self, points: Sequence[ProcessingPoint]) -> float:
@@ -334,5 +339,3 @@ async def consume_points(
             width, height = compute_plot_dimensions()
             os.system("cls" if platform.system() == "Windows" else "clear")
             print(renderer.render(state, width, height))
-            if item is not REDRAW_REQUESTED:
-                print(f"Latest: {item.gas_used_mgas:.2f} MGas, {item.elapsed_time_ms:.1f} ms")
