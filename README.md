@@ -30,13 +30,14 @@ New users can skip this step — the installer below already points to this fork
 
 ---
 
-## ✨ v5.4.6 — Temporary Revert of PR #10
+## ✨ v5.4.7 — Execution Client Fix + Real-time Plotting
 
-**Important**: Due to a regression in Execution Client updates (Nethermind, Besu, etc.), we have temporarily reverted PR #10.
+### Highlights
+- Fixed critical regression with **Execution Client** updates and downgrades (Nethermind, Besu, etc.)
+- Added **real-time execution time plotting** in Logging & Monitoring section
+- Improved reliability of folder-based client handling
 
-**Affected users**: If you updated Execution Clients recently and they are not starting, please reinstall them via EthPillar → Execution Client → "Update to latest release".
-
-We will re-introduce the improvements after fixing the update/downgrade path.
+Thanks to **@b0a7** for PR #14 (fix) and PR #11 (charting)!
 
 ---
 
