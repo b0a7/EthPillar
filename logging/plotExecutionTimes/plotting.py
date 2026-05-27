@@ -38,7 +38,7 @@ except ImportError:
     RICH_AVAILABLE = False
 
 
-DEFAULT_Y_MAX_MS = 1500.0
+DEFAULT_Y_MAX_MS = 1000.0
 
 
 def calculate_tier_percentages(values: Iterable[float]) -> tuple[float, float, float]:
