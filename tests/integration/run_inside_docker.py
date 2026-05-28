@@ -266,52 +266,67 @@ def check_service_start(service_name: str) -> bool:
         # Step 3: Wait and check health
         import time
         
-        # Initial wait to let it crash if it's going to crash immediately
-        time.sleep(3)
+        target_port = None
+        if service_name == "execution": target_port = 30303
+        elif service_name == "consensus": target_port = 9000
+        elif service_name == "mevboost": target_port = 18550
+
+        print(f"  [systemd] Polling {service_name} health for up to 60 seconds...")
         
         def get_prop(prop):
             res = subprocess.run(["systemctl", "show", "-p", prop, "--value", service_name], capture_output=True, text=True)
             return res.stdout.strip()
-            
-        active_state = get_prop("ActiveState")
-        if active_state not in ("active", "activating"):
-            print(f"  ❌ Service {service_name} is not active (state: {active_state})")
-            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
-            return False
-            
-        exec_main_status = get_prop("ExecMainStatus")
-        if exec_main_status == "203":
-            print(f"  ❌ Service {service_name} failed with exit code 203 (likely bad binary path or permissions)")
-            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
-            return False
-            
-        # Give it a bit more time to see if it enters a crash loop
-        time.sleep(5)
-        
-        n_restarts = get_prop("NRestarts")
-        if n_restarts and n_restarts != "0":
-            print(f"  ❌ Service {service_name} is crash-looping (NRestarts: {n_restarts})")
-            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
-            return False
-            
-        sub_state = get_prop("SubState")
-        if sub_state in ("dead", "failed", "auto-restart"):
-            print(f"  ❌ Service {service_name} is in bad sub-state: {sub_state}")
-            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
-            return False
-            
-        main_pid = get_prop("MainPID")
-        if main_pid == "0":
-            print(f"  ❌ Service {service_name} has no running MainPID")
-            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
-            return False
 
-        print(f"  ✅ Service {service_name} is healthy (active, PID: {main_pid}, 0 restarts)")
+        max_attempts = 12
+        for attempt in range(1, max_attempts + 1):
+            time.sleep(5)
+            
+            active_state = get_prop("ActiveState")
+            if active_state not in ("active", "activating"):
+                print(f"  ❌ Service {service_name} is not active (state: {active_state})")
+                subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+                return False
+                
+            exec_main_status = get_prop("ExecMainStatus")
+            if exec_main_status == "203":
+                print(f"  ❌ Service {service_name} failed with exit code 203 (likely bad binary path or permissions)")
+                subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+                return False
+                
+            n_restarts = get_prop("NRestarts")
+            if n_restarts and n_restarts != "0":
+                print(f"  ❌ Service {service_name} is crash-looping (NRestarts: {n_restarts})")
+                subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+                return False
+                
+            sub_state = get_prop("SubState")
+            if sub_state in ("dead", "failed", "auto-restart"):
+                print(f"  ❌ Service {service_name} is in bad sub-state: {sub_state}")
+                subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+                return False
+                
+            main_pid = get_prop("MainPID")
+            if main_pid == "0":
+                print(f"  ❌ Service {service_name} has no running MainPID")
+                subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+                return False
 
-        if not check_service_journal_errors(service_name):
-            return False
+            if target_port:
+                try:
+                    result = subprocess.run(["ss", "-lntu"], capture_output=True, text=True)
+                    if f":{target_port}" in result.stdout:
+                        print(f"  ✅ Service {service_name} is healthy (active, PID: {main_pid}, bound to port {target_port} after {attempt*5}s)")
+                        return not check_service_journal_errors(service_name) is False
+                except Exception:
+                    pass # ignore ss errors
+            else:
+                if attempt >= 3:
+                    print(f"  ✅ Service {service_name} is healthy (active, PID: {main_pid}, 15s stability check passed)")
+                    return not check_service_journal_errors(service_name) is False
 
-        return True
+        print(f"  ❌ Service {service_name} timed out waiting for port {target_port} to bind after 60s")
+        subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+        return False
 
     else:
         # Fallback: parse ExecStart and do a timed process check (original behaviour)
