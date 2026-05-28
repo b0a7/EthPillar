@@ -9,8 +9,45 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
         import hashlib
         import tempfile
         import shutil
+        import subprocess
 
         original_get: Callable = requests.get
+        original_subprocess_run = subprocess.run
+
+        def hook_subprocess_run(*args, **kwargs):
+            try:
+                import extract_cache
+                return extract_cache.intercept_subprocess_run(*args, **kwargs)
+            except ImportError:
+                return original_subprocess_run(*args, **kwargs)
+
+        subprocess.run = hook_subprocess_run
+
+        def validate_cache(url: str, cache_file: str, is_github_api: bool) -> bool:
+            """Return True if cache is valid, False if it should be invalidated."""
+            if not os.path.exists(cache_file):
+                return False
+            
+            # API responses are small, assume valid to avoid rate limit
+            if is_github_api:
+                return True
+                
+            # For binary downloads, do a HEAD request to check size
+            try:
+                # We use original requests API to avoid intercepting our own HEAD request
+                head_resp = requests.head(url, allow_redirects=True, timeout=5)
+                if head_resp.status_code == 200:
+                    remote_size = head_resp.headers.get('content-length')
+                    local_size = os.path.getsize(cache_file)
+                    if remote_size and int(remote_size) != local_size:
+                        print(f"[CACHE] Invalidation: Size mismatch for {url} (Local: {local_size}, Remote: {remote_size})")
+                        return False
+            except Exception as e:
+                print(f"[CACHE] Warning: Could not validate cache for {url}: {e}")
+                # If we can't validate (e.g., offline), assume valid if it exists and is >0 bytes
+                return os.path.getsize(cache_file) > 0
+                
+            return True
 
         def cached_get(url: str, *args: Any, **kwargs: Any) -> Any:
             """
@@ -32,7 +69,7 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
                 prefix = url.split("/")[-1] if is_github_download else url.split("/")[-3]
                 cache_file = os.path.join(cache_dir, f"{prefix}_{key}{ext}")
                 
-                if os.path.exists(cache_file):
+                if validate_cache(url, cache_file, is_github_api):
                     print(f"[CACHE] Hit for {url}")
                     if is_github_api:
                         class MockResponse:

@@ -13,15 +13,41 @@ function check_binary() {
     echo "✅ Binary verified: $path"
 }
 
-function check_service_active() {
+function check_service_health() {
     local service="$1"
-    local state
-    state=$(systemctl is-active "$service" 2>/dev/null || true)
+    
+    # Wait briefly for service to start and potentially crash
+    sleep 5
+    
+    local state=$(systemctl show -p ActiveState --value "$service" 2>/dev/null || true)
     if [[ "$state" != "active" && "$state" != "activating" ]]; then
         echo "❌ Service $service is not active after update (state: $state)"
+        journalctl -u "$service" --no-pager -n 20
         return 1
     fi
-    echo "✅ Service active: $service"
+    
+    local exec_status=$(systemctl show -p ExecMainStatus --value "$service" 2>/dev/null || true)
+    if [[ "$exec_status" == "203" ]]; then
+        echo "❌ Service $service failed with exit code 203 (likely bad binary path or permissions)"
+        journalctl -u "$service" --no-pager -n 20
+        return 1
+    fi
+    
+    local restarts=$(systemctl show -p NRestarts --value "$service" 2>/dev/null || true)
+    if [[ -n "$restarts" && "$restarts" != "0" ]]; then
+        echo "❌ Service $service is crash-looping after update (NRestarts: $restarts)"
+        journalctl -u "$service" --no-pager -n 20
+        return 1
+    fi
+    
+    local main_pid=$(systemctl show -p MainPID --value "$service" 2>/dev/null || true)
+    if [[ "$main_pid" == "0" ]]; then
+        echo "❌ Service $service has no running MainPID after update"
+        journalctl -u "$service" --no-pager -n 20
+        return 1
+    fi
+
+    echo "✅ Service $service is healthy after update (active, PID: $main_pid, 0 restarts)"
 }
 
 echo "========================================="
@@ -31,11 +57,24 @@ echo "========================================="
 # Test Execution Client Update
 if systemctl list-unit-files execution.service > /dev/null 2>&1; then
     echo "Testing execution client update..."
+    
+    # Capture old PID
+    old_pid=$(systemctl show -p MainPID --value execution 2>/dev/null || echo "0")
+    
     bash /ethpillar/update_execution.sh --auto
+    
     # Verify binary and service after update
     exec_path=$(grep -E "^ExecStart=" /etc/systemd/system/execution.service | head -n1 | sed 's/^ExecStart=//' | awk '{print $1}')
     check_binary "$exec_path"
-    check_service_active execution
+    check_service_health execution
+    
+    # Verify PID changed
+    new_pid=$(systemctl show -p MainPID --value execution 2>/dev/null || echo "0")
+    if [[ "$old_pid" != "0" && "$old_pid" == "$new_pid" ]]; then
+        echo "❌ Execution service PID did not change ($old_pid). Service was not restarted!"
+        exit 1
+    fi
+    
     echo "✅ Execution client update completed successfully."
 else
     echo "No execution client installed. Skipping."
@@ -44,17 +83,34 @@ fi
 # Test Consensus Client Update
 if systemctl list-unit-files consensus.service > /dev/null 2>&1 || systemctl list-unit-files validator.service > /dev/null 2>&1; then
     echo "Testing consensus/validator client update..."
+    
+    old_cc_pid=$(systemctl show -p MainPID --value consensus 2>/dev/null || echo "0")
+    old_vc_pid=$(systemctl show -p MainPID --value validator 2>/dev/null || echo "0")
+    
     bash /ethpillar/update_consensus.sh --auto
+    
     # Verify binary and service after update
     if systemctl list-unit-files consensus.service > /dev/null 2>&1; then
         exec_path=$(grep -E "^ExecStart=" /etc/systemd/system/consensus.service | head -n1 | sed 's/^ExecStart=//' | awk '{print $1}')
         check_binary "$exec_path"
-        check_service_active consensus
+        check_service_health consensus
+        
+        new_cc_pid=$(systemctl show -p MainPID --value consensus 2>/dev/null || echo "0")
+        if [[ "$old_cc_pid" != "0" && "$old_cc_pid" == "$new_cc_pid" ]]; then
+            echo "❌ Consensus service PID did not change. Service was not restarted!"
+            exit 1
+        fi
     fi
     if systemctl list-unit-files validator.service > /dev/null 2>&1; then
         exec_path=$(grep -E "^ExecStart=" /etc/systemd/system/validator.service | head -n1 | sed 's/^ExecStart=//' | awk '{print $1}')
         check_binary "$exec_path"
-        check_service_active validator
+        check_service_health validator
+        
+        new_vc_pid=$(systemctl show -p MainPID --value validator 2>/dev/null || echo "0")
+        if [[ "$old_vc_pid" != "0" && "$old_vc_pid" == "$new_vc_pid" ]]; then
+            echo "❌ Validator service PID did not change. Service was not restarted!"
+            exit 1
+        fi
     fi
     echo "✅ Consensus client update completed successfully."
 else
@@ -64,10 +120,21 @@ fi
 # Test MEV-Boost Update
 if systemctl list-unit-files mevboost.service > /dev/null 2>&1; then
     echo "Testing MEV-Boost update..."
+    
+    old_mev_pid=$(systemctl show -p MainPID --value mevboost 2>/dev/null || echo "0")
+    
     bash /ethpillar/update_mevboost.sh --auto
+    
     exec_path=$(grep -E "^ExecStart=" /etc/systemd/system/mevboost.service | head -n1 | sed 's/^ExecStart=//' | awk '{print $1}')
     check_binary "$exec_path"
-    check_service_active mevboost
+    check_service_health mevboost
+    
+    new_mev_pid=$(systemctl show -p MainPID --value mevboost 2>/dev/null || echo "0")
+    if [[ "$old_mev_pid" != "0" && "$old_mev_pid" == "$new_mev_pid" ]]; then
+        echo "❌ MEV-Boost service PID did not change. Service was not restarted!"
+        exit 1
+    fi
+    
     echo "✅ MEV-Boost update completed successfully."
 else
     echo "No MEV-Boost installed. Skipping."

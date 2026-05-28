@@ -235,15 +235,7 @@ def check_service_journal_errors(service_name: str) -> bool:
 
 
 def check_service_start(service_name: str) -> bool:
-    """Validates the service file via systemd and verifies it can start.
-    
-    With real systemd (Dockerfile uses systemd as PID 1):
-      1. daemon-reload to pick up the file and catch syntax errors
-      2. start the service
-      3. verify it is active (running)
-      4. stop the service cleanly
-    Without systemd (fallback): parse ExecStart and do a timed process check.
-    """
+    """Validates the service file via systemd and verifies it can start securely."""
     service_path = f"/etc/systemd/system/{service_name}.service"
     if not os.path.exists(service_path):
         return False
@@ -268,29 +260,57 @@ def check_service_start(service_name: str) -> bool:
         )
         if result.returncode != 0:
             print(f"  ❌ systemctl start {service_name} failed:\n{result.stderr}")
-            # Dump the journal for debugging
             subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
             return False
 
-        # Step 3: wait briefly and check active state
+        # Step 3: Wait and check health
         import time
+        
+        # Initial wait to let it crash if it's going to crash immediately
         time.sleep(3)
-        result = subprocess.run(
-            ["systemctl", "is-active", service_name],
-            capture_output=True, text=True
-        )
-        active_state = result.stdout.strip()
+        
+        def get_prop(prop):
+            res = subprocess.run(["systemctl", "show", "-p", prop, "--value", service_name], capture_output=True, text=True)
+            return res.stdout.strip()
+            
+        active_state = get_prop("ActiveState")
         if active_state not in ("active", "activating"):
             print(f"  ❌ Service {service_name} is not active (state: {active_state})")
             subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
             return False
-        print(f"  ✅ Service {service_name} is active")
+            
+        exec_main_status = get_prop("ExecMainStatus")
+        if exec_main_status == "203":
+            print(f"  ❌ Service {service_name} failed with exit code 203 (likely bad binary path or permissions)")
+            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+            return False
+            
+        # Give it a bit more time to see if it enters a crash loop
+        time.sleep(5)
+        
+        n_restarts = get_prop("NRestarts")
+        if n_restarts and n_restarts != "0":
+            print(f"  ❌ Service {service_name} is crash-looping (NRestarts: {n_restarts})")
+            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+            return False
+            
+        sub_state = get_prop("SubState")
+        if sub_state in ("dead", "failed", "auto-restart"):
+            print(f"  ❌ Service {service_name} is in bad sub-state: {sub_state}")
+            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+            return False
+            
+        main_pid = get_prop("MainPID")
+        if main_pid == "0":
+            print(f"  ❌ Service {service_name} has no running MainPID")
+            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
+            return False
+
+        print(f"  ✅ Service {service_name} is healthy (active, PID: {main_pid}, 0 restarts)")
 
         if not check_service_journal_errors(service_name):
             return False
 
-        # Skip stopping the service - leave it running for the test
-        # The container will be destroyed after the test anyway
         return True
 
     else:
