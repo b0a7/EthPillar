@@ -81,6 +81,11 @@ upgrade_tests=(
     "Upgrade-Geth-Lodestar|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Geth --cc Lodestar --network SEPOLIA --config 'Full Node Only' --test-updates"
 )
 
+# Client switching tests
+switch_tests=(
+    "Switch-Reth-Lighthouse-to-Besu-Teku|python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-switching"
+)
+
 # Use a temporary file to store results from parallel processes
 results_db="$results_dir/results.tmp"
 touch "$results_db"
@@ -196,6 +201,13 @@ for custom in "${upgrade_tests[@]}"; do
     label="${custom%%|*}"
     cmd="${custom#*|}"
     run_test "$label" "$cmd" "Upgrade" ""
+done
+
+# 4. Run switch tests
+for custom in "${switch_tests[@]}"; do
+    label="${custom%%|*}"
+    cmd="${custom#*|}"
+    run_test "$label" "$cmd" "Switch" ""
 done
 
 # Wait for any remaining parallel jobs to finish

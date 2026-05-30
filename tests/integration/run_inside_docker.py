@@ -525,6 +525,7 @@ if __name__ == "__main__":
     parser.add_argument('--network', type=str, default='SEPOLIA')
     parser.add_argument('--vc_only_bn_address', type=str, default="http://192.168.1.123:5052")
     parser.add_argument('--test-updates', action='store_true', default=False)
+    parser.add_argument('--test-switching', action='store_true', default=False)
     parser.add_argument('--service', type=str, default="", help='Service name for verify-service-health')
     args = parser.parse_args()
 
@@ -553,6 +554,11 @@ if __name__ == "__main__":
             print(" Running Updates Integration Test...")
             print("=========================================")
             subprocess.run(["bash", "/ethpillar/tests/integration/test_updates.sh"], check=True)
+        if args.test_switching:
+            print("\n=========================================")
+            print(" Running Client Switching Integration Test...")
+            print("=========================================")
+            subprocess.run(["bash", "/ethpillar/tests/integration/test_switching.sh"], check=True)
         print(f"\n🐳 Integration Test PASSED for {args.combo or args.ec}.")
     finally:
         for f in [".env"] + [p for p in os.listdir(".") if p.endswith((".tar.gz", ".tar.xz", ".zip"))]:
