@@ -15,69 +15,8 @@ function check_binary() {
 
 function check_service_health() {
     local service="$1"
-    
-    local target_port=""
-    if [[ "$service" == "execution" ]]; then target_port="30303"
-    elif [[ "$service" == "consensus" ]]; then target_port="9000"
-    elif [[ "$service" == "mevboost" ]]; then target_port="18550"
-    fi
-    
-    echo "  [systemd] Polling $service health for up to 60 seconds after update..."
-    
-    for attempt in {1..12}; do
-        sleep 5
-        
-        local state=$(systemctl show -p ActiveState --value "$service" 2>/dev/null || true)
-        if [[ "$state" != "active" && "$state" != "activating" ]]; then
-            echo "❌ Service $service is not active after update (state: $state)"
-            journalctl -u "$service" --no-pager -n 20
-            return 1
-        fi
-        
-        local exec_status=$(systemctl show -p ExecMainStatus --value "$service" 2>/dev/null || true)
-        if [[ "$exec_status" == "203" ]]; then
-            echo "❌ Service $service failed with exit code 203 (likely bad binary path or permissions)"
-            journalctl -u "$service" --no-pager -n 20
-            return 1
-        fi
-        
-        local restarts=$(systemctl show -p NRestarts --value "$service" 2>/dev/null || true)
-        if [[ -n "$restarts" && "$restarts" != "0" ]]; then
-            echo "❌ Service $service is crash-looping after update (NRestarts: $restarts)"
-            journalctl -u "$service" --no-pager -n 20
-            return 1
-        fi
-        
-        local sub_state=$(systemctl show -p SubState --value "$service" 2>/dev/null || true)
-        if [[ "$sub_state" == "dead" || "$sub_state" == "failed" || "$sub_state" == "auto-restart" ]]; then
-            echo "❌ Service $service is in bad sub-state after update: $sub_state"
-            journalctl -u "$service" --no-pager -n 20
-            return 1
-        fi
-        
-        local main_pid=$(systemctl show -p MainPID --value "$service" 2>/dev/null || true)
-        if [[ "$main_pid" == "0" ]]; then
-            echo "❌ Service $service has no running MainPID after update"
-            journalctl -u "$service" --no-pager -n 20
-            return 1
-        fi
-
-        if [[ -n "$target_port" ]]; then
-            if ss -lntu 2>/dev/null | grep -q ":$target_port "; then
-                echo "✅ Service $service is healthy (active, PID: $main_pid, bound to port $target_port after $((attempt*5))s)"
-                return 0
-            fi
-        else
-            if [[ "$attempt" -ge 3 ]]; then
-                echo "✅ Service $service is healthy (active, PID: $main_pid, 15s stability check passed)"
-                return 0
-            fi
-        fi
-    done
-    
-    echo "❌ Service $service timed out waiting for port $target_port to bind after 60s"
-    journalctl -u "$service" --no-pager -n 20
-    return 1
+    echo "  [Integration] Delegating health check for $service to run_inside_docker.py..."
+    python3 /ethpillar/tests/integration/run_inside_docker.py verify-service-health --service "$service"
 }
 
 echo "========================================="

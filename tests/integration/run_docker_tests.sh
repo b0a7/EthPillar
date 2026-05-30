@@ -30,11 +30,14 @@ mkdir -p "$results_dir"
 echo "Results will be stored in: $results_dir"
 echo "Max concurrent tests: $MAX_CONCURRENT"
 
-# Clean up orphaned cache temp files
+# Clean up orphaned temp files and stale cache files
 cache_dir="$(pwd)/tests/integration/cache"
 if [ -d "$cache_dir" ]; then
     echo "Cleaning up orphaned cache temp files..."
     find "$cache_dir" -name "tmp*" -type f -delete 2>/dev/null || true
+    echo "Cleaning up stale cache files older than 7 days..."
+    find "$cache_dir" -type f -mtime +7 -delete 2>/dev/null || true
+    find "$cache_dir" -type d -empty -delete 2>/dev/null || true
 fi
 
 # Build the image
@@ -104,8 +107,12 @@ run_test() {
     local label="$1"
     local run_cmd="$2"
     local display_var="$3"
+    local log_suffix="$4"  # Optional suffix to disambiguate log names (e.g. network)
     
     local log_name="$(echo "$label" | sed 's/[^a-zA-Z0-9-]/_/g' | tr -s '_')"
+    if [ -n "$log_suffix" ]; then
+        log_name="${log_name}_${log_suffix}"
+    fi
     local log_file="$results_dir/${log_name}.log"
     local container_name="ep-test-$(echo "$log_name" | tr -dc '[:alnum:]-' | head -c 60)"
 
@@ -158,20 +165,22 @@ run_test() {
 # 1. Run combos and variations matrix
 for combo in "${combos[@]}"; do
     for var in "${variations[@]}"; do
-        # Skip caplin for Holesky as it's not supported
+        # Skip Caplin-Erigon on Holesky — not supported, exclude from matrix entirely
         if [ "$combo" == "Caplin-Erigon" ] && [[ "$var" == *"HOLESKY"* ]]; then
-            echo "Skipping Holesky test for Caplin ($combo) as it's unsupported."
-            echo "SKIPPED|$combo|$var|-|0s" >> "$results_db"
+            echo "Skipping unsupported combination: $combo on HOLESKY (excluded from matrix)"
             continue
         fi
 
-        # Switch Nimbus/Nethermind to Ephemery
+        # Switch Nimbus/Nethermind HOLESKY variation to EPHEMERY (Holesky not supported)
         actual_var="$var"
         if [ "$combo" == "Nimbus-Nethermind" ] && [[ "$var" == *"HOLESKY"* ]]; then
             actual_var="${var/HOLESKY/EPHEMERY}"
         fi
+
+        # Extract network name for log suffix to avoid collisions between variations
+        local_network=$(echo "$actual_var" | grep -oP '(?<=--network )\S+')
         
-        run_test "$combo" "python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --combo \"$combo\" $actual_var" "$actual_var"
+        run_test "$combo" "python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --combo \"$combo\" $actual_var" "$actual_var" "$local_network"
     done
 done
 
@@ -179,14 +188,14 @@ done
 for custom in "${custom_tests[@]}"; do
     label="${custom%%|*}"
     cmd="${custom#*|}"
-    run_test "$label" "$cmd" "Custom"
+    run_test "$label" "$cmd" "Custom" ""
 done
 
 # 3. Run upgrade tests
 for custom in "${upgrade_tests[@]}"; do
     label="${custom%%|*}"
     cmd="${custom#*|}"
-    run_test "$label" "$cmd" "Upgrade"
+    run_test "$label" "$cmd" "Upgrade" ""
 done
 
 # Wait for any remaining parallel jobs to finish
