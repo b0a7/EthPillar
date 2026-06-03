@@ -41,17 +41,9 @@ pwsh -ExecutionPolicy Bypass -File .\tests\integration\run_docker_tests.ps1
 ```
 
 ### On Linux/macOS (Manual)
-You can run individual integration tests directly:
-To run a specific test scenario with full systemd validation:
+You can run the full integration test suite directly:
 ```bash
-# Start a persistent container
-docker run -d --name ep-test --privileged --cgroupns=host --tmpfs /run --tmpfs /run/lock -v "${PWD}:/ethpillar" ethpillar-test
-
-# Execute the test script inside the container
-docker exec ep-test python3 /ethpillar/tests/integration/run_inside_docker.py deploy/deploy-node.py --combo Lighthouse-Reth --config "Solo Staking Node" --network SEPOLIA
-
-# Clean up
-docker rm -f ep-test
+bash tests/integration/run_docker_tests.sh
 ```
 
 ## Test Structure

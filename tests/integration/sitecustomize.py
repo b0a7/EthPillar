@@ -12,16 +12,6 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
         import subprocess
 
         original_get: Callable = requests.get
-        original_subprocess_run = subprocess.run
-
-        def hook_subprocess_run(*args, **kwargs):
-            try:
-                import extract_cache
-                return extract_cache.intercept_subprocess_run(*args, **kwargs)
-            except ImportError:
-                return original_subprocess_run(*args, **kwargs)
-
-        subprocess.run = hook_subprocess_run
 
         def validate_cache(url: str, cache_file: str, is_github_api: bool) -> bool:
             """Return True if cache is valid, False if it should be invalidated."""

@@ -68,13 +68,7 @@ def get_binary_path(binary_name: str) -> Optional[str]:
 
 
 def check_binary_permissions(binary_name: str) -> bool:
-    """Check that the binary exists and is executable with mode 755.
-    
-    Note: In test environments using the extract cache, files may be owned by the
-    current process user (ubuntu) rather than root — this is a known side-effect of
-    the volume-mounted cache. We warn about non-root ownership but do not fail the
-    test for it, since the more important check is that the binary is executable.
-    """
+    """Check that the binary exists and is owned by root with mode 755."""
     path = get_binary_path(binary_name)
     if not path:
         print(f"  ❌ Permissions: {binary_name} not found to check perms")
@@ -92,16 +86,14 @@ def check_binary_permissions(binary_name: str) -> bool:
     ok_owner = (owner == 'root')
     ok_mode = (mode == 0o755)
     if not ok_owner:
-        # Volume-mounted cache files may be owned by the process user — warn but don't fail
-        print(f"  ⚠️  Binary owner for {binary_name} is {owner} (expected root; may be cache artifact)")
+        print(f"  ❌ Binary owner for {binary_name} is {owner}, expected root")
     if not ok_mode:
         print(f"  ❌ Binary mode for {binary_name} is {oct(mode)}, expected 0o755")
-        return False
-    if ok_owner:
+    
+    if ok_owner and ok_mode:
         print(f"  ✅ Binary perms OK: {binary_name} -> {real} ({owner}, {oct(mode)})")
-    else:
-        print(f"  ✅ Binary mode OK: {binary_name} -> {real} (mode {oct(mode)}, owner warning above)")
-    return ok_mode  # Mode is the critical check; ownership warning is informational
+        return True
+    return False
 
 def check_service(service_name: str) -> bool:
     """Checks if a systemd service file exists."""
@@ -502,7 +494,7 @@ def check_service_start(service_name: str) -> bool:
             print(f"  ❌ Failed to run service: {e}")
             return False
 
-def check_p2p_ports(expected_services: List[str]) -> bool:
+def check_p2p_ports(expected_services: List[str], has_caplin: bool = False) -> bool:
     """Check that expected client P2P ports are listening after services start.
 
     Checks the standard EL (30303) and CL (9000) P2P ports over both TCP and UDP
@@ -516,7 +508,7 @@ def check_p2p_ports(expected_services: List[str]) -> bool:
     port_checks = []
     if "execution" in expected_services:
         port_checks.append((30303, "Execution P2P"))
-    if "consensus" in expected_services:
+    if "consensus" in expected_services or has_caplin:
         port_checks.append((9000, "Consensus P2P"))
 
     if not port_checks:
@@ -548,6 +540,18 @@ def check_p2p_ports(expected_services: List[str]) -> bool:
 
 def verify(args: Any):
     print(f"\n🔍 Verifying Artifacts...")
+    if args.test_switching:
+        print("  🔄 Updating expected artifacts for post-switch validation...")
+        try:
+            res_ec = subprocess.run("cat /etc/systemd/system/execution.service | grep Description= | cut -d'=' -f2 | awk '{print $1}'", shell=True, capture_output=True, text=True)
+            new_ec = res_ec.stdout.strip().lower()
+            res_cc = subprocess.run("cat /etc/systemd/system/consensus.service | grep Description= | cut -d'=' -f2 | awk '{print $1}'", shell=True, capture_output=True, text=True)
+            new_cc = res_cc.stdout.strip().lower()
+            if new_ec: args.ec = new_ec
+            if new_cc: args.cc = new_cc
+            if new_ec and new_cc: args.combo = f"{new_cc}-{new_ec}"
+        except Exception:
+            pass
     expected_binaries, expected_users, expected_services = parse_expected_artifacts(args)
     success = True
     for b in expected_binaries:
@@ -604,9 +608,8 @@ def verify(args: Any):
             success = False
 
     # Advisory port checks — runs after services are started
-    is_validator_only = "Validator Client Only" in args.config
     if not is_validator_only:
-        check_p2p_ports(expected_services)
+        check_p2p_ports(expected_services, has_caplin=("caplin" in combo or "caplin" in cc))
 
     return success
 

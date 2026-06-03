@@ -245,6 +245,18 @@ def generate_html_report(tasks, results_dir, total_duration, timestamp, commit):
         a {{ color: #007bff; text-decoration: none; }}
         a:hover {{ text-decoration: underline; }}
         .footer {{ margin-top: 30px; font-size: 0.9em; color: #6c757d; text-align: center; }}
+        @media (prefers-color-scheme: dark) {{
+            body {{ background: #121212; color: #e0e0e0; }}
+            .container {{ background: #1e1e1e; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }}
+            h1 {{ color: #4dabf7; border-bottom: 2px solid #333; }}
+            th {{ background-color: #2c2c2c; color: #e0e0e0; border: 1px solid #444; }}
+            td {{ border: 1px solid #444; }}
+            tr:hover {{ background-color: #2a2a2a; }}
+            .status-pass {{ color: #4cd964; }}
+            .status-fail {{ color: #ff3b30; }}
+            .status-skipped {{ color: #ffcc00; }}
+            a {{ color: #4dabf7; }}
+        }}
     </style>
 </head>
 <body>
