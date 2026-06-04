@@ -517,8 +517,11 @@ def check_p2p_ports(expected_services: List[str], has_caplin: bool = False) -> b
     if not port_checks:
         return True
 
-    # Give services a moment to bind their ports after startup
-    time.sleep(5)
+    # Give services a moment to bind their ports after startup.
+    # Caplin (integrated CL in Erigon) binds port 9000 separately from port 30303
+    # and may need extra time after the execution service health check returns.
+    sleep_time = 30 if has_caplin else 5
+    time.sleep(sleep_time)
 
     print("\n🔌 Checking P2P listening ports...")
     try:
@@ -543,18 +546,6 @@ def check_p2p_ports(expected_services: List[str], has_caplin: bool = False) -> b
 
 def verify(args: Any):
     print(f"\n🔍 Verifying Artifacts...")
-    if args.test_switching:
-        print("  🔄 Updating expected artifacts for post-switch validation...")
-        try:
-            res_ec = subprocess.run("cat /etc/systemd/system/execution.service | grep Description= | cut -d'=' -f2 | awk '{print $1}'", shell=True, capture_output=True, text=True)
-            new_ec = res_ec.stdout.strip().lower()
-            res_cc = subprocess.run("cat /etc/systemd/system/consensus.service | grep Description= | cut -d'=' -f2 | awk '{print $1}'", shell=True, capture_output=True, text=True)
-            new_cc = res_cc.stdout.strip().lower()
-            if new_ec: args.ec = new_ec
-            if new_cc: args.cc = new_cc
-            if new_ec and new_cc: args.combo = f"{new_cc}-{new_ec}"
-        except Exception:
-            pass
     expected_binaries, expected_users, expected_services = parse_expected_artifacts(args)
     success = True
     for b in expected_binaries:
@@ -661,6 +652,25 @@ if __name__ == "__main__":
             print(" Running Client Switching Integration Test...")
             print("=========================================")
             subprocess.run(["bash", "/ethpillar/tests/integration/test_switching.sh"], check=True)
+            # After the switch completes, re-read the new service files and run a full verify
+            # to confirm binary ownership, permissions, and health of the new clients.
+            print("\n=========================================")
+            print(" Post-Switch Full Verification...")
+            print("=========================================")
+            try:
+                res_ec = subprocess.run("cat /etc/systemd/system/execution.service | grep Description= | cut -d'=' -f2 | awk '{print $1}'", shell=True, capture_output=True, text=True)
+                new_ec = res_ec.stdout.strip().lower()
+                res_cc = subprocess.run("cat /etc/systemd/system/consensus.service | grep Description= | cut -d'=' -f2 | awk '{print $1}'", shell=True, capture_output=True, text=True)
+                new_cc = res_cc.stdout.strip().lower()
+                if new_ec: args.ec = new_ec
+                if new_cc: args.cc = new_cc
+                if new_ec and new_cc: args.combo = f"{new_cc}-{new_ec}"
+                # Clear combo-derived values to force re-detection
+                args.test_switching = False  # Prevent recursive artifact update
+            except Exception:
+                pass
+            if not verify(args):
+                sys.exit(1)
         print(f"\n🐳 Integration Test PASSED for {args.combo or args.ec}.")
     finally:
         restore_workspace_env(env_snapshots)

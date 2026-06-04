@@ -50,18 +50,25 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
             
             is_github_api = url.startswith("https://api.github.com")
             is_github_download = "github.com" in url and ("releases/download" in url or "archive" in url)
+            # Geth provides a downloads page and stores release assets on gethstore.blob.core.windows.net
+            is_geth_page = url.startswith("https://geth.ethereum.org/downloads")
+            is_geth_asset = "gethstore.blob.core.windows.net" in url or "geth.ethereum.org" in url and ("/download" in url or "/builds/" in url)
             
-            if is_github_api or is_github_download:
+            if is_github_api or is_github_download or is_geth_page or is_geth_asset:
                 key = hashlib.md5(url.encode()).hexdigest()
-                ext = ".json" if is_github_api else ".bin"
-                
-                # Prefix with repo name to make cache contents understandable
-                prefix = url.split("/")[-1] if is_github_download else url.split("/")[-3]
+                ext = ".json" if is_github_api or is_geth_page else ".bin"
+
+                # Prefix with a readable piece of the URL to make cache contents understandable
+                if is_github_download or is_geth_asset:
+                    prefix = url.split("/")[-1]
+                else:
+                    # For API or HTML pages pick a short path segment
+                    prefix = url.split("/")[-3] if len(url.split("/")) >= 3 else key
                 cache_file = os.path.join(cache_dir, f"{prefix}_{key}{ext}")
                 
                 if validate_cache(url, cache_file, is_github_api):
                     print(f"[CACHE] Hit for {url}")
-                    if is_github_api:
+                    if is_github_api or is_geth_page:
                         class MockResponse:
                             def __init__(self, text):
                                 self.text = text
@@ -92,20 +99,20 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
                 response = original_get(url, *args, **kwargs)
                 
                 if response.status_code == 200:
-                    if is_github_api:
-                        # cache json
-                        with tempfile.NamedTemporaryFile("w", delete=False, dir=cache_dir) as f:
-                            f.write(response.text)
+                    if is_github_api or is_geth_page:
+                        # cache text/html/json responses
+                        with tempfile.NamedTemporaryFile("wb", delete=False, dir=cache_dir) as f:
+                            f.write(response.content)
                             temp_name = f.name
                         os.rename(temp_name, cache_file)
                     else:
-                        # For stream=True requests, intercept iter_content
+                        # For stream=True requests (binary assets), intercept iter_content
                         if kwargs.get('stream', False):
                             original_iter = response.iter_content
-                            
+
                             temp_fd, temp_path = tempfile.mkstemp(dir=cache_dir)
                             temp_file = os.fdopen(temp_fd, "wb")
-                            
+
                             def tee_iter_content(chunk_size=1024):
                                 try:
                                     for chunk in original_iter(chunk_size):
@@ -114,7 +121,7 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
                                 finally:
                                     temp_file.close()
                                     os.rename(temp_path, cache_file)
-                                    
+
                             response.iter_content = tee_iter_content
                 return response
             

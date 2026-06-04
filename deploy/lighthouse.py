@@ -1,7 +1,7 @@
 import os
 import subprocess
 from deploy.service_generators import generate_lighthouse_bn_service, generate_lighthouse_vc_service
-from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file
+from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, install_system_binary
 from client_requirements import validate_version_for_network
 
 def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
@@ -57,6 +57,10 @@ def download_lighthouse(eth_network: str) -> str:
 
     # Extract the binary to /usr/local/bin/ using sudo
     subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"])
+
+    # Ensure the binary is owned by root:root with correct permissions
+    # (same as other clients — tar extracts with the running user's uid in some envs)
+    install_system_binary(f"{INSTALL_DIR}/lighthouse", f"{INSTALL_DIR}/lighthouse")
 
     # Remove the tar file
     os.remove(download_path)
