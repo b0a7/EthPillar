@@ -256,7 +256,7 @@ getNetwork(){
 # Ubuntu 24.04+ blocks system-wide/user pip installs (PEP 668).
 ensure_python_deps() {
     local req_file="${BASE_DIR}/requirements.txt"
-    local venv_dir="${BASE_DIR}/.venv"
+    local venv_dir="${ETHPILLAR_VENV:-${BASE_DIR}/.venv}"
     local py_version venv_python venv_pip
     [[ -f "$req_file" ]] || error "requirements.txt not found in ${BASE_DIR}"
 
