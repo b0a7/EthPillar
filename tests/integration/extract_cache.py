@@ -1,79 +1,200 @@
 #!/usr/bin/env python3
-import sys
+import hashlib
 import os
 import subprocess
-import hashlib
+import sys
+from typing import List, Optional
 
 CACHE_DIR = "/ethpillar/tests/integration/cache"
 
-def get_extracted_cache_key(archive_path: str, dest_dir: str) -> str:
+TAR_ARCHIVE_SUFFIXES = (".tar.gz", ".tar.xz", ".tar.zst", ".tgz")
+ZIP_ARCHIVE_SUFFIX = ".zip"
+
+
+def get_extracted_cache_key(archive_path: str, dest_dir: str, strip_components: int) -> str:
     hasher = hashlib.md5()
-    with open(archive_path, 'rb') as f:
-        # Hash the first 1MB to be fast but reasonably unique
-        buf = f.read(1024 * 1024)
-        hasher.update(buf)
-    hasher.update(dest_dir.encode('utf-8'))
+    with open(archive_path, "rb") as handle:
+        # Hash the first 1MB to be fast but reasonably unique.
+        hasher.update(handle.read(1024 * 1024))
+    hasher.update(dest_dir.encode("utf-8"))
+    hasher.update(str(strip_components).encode("utf-8"))
     return hasher.hexdigest()
 
-def main():
-    if len(sys.argv) < 2:
-        sys.exit(1)
-        
-    cmd_type = sys.argv[1] # "tar" or "unzip"
-    args = sys.argv[2:]
-    
-    real_bin = f"/usr/bin/{cmd_type}"
-    cmd = [real_bin] + args
-    
+
+def parse_strip_components(args: List[str]) -> int:
+    for index, arg in enumerate(args):
+        if arg == "--strip-components" and index + 1 < len(args):
+            return int(args[index + 1])
+        if arg.startswith("--strip-components="):
+            return int(arg.split("=", 1)[1])
+    return 0
+
+
+def parse_tar_invocation(args: List[str]) -> tuple[Optional[str], Optional[str], int]:
     archive_path = None
     dest_dir = None
-    
+    strip_components = parse_strip_components(args)
+
+    for index, arg in enumerate(args):
+        if arg.endswith(TAR_ARCHIVE_SUFFIXES):
+            archive_path = arg
+        elif arg == "-C" and index + 1 < len(args):
+            dest_dir = args[index + 1]
+
+    return archive_path, dest_dir, strip_components
+
+
+def parse_unzip_invocation(args: List[str]) -> tuple[Optional[str], Optional[str], int]:
+    archive_path = None
+    dest_dir = None
+
+    for index, arg in enumerate(args):
+        if arg.endswith(ZIP_ARCHIVE_SUFFIX):
+            archive_path = arg
+        elif arg == "-d" and index + 1 < len(args):
+            dest_dir = args[index + 1]
+
+    return archive_path, dest_dir, 0
+
+
+def list_tar_members(archive_path: str) -> List[str]:
+    if archive_path.endswith((".tar.gz", ".tgz")):
+        cmd = ["/usr/bin/tar", "tzf", archive_path]
+    elif archive_path.endswith(".tar.xz"):
+        cmd = ["/usr/bin/tar", "tJf", archive_path]
+    elif archive_path.endswith(".tar.zst"):
+        cmd = ["/usr/bin/tar", "--zstd", "-tf", archive_path]
+    else:
+        cmd = ["/usr/bin/tar", "tf", archive_path]
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def list_zip_members(archive_path: str) -> List[str]:
+    result = subprocess.run(
+        ["/usr/bin/unzip", "-Z1", archive_path],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def archive_members(cmd_type: str, archive_path: str) -> List[str]:
     if cmd_type == "tar":
-        for i, arg in enumerate(args):
-            if arg.endswith(".tar.gz") or arg.endswith(".tar.xz"):
-                archive_path = arg
-            elif arg == "-C" and i + 1 < len(args):
-                dest_dir = args[i + 1]
+        return list_tar_members(archive_path)
+    return list_zip_members(archive_path)
+
+
+def stripped_dest_paths(members: List[str], strip_components: int) -> List[str]:
+    """Map archive member names to paths relative to the extract destination."""
+    paths: List[str] = []
+    seen = set()
+
+    for member in members:
+        normalized = member.lstrip("./").rstrip("/")
+        if not normalized:
+            continue
+
+        parts = normalized.split("/")
+        if len(parts) <= strip_components:
+            continue
+
+        relative = "/".join(parts[strip_components:])
+        if relative and relative not in seen:
+            seen.add(relative)
+            paths.append(relative)
+
+    return paths
+
+
+def existing_dest_paths(dest_dir: str, relative_paths: List[str]) -> List[str]:
+    existing: List[str] = []
+    for relative in relative_paths:
+        if os.path.lexists(os.path.join(dest_dir, relative)):
+            existing.append(relative)
+    return existing
+
+
+def write_selective_cache(
+    dest_dir: str,
+    relative_paths: List[str],
+    cache_tar: str,
+    cache_key: str,
+) -> None:
+    temp_tar = os.path.join(CACHE_DIR, f"tmp_{cache_key}.tar")
+    result = subprocess.run(
+        ["/usr/bin/sudo", "/usr/bin/tar", "cf", temp_tar, "-C", dest_dir, *relative_paths],
+        check=False,
+    )
+    if result.returncode != 0:
+        subprocess.run(["/usr/bin/sudo", "/usr/bin/rm", "-f", temp_tar], check=False)
+        print(f"[EXTRACT CACHE] Warning: Could not cache extracted files for {dest_dir}")
+        return
+
+    subprocess.run(["/usr/bin/sudo", "/usr/bin/chmod", "666", temp_tar], check=False)
+    try:
+        os.rename(temp_tar, cache_tar)
+    except OSError:
+        subprocess.run(["/usr/bin/sudo", "/usr/bin/rm", "-f", temp_tar], check=False)
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        sys.exit(1)
+
+    cmd_type = sys.argv[1]
+    args = sys.argv[2:]
+    real_bin = f"/usr/bin/{cmd_type}"
+    cmd = [real_bin, *args]
+
+    if cmd_type == "tar":
+        archive_path, dest_dir, strip_components = parse_tar_invocation(args)
     elif cmd_type == "unzip":
-        for i, arg in enumerate(args):
-            if arg.endswith(".zip"):
-                archive_path = arg
-            elif arg == "-d" and i + 1 < len(args):
-                dest_dir = args[i + 1]
-                
+        archive_path, dest_dir, strip_components = parse_unzip_invocation(args)
+    else:
+        os.execv(real_bin, cmd)
+
     if not archive_path or not dest_dir or not os.path.exists(archive_path):
         os.execv(real_bin, cmd)
-        
-    # Blacklist system directories where many binaries share the same folder
-    if dest_dir in ["/usr/local/bin", "/usr/bin", "/bin", "/usr/local/bin/", "/usr/bin/", "/bin/"]:
-        os.execv(real_bin, cmd)
-        
+
     os.makedirs(CACHE_DIR, exist_ok=True)
-    cache_key = get_extracted_cache_key(archive_path, dest_dir)
+    cache_key = get_extracted_cache_key(archive_path, dest_dir, strip_components)
     cache_tar = os.path.join(CACHE_DIR, f"extracted_{cache_key}.tar")
-    
+
     if os.path.exists(cache_tar) and os.path.getsize(cache_tar) > 0:
         print(f"[EXTRACT CACHE] Hit for {os.path.basename(archive_path)}")
         os.makedirs(dest_dir, exist_ok=True)
-        res = subprocess.run(["sudo", "/usr/bin/tar", "xf", cache_tar, "-C", dest_dir])
-        sys.exit(res.returncode)
-        
+        result = subprocess.run(
+            ["/usr/bin/sudo", "/usr/bin/tar", "xf", cache_tar, "-C", dest_dir],
+        )
+        sys.exit(result.returncode)
+
     print(f"[EXTRACT CACHE] Miss for {os.path.basename(archive_path)}. Extracting...")
-    res = subprocess.run(cmd)
-    
-    if res.returncode == 0 and os.path.exists(dest_dir):
-        print(f"[EXTRACT CACHE] Caching extracted files...")
-        temp_tar = os.path.join(CACHE_DIR, f"tmp_{cache_key}.tar")
-        # sudo to ensure we can read all extracted files (which might be root-owned)
-        subprocess.run(["sudo", "/usr/bin/tar", "cf", temp_tar, "-C", dest_dir, "."], check=False)
-        # Ensure the cache file is readable by the host user
-        subprocess.run(["sudo", "chmod", "666", temp_tar], check=False)
-        try:
-            os.rename(temp_tar, cache_tar)
-        except OSError:
-            subprocess.run(["sudo", "rm", "-f", temp_tar], check=False)
-            
-    sys.exit(res.returncode)
+    result = subprocess.run(cmd)
+    if result.returncode != 0 or not os.path.exists(dest_dir):
+        sys.exit(result.returncode)
+
+    members = archive_members(cmd_type, archive_path)
+    relative_paths = existing_dest_paths(
+        dest_dir,
+        stripped_dest_paths(members, strip_components),
+    )
+    if not relative_paths:
+        print(
+            f"[EXTRACT CACHE] Warning: No archive members found to cache for "
+            f"{os.path.basename(archive_path)}"
+        )
+        sys.exit(result.returncode)
+
+    print(f"[EXTRACT CACHE] Caching {len(relative_paths)} extracted path(s)...")
+    write_selective_cache(dest_dir, relative_paths, cache_tar, cache_key)
+    sys.exit(result.returncode)
+
 
 if __name__ == "__main__":
     main()
