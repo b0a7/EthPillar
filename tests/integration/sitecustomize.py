@@ -53,13 +53,15 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
             # Geth provides a downloads page and stores release assets on gethstore.blob.core.windows.net
             is_geth_page = url.startswith("https://geth.ethereum.org/downloads")
             is_geth_asset = "gethstore.blob.core.windows.net" in url or "geth.ethereum.org" in url and ("/download" in url or "/builds/" in url)
+            # Teku artifacts are hosted on artifacts.consensys.net — treat as binary asset
+            is_artifacts_asset = "artifacts.consensys.net" in url
             
-            if is_github_api or is_github_download or is_geth_page or is_geth_asset:
+            if is_github_api or is_github_download or is_geth_page or is_geth_asset or is_artifacts_asset:
                 key = hashlib.md5(url.encode()).hexdigest()
                 ext = ".json" if is_github_api or is_geth_page else ".bin"
 
                 # Prefix with a readable piece of the URL to make cache contents understandable
-                if is_github_download or is_geth_asset:
+                if is_github_download or is_geth_asset or is_artifacts_asset:
                     prefix = url.split("/")[-1]
                 else:
                     # For API or HTML pages pick a short path segment
@@ -77,7 +79,7 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
                                 self.headers = {'content-length': str(len(self.content))}
                             def json(self): return json.loads(self.text)
                             def raise_for_status(self): pass
-                        with open(cache_file, "r") as f:
+                        with open(cache_file, "r", encoding='utf-8') as f:
                             return MockResponse(f.read())
                     else:
                         class MockStreamResponse:
@@ -101,8 +103,8 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
                 if response.status_code == 200:
                     if is_github_api or is_geth_page:
                         # cache text/html/json responses
-                        with tempfile.NamedTemporaryFile("wb", delete=False, dir=cache_dir) as f:
-                            f.write(response.content)
+                        with tempfile.NamedTemporaryFile("w", delete=False, dir=cache_dir, encoding='utf-8') as f:
+                            f.write(response.text)
                             temp_name = f.name
                         os.rename(temp_name, cache_file)
                     else:
@@ -123,6 +125,12 @@ if os.environ.get('ENABLE_EP_CACHE') == '1':
                                     os.rename(temp_path, cache_file)
 
                             response.iter_content = tee_iter_content
+                        else:
+                            # Non-stream binary responses: write content atomically
+                            with tempfile.NamedTemporaryFile("wb", delete=False, dir=cache_dir) as f:
+                                f.write(response.content)
+                                temp_name = f.name
+                            os.rename(temp_name, cache_file)
                 return response
             
             return original_get(url, *args, **kwargs)
