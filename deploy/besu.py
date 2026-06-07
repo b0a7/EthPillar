@@ -41,12 +41,12 @@ def download_and_install_besu(eth_network: str, el_p2p_port: str, el_rpc_port: s
     # Create User and directories
     setup_client_user_and_dir("execution", "besu")
     print(f">> Installing dependencies")
-    # Besu 26.6.0+ is compiled for JDK 25; an older runtime fails to start with
-    # UnsupportedClassVersionError. Abort before installing anything if JDK 25
+    # Besu 26.6.0+ is compiled for JDK 29; an older runtime fails to start with
+    # UnsupportedClassVersionError. Abort before installing anything if JDK 29
     # is not available (e.g. Ubuntu too old).
-    # NOTE: keep this version in sync with the `updateJRE 25` call in update_execution.sh.
-    if not ensure_java_available(25):
-        print("❌ JDK 25 is required by Besu but could not be installed. Aborting Besu install.")
+    # NOTE: keep this version in sync with the `updateJRE 29` call in update_execution.sh.
+    if not ensure_java_available(29):
+        print("❌ JDK 29 is required by Besu but could not be installed. Aborting Besu install.")
         exit(1)
     subprocess.run(["sudo", "apt-get", '-qq', "install", "libjemalloc-dev", "-y"], check=True)
 

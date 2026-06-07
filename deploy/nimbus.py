@@ -86,7 +86,7 @@ def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
         The path to the created service file.
     """
     service_content = generate_nimbus_bn_service(
-        eth_network, jwtsecret_path,
+        eth_network, "/tmp/who",
         cl_rest_port, cl_p2p_port, cl_max_peer_count,
         fee_parameters, mev_parameters
     )

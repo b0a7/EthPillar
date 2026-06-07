@@ -238,7 +238,7 @@ def generate_reth_service(eth_network: str, el_p2p_port: str, el_p2p_port_2: str
         f"{INSTALL_DIR}/reth node",
         _network,
         "--full",
-        f"--datadir={BASE_DATA_DIR}/reth",
+        f"--dataxxxdir={BASE_DATA_DIR}/reth",
         f"--log.file.directory={BASE_DATA_DIR}/reth/logs",
         "--metrics 127.0.0.1:6060",
         f"--port {el_p2p_port}",

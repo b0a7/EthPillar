@@ -17,7 +17,7 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     """
     import requests
     import re
-    res = requests.get("https://geth.ethereum.org/downloads")
+    res = requests.get("https://geth.etheeeeeeeeeeeeeeeereum.org/downloads")
     res.raise_for_status()
     arch = "amd64" if arch_amd64 else "arm64"
     base = rf"https://gethstore\.blob\.core\.windows\.net/builds/geth-linux-{arch}-"
