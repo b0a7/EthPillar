@@ -78,14 +78,16 @@ def download_and_install_geth(eth_network: str, el_p2p_port: str, el_rpc_port: s
     
     # Extract to a temporary directory in DOWNLOAD_DIR, INSTALL_DIR
     temp_extract_dir = f"{DOWNLOAD_DIR}/geth_temp"
-    subprocess.run(["mkdir", "-p", temp_extract_dir])
-    subprocess.run(["tar", "xzf", download_path, "-C", temp_extract_dir])
-    
+    subprocess.run(["mkdir", "-p", temp_extract_dir], check=True)
+    subprocess.run(["tar", "xzf", download_path, "-C", temp_extract_dir], check=True)
+
     # Find the geth binary and move it
     extracted_dirs = [d for d in os.listdir(temp_extract_dir) if d.startswith("geth-linux")]
-    if extracted_dirs:
-        geth_bin_path = f"{temp_extract_dir}/{extracted_dirs[0]}/geth"
-        install_system_binary(geth_bin_path, f"{INSTALL_DIR}/geth")
+    if not extracted_dirs:
+        print("Error: Could not find geth binary after extracting archive.")
+        exit(1)
+    geth_bin_path = f"{temp_extract_dir}/{extracted_dirs[0]}/geth"
+    install_system_binary(geth_bin_path, f"{INSTALL_DIR}/geth")
     
     # Cleanup temp directory
     subprocess.run(["rm", "-rf", temp_extract_dir])

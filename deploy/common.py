@@ -10,9 +10,6 @@ import tempfile
 from consolemenu import PromptUtils, Screen
 from typing import Optional, List
 import glob
-import traceback
-
-
 INSTALL_DIR = "/usr/local/bin"
 DOWNLOAD_DIR = "/tmp"
 BASE_DATA_DIR = "/var/lib"
@@ -34,21 +31,17 @@ def install_system_binary(src_path: str, dest: str) -> str:
         dest_path = dest
     else:
         dest_path = os.path.join(INSTALL_DIR, dest)
-    try:
-        # Ensure destination directory exists
-        dest_dir = os.path.dirname(dest_path) or INSTALL_DIR
-        subprocess.run(["sudo", "mkdir", "-p", dest_dir], check=True)
-        # If src and dest are same, skip moving
-        if os.path.abspath(src_path) != os.path.abspath(dest_path):
-            subprocess.run(["sudo", "mv", src_path, dest_path], check=True)
-        # Ensure it's executable and has 755
-        subprocess.run(["sudo", "chmod", "+x", dest_path], check=False)
-        subprocess.run(["sudo", "chmod", "755", dest_path], check=True)
-        # Ensure owned by root:root
-        subprocess.run(["sudo", "chown", "root:root", dest_path], check=True)
-    except Exception:
-        print(">> Exception in install_system_binary:")
-        traceback.print_exc()
+    # Ensure destination directory exists
+    dest_dir = os.path.dirname(dest_path) or INSTALL_DIR
+    subprocess.run(["sudo", "mkdir", "-p", dest_dir], check=True)
+    # If src and dest are same, skip moving
+    if os.path.abspath(src_path) != os.path.abspath(dest_path):
+        subprocess.run(["sudo", "mv", src_path, dest_path], check=True)
+    # Ensure it's executable and has 755
+    subprocess.run(["sudo", "chmod", "+x", dest_path], check=False)
+    subprocess.run(["sudo", "chmod", "755", dest_path], check=True)
+    # Ensure owned by root:root
+    subprocess.run(["sudo", "chown", "root:root", dest_path], check=True)
     return dest_path
 
 
@@ -70,41 +63,37 @@ def install_system_directory(src_dir: str, dest_dir: str, service_user: Optional
     Returns:
         The absolute destination directory.
     """
-    try:
-        print(f">> Installing to {dest_dir} from {src_dir}")
-        # Ensure parent exists and remove any old install
-        parent = os.path.dirname(dest_dir)
-        subprocess.run(["sudo", "mkdir", "-p", parent], check=True)
-        subprocess.run(["sudo", "rm", "-rf", dest_dir], check=False)
+    print(f">> Installing to {dest_dir} from {src_dir}")
+    # Ensure parent exists and remove any old install
+    parent = os.path.dirname(dest_dir)
+    subprocess.run(["sudo", "mkdir", "-p", parent], check=True)
+    subprocess.run(["sudo", "rm", "-rf", dest_dir], check=False)
 
-        # Move into place
-        subprocess.run(["sudo", "mv", src_dir, dest_dir], check=True)
+    # Move into place
+    subprocess.run(["sudo", "mv", src_dir, dest_dir], check=True)
 
-        # Set ownership to root:root and tighten perms
-        subprocess.run(["sudo", "chown", "-R", "root:root", dest_dir], check=True)
-        # Ensure directories are accessible
-        subprocess.run(["sudo", "find", dest_dir, "-type", "d", "-exec", "chmod", "755", "{}", ";"], check=True)
-        # Preserve files that are executable and ensure they remain executable.
-        # Then normalize all non-executable regular files to 644. This order
-        # prevents clearing execute bits and avoids a race where we would
-        # set everything to 644 and then be unable to detect previously
-        # executable files.
-        subprocess.run(["sudo", "find", dest_dir, "-type", "f", "-perm", "/111", "-exec", "chmod", "755", "{}", ";"], check=False)
-        subprocess.run(["sudo", "find", dest_dir, "-type", "f", "!", "-perm", "/111", "-exec", "chmod", "644", "{}", ";"], check=True)
+    # Set ownership to root:root and tighten perms
+    subprocess.run(["sudo", "chown", "-R", "root:root", dest_dir], check=True)
+    # Ensure directories are accessible
+    subprocess.run(["sudo", "find", dest_dir, "-type", "d", "-exec", "chmod", "755", "{}", ";"], check=True)
+    # Preserve files that are executable and ensure they remain executable.
+    # Then normalize all non-executable regular files to 644. This order
+    # prevents clearing execute bits and avoids a race where we would
+    # set everything to 644 and then be unable to detect previously
+    # executable files.
+    subprocess.run(["sudo", "find", dest_dir, "-type", "f", "-perm", "/111", "-exec", "chmod", "755", "{}", ";"], check=False)
+    subprocess.run(["sudo", "find", dest_dir, "-type", "f", "!", "-perm", "/111", "-exec", "chmod", "644", "{}", ";"], check=True)
 
-        # Create writable subdirs and assign to service_user if provided
-        if writable_subdirs:
-            for sub in writable_subdirs:
-                full = os.path.join(dest_dir, sub)
-                subprocess.run(["sudo", "mkdir", "-p", full], check=True)
-                if service_user:
-                    subprocess.run(["sudo", "chown", "-R", f"{service_user}:{service_user}", full], check=True)
-                    subprocess.run(["sudo", "chmod", "700", full], check=True)
-                else:
-                    subprocess.run(["sudo", "chmod", "750", full], check=True)
-    except Exception:
-        print(">> Exception in install_system_directory:")
-        traceback.print_exc()
+    # Create writable subdirs and assign to service_user if provided
+    if writable_subdirs:
+        for sub in writable_subdirs:
+            full = os.path.join(dest_dir, sub)
+            subprocess.run(["sudo", "mkdir", "-p", full], check=True)
+            if service_user:
+                subprocess.run(["sudo", "chown", "-R", f"{service_user}:{service_user}", full], check=True)
+                subprocess.run(["sudo", "chmod", "700", full], check=True)
+            else:
+                subprocess.run(["sudo", "chmod", "750", full], check=True)
     return dest_dir
 
 def setup_client_user_and_dir(user: str, client_name: str) -> None:
@@ -435,14 +424,14 @@ def setup_node(jwt_secret_path: str, validator_only: bool = False) -> None:
             subprocess.run(['sudo', 'tee', jwt_secret_path], input=rand_hex.stdout, stdout=subprocess.DEVNULL, check=True)
 
     # Update and upgrade packages
-    subprocess.run(['sudo', 'apt', '-y', '-qq', 'update'])
-    subprocess.run(['sudo', 'apt', '-y', '-qq', 'upgrade'])
+    subprocess.run(['sudo', 'apt', '-y', '-qq', 'update'], check=True)
+    subprocess.run(['sudo', 'apt', '-y', '-qq', 'upgrade'], check=True)
 
     # Autoremove packages
-    subprocess.run(['sudo', 'apt', '-y', '-qq' , 'autoremove'])
+    subprocess.run(['sudo', 'apt', '-y', '-qq' , 'autoremove'], check=True)
 
     # Chrony timesync package
-    subprocess.run(['sudo', 'apt', '-y', '-qq', 'install', 'chrony'])
+    subprocess.run(['sudo', 'apt', '-y', '-qq', 'install', 'chrony'], check=True)
 
 def write_service_file(content: str, target_path: str, temp_filename: str = 'temp.service') -> None:
     """Write service content to a target path using a temporary file.
@@ -499,10 +488,7 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
     """
     
     # Reload the systemd daemon
-    try:
-        subprocess.run(['sudo', 'systemctl', 'daemon-reload'], capture_output=True)
-    except Exception:
-        pass
+    subprocess.run(['sudo', 'systemctl', 'daemon-reload'], capture_output=True, check=True)
 
     print(f'##########################\n')
     print(f'## Installation Summary ##\n')

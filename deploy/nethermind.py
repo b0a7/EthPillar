@@ -41,8 +41,8 @@ def download_and_install_nethermind(eth_network: str, el_p2p_port: str, el_rpc_p
     # Create User and directories
     setup_client_user_and_dir("execution", "nethermind")
     # Ensure home directory exists for .NET bundle extraction if WorkingDirectory isn't enough
-    subprocess.run(["sudo", "mkdir", "-p", "/home/execution"])
-    subprocess.run(["sudo", "chown", "execution:execution", "/home/execution"])
+    subprocess.run(["sudo", "mkdir", "-p", "/home/execution"], check=True)
+    subprocess.run(["sudo", "chown", "execution:execution", "/home/execution"], check=True)
     
     # Resolve version and download URL
     arch_amd64 = get_machine_architecture() == "amd64"

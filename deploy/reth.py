@@ -60,10 +60,10 @@ def download_and_install_reth(eth_network: str, el_p2p_port: str, el_p2p_port_2:
 
     # Extract the binary to /usr/local/bin/ using sudo
     # Reth tarball contains just the binary at root
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"])
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"], check=True)
 
     # Find the extracted reth binary and rename it
-    subprocess.run(["sudo", "sh", "-c", "mv /usr/local/bin/reth-* /usr/local/bin/reth"])
+    subprocess.run(["sudo", "sh", "-c", "mv /usr/local/bin/reth-* /usr/local/bin/reth"], check=True)
 
     # Ensure ownership and correct permissions via helper
     install_system_binary(f"{INSTALL_DIR}/reth", os.path.join(INSTALL_DIR, "reth"))

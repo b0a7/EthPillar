@@ -187,11 +187,12 @@ def main() -> None:
         os.makedirs(dest_dir, exist_ok=True)
         result = subprocess.run(
             ["/usr/bin/sudo", "/usr/bin/tar", "xf", cache_tar, "-C", dest_dir],
+            check=True,
         )
         sys.exit(result.returncode)
 
     print(f"[EXTRACT CACHE] Miss for {os.path.basename(archive_path)}. Extracting...")
-    result = subprocess.run(cmd)
+    result = subprocess.run(cmd, check=True)
     if result.returncode != 0 or not os.path.exists(dest_dir):
         sys.exit(result.returncode)
 

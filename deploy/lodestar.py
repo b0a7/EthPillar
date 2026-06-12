@@ -53,12 +53,19 @@ def download_lodestar(eth_network: str) -> str:
 
     # We want the binary to end up at /usr/local/bin/lodestar.  Each instance (lodestar beacon and validator) will reference the same 
     # binary, and will each have their own tmp foler in /var/lib/lodestar and /var/lib/lodestar_validator respectively for caxa
-    subprocess.run(["sudo", "mkdir", "-p", "/tmp/lodestar_extract"])
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", "/tmp/lodestar_extract"])
-    result = subprocess.run(["sudo", "find", "/tmp/lodestar_extract", "-type", "f", "-name", "lodestar"], capture_output=True, text=True)
+    subprocess.run(["sudo", "mkdir", "-p", "/tmp/lodestar_extract"], check=True)
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", "/tmp/lodestar_extract"], check=True)
+    result = subprocess.run(
+        ["sudo", "find", "/tmp/lodestar_extract", "-type", "f", "-name", "lodestar"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     lodestar_bin = result.stdout.strip().split("\n")[0]
-    if lodestar_bin:
-        install_system_binary(lodestar_bin, f"{INSTALL_DIR}/lodestar")
+    if not lodestar_bin:
+        print("Error: Could not find lodestar binary after extracting archive.")
+        exit(1)
+    install_system_binary(lodestar_bin, f"{INSTALL_DIR}/lodestar")
 
     # Remove the tar file and temporary extraction directory
     os.remove(download_path)

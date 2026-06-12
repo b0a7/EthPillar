@@ -60,7 +60,7 @@ def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port:
 
     # Extract the binary using sudo
     # Erigon tarball typically contains a folder, so we strip one component and extract to /usr/local/bin
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}", "--strip-components=1"])
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}", "--strip-components=1"], check=True)
     # Ensure binary is configured correctly
     install_system_binary(f"{INSTALL_DIR}/erigon", os.path.join(INSTALL_DIR, "erigon"))
 
@@ -110,8 +110,8 @@ def download_and_install_erigon_standalone(eth_network: str, el_p2p_port: str, e
     download_file(download_url, download_path, "Erigon Standalone")
 
     # Extract the binary using sudo
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}", "--strip-components=1"])
-    subprocess.run(["sudo", "chmod", "a+x", f"{INSTALL_DIR}/erigon"])
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}", "--strip-components=1"], check=True)
+    subprocess.run(["sudo", "chmod", "a+x", f"{INSTALL_DIR}/erigon"], check=True)
     install_system_binary(f"{INSTALL_DIR}/erigon", os.path.join(INSTALL_DIR, "erigon"))
 
     # Remove the tar file

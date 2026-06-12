@@ -35,7 +35,8 @@ def install_mevboost(eth_network: str, mev_min_bid: str, relay_options: List[Dic
         service_file_path: The path to the created service file
     """
     # Step 1: Create mevboost service account
-    subprocess.run(["sudo", "useradd", "--no-create-home", "--shell", "/bin/false", "mevboost"])
+    if subprocess.run(["id", "-u", "mevboost"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+        subprocess.run(["sudo", "useradd", "--no-create-home", "--shell", "/bin/false", "mevboost"], check=True)
 
     # Step 2: Install mevboost
     # Resolve version and download URL
@@ -51,7 +52,7 @@ def install_mevboost(eth_network: str, mev_min_bid: str, relay_options: List[Dic
     download_file(download_url, download_path, "mevboost")
 
     # Extract the binary
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"])
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"], check=True)
 
     # Ensure binary is moved/configured and follows system best-practices
     install_system_binary(f"{INSTALL_DIR}/mev-boost", os.path.join(INSTALL_DIR, "mev-boost"))

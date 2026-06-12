@@ -94,9 +94,9 @@ def install_grandine_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_pa
     )
     
     if is_integrated_vc:
-        subprocess.run(["sudo", "mkdir", "-p", "/var/lib/grandine/validator_keys"])
-        subprocess.run(["sudo", "chown", "-R", "consensus:consensus", "/var/lib/grandine/validator_keys"])
-        subprocess.run(["sudo", "chmod", "700", "/var/lib/grandine/validator_keys"])
+        subprocess.run(["sudo", "mkdir", "-p", "/var/lib/grandine/validator_keys"], check=True)
+        subprocess.run(["sudo", "chown", "-R", "consensus:consensus", "/var/lib/grandine/validator_keys"], check=True)
+        subprocess.run(["sudo", "chmod", "700", "/var/lib/grandine/validator_keys"], check=True)
 
     service_file_path = '/etc/systemd/system/consensus.service'
     write_service_file(service_content, service_file_path, 'consensus_temp.service')

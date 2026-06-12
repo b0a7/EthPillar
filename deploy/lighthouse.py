@@ -51,7 +51,7 @@ def download_lighthouse(eth_network: str) -> str:
     download_file(download_url, download_path, "Lighthouse")
 
     # Extract the binary to /usr/local/bin/ using sudo
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"])
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"], check=True)
 
     # Ensure the binary is owned by root:root with correct permissions
     # (same as other clients — tar extracts with the running user's uid in some envs)
