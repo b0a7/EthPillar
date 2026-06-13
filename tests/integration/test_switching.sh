@@ -18,7 +18,8 @@ if [ "$EL" == "Reth" ]; then NEW_EL="Besu"
 elif [ "$EL" == "Besu" ]; then NEW_EL="Geth"
 elif [ "$EL" == "Geth" ]; then NEW_EL="Nethermind"
 elif [ "$EL" == "Nethermind" ]; then NEW_EL="Erigon"
-elif [ "$EL" == "Erigon" ]; then NEW_EL="Reth"
+elif [ "$EL" == "Erigon" ]; then NEW_EL="Ethrex"
+elif [ "$EL" == "Ethrex" ]; then NEW_EL="Reth"
 else NEW_EL="Besu"; fi
 
 # Pick new consensus client

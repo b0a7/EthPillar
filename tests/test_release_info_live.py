@@ -72,6 +72,7 @@ CLIENT_REPOS: list[tuple[str, str | None]] = [
     ("grandine", "grandinetech/grandine"),
     ("prysm", "prysmaticlabs/prysm"),
     ("mevboost", "flashbots/mev-boost"),
+    ("ethrex", "lambdaclass/ethrex"),
 ]
 
 _GETH_DOWNLOADS_URL = "https://geth.ethereum.org/downloads"

@@ -195,6 +195,8 @@ def parse_expected_artifacts(args: Any) -> Tuple[List[str], List[str], List[str]
             binaries.append("nethermind"); users.append("execution"); services.append("execution")
         if "geth" in combo or "geth" in ec:
             binaries.append("geth"); users.append("execution"); services.append("execution")
+        if "ethrex" in combo or "ethrex" in ec:
+            binaries.append("ethrex"); users.append("execution"); services.append("execution")
             
     # CC/BN artifacts
     if not vc_only:

@@ -52,6 +52,7 @@ custom_tests = [
     ("Geth-Lighthouse-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"),
     ("Nethermind-Grandine-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Nethermind --cc Grandine --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"),
     ("Prysm-Reth-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config 'Custom Setup'"),
+    ("Ethrex-Lighthouse-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Ethrex --cc Lighthouse --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"),
     ("Teku-Besu-VC-Only-HOODI", f"{RUN_TEST} deploy/deploy-node.py --combo Teku-Besu --network HOODI --config 'Validator Client Only' --vc_only_bn_address http://192.168.1.123:5052"),
 ]
 
@@ -61,6 +62,7 @@ upgrade_tests = [
     ("Upgrade-Nethermind-Nimbus", f"{RUN_TEST} deploy/deploy-node.py --ec Nethermind --cc Nimbus --network SEPOLIA --config 'Full Node Only' --test-updates"),
     ("Upgrade-Erigon-Caplin", f"{RUN_TEST} deploy/deploy-node.py --ec Erigon --cc Caplin --network SEPOLIA --config 'Full Node Only' --test-updates"),
     ("Upgrade-Geth-Lodestar", f"{RUN_TEST} deploy/deploy-node.py --ec Geth --cc Lodestar --network SEPOLIA --config 'Full Node Only' --test-updates"),
+    ("Upgrade-Ethrex-Lighthouse", f"{RUN_TEST} deploy/deploy-node.py --ec Ethrex --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-updates"),
 ]
 
 switch_tests = [
