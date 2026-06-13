@@ -332,7 +332,8 @@ ensure_python_deps() {
         ohai "Installing python3-venv"
         sudo apt-get update -qq
         py_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-        sudo apt-get install -y -qq python3-venv "python${py_version}-venv" python3-pip
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            python3-venv "python${py_version}-venv" python3-pip
         python3 -c "import ensurepip" &>/dev/null || error "python3-venv is required but ensurepip is still unavailable"
     fi
 
@@ -1494,5 +1495,20 @@ function export_logs() {
     whiptail --title "Export Complete" --msgbox "Logs have been exported to $HOME/$output_file" 10 60
 }
 
-# Auto-install Python dependencies on first load
+# Install apt packages required by the TUI, deploy scripts, and updates (see deploy.common.NODE_RUNTIME_PACKAGES).
+ensure_host_runtime_packages() {
+    local pkg
+    local -a packages missing=()
+    mapfile -t packages < <(PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import NODE_RUNTIME_PACKAGES; print('\n'.join(NODE_RUNTIME_PACKAGES))")
+    for pkg in "${packages[@]}"; do
+        dpkg -s "$pkg" &>/dev/null || missing+=("$pkg")
+    done
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+    ohai "Installing host packages: ${missing[*]}"
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+}
+
+# Auto-install host tools and Python dependencies on first load
+ensure_host_runtime_packages
 ensure_python_deps
