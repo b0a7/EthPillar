@@ -147,17 +147,47 @@ EOF
   cat <<EOF > "$CONSENSUS_SERVICE_FILE"
 ExecStart=$stub
 EOF
-  getClVcCurrentVersion Lighthouse
+  getClVcCurrentVersion Lighthouse cl
   [ "$VERSION" = "v5.2.1" ]
 }
 
-@test "getClVcCurrentVersion falls back to validator service for vc-only nimbus" {
+@test "getClVcCurrentVersion reads lighthouse vc from validator when consensus is grandine" {
+  local grandine="$TEST_BIN_DIR/grandine"
+  local lighthouse="$TEST_BIN_DIR/lighthouse"
+  write_stub_binary "$grandine" 'echo "grandine 2.0.4"'
+  write_stub_binary "$lighthouse" 'echo "Lighthouse v8.1.3-abc"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$grandine
+EOF
+  cat <<EOF > "$VALIDATOR_SERVICE_FILE"
+ExecStart=$lighthouse vc --network=sepolia
+EOF
+  getClVcCurrentVersion Lighthouse vc
+  [ "$VERSION" = "v8.1.3" ]
+}
+
+@test "getClVcCurrentVersion cl role ignores validator service for lighthouse" {
+  local cl_stub="$TEST_BIN_DIR/lighthouse-bn"
+  local vc_stub="$TEST_BIN_DIR/lighthouse-vc"
+  write_stub_binary "$cl_stub" 'echo "Lighthouse v5.0.0-bn"'
+  write_stub_binary "$vc_stub" 'echo "Lighthouse v9.9.9-vc"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$cl_stub
+EOF
+  cat <<EOF > "$VALIDATOR_SERVICE_FILE"
+ExecStart=$vc_stub vc --network=mainnet
+EOF
+  getClVcCurrentVersion Lighthouse cl
+  [ "$VERSION" = "v5.0.0" ]
+}
+
+@test "getClVcCurrentVersion reads vc-only nimbus from validator service stub" {
   local stub="$TEST_BIN_DIR/nimbus_validator_client"
   write_stub_binary "$stub" 'echo "Nimbus v24.11.0"'
   cat <<EOF > "$VALIDATOR_SERVICE_FILE"
 ExecStart=$stub
 EOF
-  getClVcCurrentVersion Nimbus
+  getClVcCurrentVersion Nimbus vc
   [ "$VERSION" = "v24.11.0" ]
 }
 
@@ -168,7 +198,7 @@ EOF
 ExecStart=$stub
 EOF
   CLIENT=Lighthouse
-  getClVcCurrentVersion Prysm
+  getClVcCurrentVersion Prysm vc
   [ "$VERSION" = "v5.0.0" ]
 }
 
@@ -178,6 +208,6 @@ EOF
   cat <<EOF > "$CONSENSUS_SERVICE_FILE"
 ExecStart=$stub
 EOF
-  getClVcCurrentVersion Grandine
+  getClVcCurrentVersion Grandine cl
   [ "$VERSION" = "v2.0.4" ]
 }

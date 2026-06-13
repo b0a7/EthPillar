@@ -398,47 +398,54 @@ sys.exit(0 if ensure_java_available(int(sys.argv[1])) else 1)
 PY
 }
 
-# Gets installed CL or VC version from binary. Optional arg overrides CLIENT
-# (from getClient: CL when present, otherwise VC).
+# Gets installed CL or VC version from binary.
+# Args: client (optional, defaults to CLIENT from getClient), role cl|vc (optional, defaults to cl).
+# Use role=cl for consensus/beacon (consensus.service); role=vc for validator (validator.service).
 getClVcCurrentVersion(){
     local client="${1:-$CLIENT}"
+    local role="${2:-cl}"
     local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local svc_file
+    if [[ "$role" == "vc" ]]; then
+        svc_file="$validator_svc"
+    else
+        svc_file="$consensus_svc"
+    fi
     VERSION="NotInstalled"
     case "$client" in
       Lighthouse)
-        LH_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/lighthouse")
-        test -f "$LH_BIN" || LH_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/lighthouse")
-        VERSION=$("$LH_BIN" --version | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+")
+        LH_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lighthouse")
+        VERSION=$("$LH_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
         ;;
       Lodestar)
-        LODESTAR_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/lodestar")
-        test -f "$LODESTAR_BIN" || LODESTAR_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/lodestar")
-        VERSION=$("$LODESTAR_BIN" --version | grep -oE "v[0-9]+.[0-9]+.[0-9]+")
+        LODESTAR_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lodestar")
+        VERSION=$("$LODESTAR_BIN" --version 2>&1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
         ;;
       Teku)
-        TEKU_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/teku/bin/teku")
-        test -f "$TEKU_BIN" || TEKU_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/teku/bin/teku")
-        VERSION=$("$TEKU_BIN" --version | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+")
+        TEKU_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/teku/bin/teku")
+        VERSION=$("$TEKU_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
         ;;
       Nimbus)
-        NIMBUS_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/nimbus_beacon_node")
-        test -f "$NIMBUS_BIN" || NIMBUS_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/nimbus_validator_client")
-        VERSION=$("$NIMBUS_BIN" --version | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+")
+        if [[ "$role" == "vc" ]]; then
+          NIMBUS_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/nimbus_validator_client")
+        else
+          NIMBUS_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/nimbus_beacon_node")
+        fi
+        VERSION=$("$NIMBUS_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
         ;;
       Grandine)
         GRANDINE_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/grandine")
-        VERSION=$("$GRANDINE_BIN" --version | head -1 | grep -oE "v?[0-9]+\.[0-9]+\.[0-9]+")
+        VERSION=$("$GRANDINE_BIN" --version 2>&1 | head -1 | grep -oE "v?[0-9]+\.[0-9]+\.[0-9]+" || true)
         if [[ $VERSION != v* ]]; then VERSION="v$VERSION"; fi
         ;;
       Prysm)
-        PRYSM_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/prysm-beacon-chain")
-        if [[ -f "$PRYSM_BIN" ]]; then
-            VERSION=$("$PRYSM_BIN" --version | head -1 | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+")
+        if [[ "$role" == "vc" ]]; then
+          PRYSM_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/prysm-validator")
         else
-            PRYSM_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/prysm-validator")
-            VERSION=$("$PRYSM_BIN" --version | head -1 | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+")
+          PRYSM_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/prysm-beacon-chain")
         fi
+        VERSION=$("$PRYSM_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+" || true)
         ;;
       *)
         echo "ERROR: Unable to determine client."

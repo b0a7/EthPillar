@@ -68,7 +68,7 @@ check_cl_version() {
     echo "ℹ️  Skipping Caplin version (integrated in Erigon)"
     return 0
   fi
-  getClVcCurrentVersion "$cl"
+  getClVcCurrentVersion "$cl" cl
   if [[ -z "$VERSION" || "$VERSION" == "NotInstalled" ]]; then
     echo "❌ CL version parse failed for ${cl}: ${VERSION:-empty}"
     fail=1
@@ -82,7 +82,7 @@ check_vc_version() {
   [[ -f /etc/systemd/system/validator.service ]] || return 0
   local vc
   vc=$(grep Description= /etc/systemd/system/validator.service | awk -F= '{print $2}' | awk '{print $1}')
-  getClVcCurrentVersion "$vc"
+  getClVcCurrentVersion "$vc" vc
   if [[ -z "$VERSION" || "$VERSION" == "NotInstalled" ]]; then
     echo "❌ VC version parse failed for ${vc}: ${VERSION:-empty}"
     fail=1
