@@ -8,6 +8,7 @@ The integration tests simulate various validator configurations (Solo Staking, L
 - Binaries are correctly downloaded and installed.
 - Systemd service files are syntactically valid (`daemon-reload` passes).
 - Services can be **actually started and stopped** via `systemctl`.
+- Installed client versions are parsed correctly via `functions.sh` (same path as the update menus).
 - Users and directories are properly set up.
 - All configurations work as expected without manual intervention.
 
@@ -56,6 +57,7 @@ The `Dockerfile.test` uses `ubuntu:24.04` and sets systemd as the `CMD`. The tes
 - `run_docker_tests.sh`: (Linux/WSL) Ensures host `rich` is installed, then invokes `run_docker_tests.py`.
 - `run_test.sh`: Production bootstrap wrapper — sources `functions.sh` (venv + `ensure_python_deps`) then execs the test runner.
 - `run_inside_docker.py`: Executes inside each container to run the deployment and verify artifacts via `systemctl`. Does not install Python deps itself.
+- `check_client_versions.sh`: After deploy (and after update tests), verifies `getExecutionCurrentVersion` / `getClVcCurrentVersion` against installed binaries.
 - `sitecustomize.py`: Caches release **binaries** only (revalidated with `HEAD` before reuse). GitHub API / release metadata always hits the network.
 - `cache/`: Persistent cache for validated release binaries.
 

@@ -51,6 +51,9 @@ if systemctl list-unit-files execution.service > /dev/null 2>&1; then
     fi
     
     echo "✅ Execution client update completed successfully."
+
+    echo "Verifying execution client version parsing..."
+    bash /ethpillar/tests/integration/check_client_versions.sh
 else
     echo "No execution client installed. Skipping."
 fi
@@ -88,6 +91,9 @@ if systemctl list-unit-files consensus.service > /dev/null 2>&1 || systemctl lis
         fi
     fi
     echo "✅ Consensus client update completed successfully."
+
+    echo "Verifying consensus/validator client version parsing..."
+    bash /ethpillar/tests/integration/check_client_versions.sh
 else
     echo "No consensus client installed. Skipping."
 fi

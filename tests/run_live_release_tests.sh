@@ -4,6 +4,9 @@
 # Verifies get_client_release_info() against real GitHub / geth.ethereum.org
 # endpoints (LATEST, explicit version, and older release). Requires GITHUB_TOKEN.
 # Skipped by the default unit test run — invoke this script explicitly.
+#
+# Installed-client version parsing is covered by integration tests
+# (tests/integration/check_client_versions.sh).
 set -euo pipefail
 
 cd /ethpillar

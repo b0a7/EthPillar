@@ -39,6 +39,12 @@ EOF
 }
 
 @test "parse_execution_client_version parses geth version output" {
+  run parse_execution_client_version Geth $'Geth\nVersion: 1.14.12-stable-abc123'
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.14.12" ]
+}
+
+@test "parse_execution_client_version parses geth version on one line" {
   run parse_execution_client_version Geth 'Geth Version: 1.14.12-stable-abc123'
   [ "$status" -eq 0 ]
   [ "$output" = "1.14.12" ]
@@ -51,6 +57,12 @@ EOF
 }
 
 @test "parse_execution_client_version parses nethermind version output" {
+  run parse_execution_client_version Nethermind $'Version:     1.38.0+c07a4d65\nCommit:      c07a4d65'
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.38.0" ]
+}
+
+@test "parse_execution_client_version parses nethermind version on one line" {
   run parse_execution_client_version Nethermind 'Nethermind v1.32.0+abc'
   [ "$status" -eq 0 ]
   [ "$output" = "1.32.0" ]
@@ -78,10 +90,21 @@ EOF
 
 @test "get_execution_version_output uses geth version subcommand" {
   local stub="$TEST_BIN_DIR/geth"
-  write_stub_binary "$stub" '[[ "$1" == "version" ]] && echo "Geth Version: 1.14.0"'
+  write_stub_binary "$stub" '[[ "$1" == "version" ]] && printf "%s\n%s\n" "Geth" "Version: 1.14.0-stable"'
   run get_execution_version_output "$stub" Geth
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Geth Version: 1.14.0"* ]]
+  [[ "$output" == *"Version: 1.14.0-stable"* ]]
+}
+
+@test "getExecutionCurrentVersion reads geth from execution service stub" {
+  local stub="$TEST_BIN_DIR/geth"
+  write_stub_binary "$stub" '[[ "$1" == "version" ]] && printf "%s\n%s\n" "Geth" "Version: 1.17.3-stable"'
+  cat <<EOF > "$EXEC_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  EL=Geth
+  getExecutionCurrentVersion
+  [ "$VERSION" = "1.17.3" ]
 }
 
 @test "get_execution_version_output uses --version for other clients" {

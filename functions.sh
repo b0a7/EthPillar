@@ -81,23 +81,29 @@ get_execution_version_output() {
 parse_execution_client_version() {
   local el="$1"
   local output="$2"
-  local prefix line parsed=""
+  local prefixes=() prefix parsed=""
   case "$el" in
-    Geth)       prefix='[Gg]eth[^0-9]*' ;;
-    Besu)       prefix='[Bb]esu[^0-9]*' ;;
-    Nethermind) prefix='[Nn]ethermind[^0-9]*' ;;
-    Erigon)     prefix='[Ee]rigon[^0-9]*' ;;
-    Reth)       prefix='[Rr]eth[^0-9]*' ;;
-    Ethrex)     prefix='[Ee]threx[^0-9]*' ;;
+    Geth)       prefixes=('[Gg]eth[[:space:]]*[^0-9]*') ;;
+    Besu)       prefixes=('[Bb]esu[^0-9]*') ;;
+    Nethermind) prefixes=('[Nn]ethermind[[:space:]]*[^0-9]*' '[Vv]ersion[[:space:]]*[^0-9]*') ;;
+    Erigon)     prefixes=('[Ee]rigon[^0-9]*') ;;
+    Reth)       prefixes=('[Rr]eth[^0-9]*') ;;
+    Ethrex)     prefixes=('[Ee]threx[^0-9]*') ;;
     *)          echo ""; return 1 ;;
   esac
-  while IFS= read -r line; do
-    parsed=$(sed -nE "s/.*${prefix}v?([0-9]+\\.[0-9]+\\.[0-9]+).*/\\1/p" <<< "$line" | head -1)
+  for prefix in "${prefixes[@]}"; do
+    parsed=$(printf '%s' "$output" | sed -z -nE "s/.*${prefix}v?([0-9]+\\.[0-9]+\\.[0-9]+).*/\\1/p" | head -1)
     if [[ -n "$parsed" ]]; then
       echo "$parsed"
       return 0
     fi
-  done <<< "$output"
+  done
+  # Last resort: first x.y.z in output when no client prefix matched.
+  parsed=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' <<< "$output" | head -1)
+  if [[ -n "$parsed" ]]; then
+    echo "$parsed"
+    return 0
+  fi
   echo ""
 }
 

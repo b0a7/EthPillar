@@ -652,6 +652,19 @@ def verify(args: Any):
             print(f"  ❌ No /var/lib/* directory owned by user {u} (expected) ")
             success = False
 
+    print("\n🔢 Verifying installed client version parsing...", flush=True)
+    version_check = subprocess.run(
+        ["bash", "/ethpillar/tests/integration/check_client_versions.sh"],
+        capture_output=True,
+        text=True,
+    )
+    if version_check.stdout:
+        print(version_check.stdout, end="", flush=True)
+    if version_check.stderr:
+        print(version_check.stderr, end="", flush=True)
+    if version_check.returncode != 0:
+        success = False
+
     return success
 
 if __name__ == "__main__":
