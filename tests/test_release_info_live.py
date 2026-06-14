@@ -15,7 +15,7 @@ These tests exercise the same code path used by ``update_execution.sh``,
 
 What each test does
 -------------------
-For every supported client (12 total), ``test_client_release_info_live`` verifies
+For every supported client, ``test_client_release_info_live`` verifies
 three scenarios that mirror the update menus:
 
 1. **LATEST** — same as choosing "install latest release"

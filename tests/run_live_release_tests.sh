@@ -1,5 +1,5 @@
 #!/bin/bash
-# Live release-info tests for all 12 EthPillar clients.
+# Live release-info tests for all supported EthPillar clients.
 #
 # Verifies get_client_release_info() against real GitHub / geth.ethereum.org
 # endpoints (LATEST, explicit version, and older release). Requires GITHUB_TOKEN.
