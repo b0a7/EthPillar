@@ -52,6 +52,79 @@ get_systemd_exec_path() {
   echo "$default_path"
 }
 
+# Default execution-client binary path (overridden by ExecStart when present).
+get_execution_binary_path() {
+  local el="$1"
+  local svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+  case "$el" in
+    Nethermind) get_systemd_exec_path "$svc" "/usr/local/bin/nethermind/nethermind" ;;
+    Besu)       get_systemd_exec_path "$svc" "/usr/local/bin/besu/bin/besu" ;;
+    Erigon)     get_systemd_exec_path "$svc" "/usr/local/bin/erigon" ;;
+    Geth)       get_systemd_exec_path "$svc" "/usr/local/bin/geth" ;;
+    Reth)       get_systemd_exec_path "$svc" "/usr/local/bin/reth" ;;
+    Ethrex)     get_systemd_exec_path "$svc" "/usr/local/bin/ethrex" ;;
+    *)          echo "" ;;
+  esac
+}
+
+# Run the client-specific version command and capture stdout/stderr.
+get_execution_version_output() {
+  local bin="$1"
+  local el="$2"
+  case "$el" in
+    Geth) "$bin" version 2>&1 ;;
+    *)    "$bin" --version 2>&1 ;;
+  esac
+}
+
+# Extract x.y.z only when it follows the client name (avoids rustc/JDK semver noise).
+parse_execution_client_version() {
+  local el="$1"
+  local output="$2"
+  local prefixes=() prefix parsed=""
+  case "$el" in
+    Geth)       prefixes=('[Gg]eth[[:space:]]*[^0-9]*') ;;
+    Besu)       prefixes=('[Bb]esu[^0-9]*') ;;
+    Nethermind) prefixes=('[Nn]ethermind[[:space:]]*[^0-9]*' '[Vv]ersion[[:space:]]*[^0-9]*') ;;
+    Erigon)     prefixes=('[Ee]rigon[^0-9]*') ;;
+    Reth)       prefixes=('[Rr]eth[^0-9]*') ;;
+    Ethrex)     prefixes=('[Ee]threx[^0-9]*') ;;
+    *)          echo ""; return 1 ;;
+  esac
+  for prefix in "${prefixes[@]}"; do
+    parsed=$(printf '%s' "$output" | sed -z -nE "s/.*${prefix}v?([0-9]+\\.[0-9]+\\.[0-9]+).*/\\1/p" | head -1)
+    if [[ -n "$parsed" ]]; then
+      echo "$parsed"
+      return 0
+    fi
+  done
+  # Last resort: first x.y.z in output when no client prefix matched.
+  parsed=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' <<< "$output" | head -1)
+  if [[ -n "$parsed" ]]; then
+    echo "$parsed"
+    return 0
+  fi
+  echo ""
+}
+
+# Sets VERSION from the installed execution client binary (not RPC).
+getExecutionCurrentVersion() {
+  local el="${1:-$EL}"
+  local bin output
+  VERSION=""
+  bin=$(get_execution_binary_path "$el")
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    VERSION="Unable to query ${el:-execution client} version from binary."
+    return 1
+  fi
+  output=$(get_execution_version_output "$bin" "$el")
+  VERSION=$(parse_execution_client_version "$el" "$output")
+  if [[ -z "$VERSION" ]]; then
+    VERSION="Unable to query ${el} version from binary."
+    return 1
+  fi
+}
+
 getNetworkConfig() {
     ip_current=$( hostname --all-ip-address | awk '{print $1}')
     interface_current=$(ip route | grep default | head -1 | sed 's/.*dev \([^ ]*\) .*/\1/')
@@ -265,7 +338,8 @@ ensure_python_deps() {
         ohai "Installing python3-venv"
         sudo apt-get update -qq
         py_version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-        sudo apt-get install -y -qq python3-venv "python${py_version}-venv" python3-pip
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            python3-venv "python${py_version}-venv" python3-pip
         python3 -c "import ensurepip" &>/dev/null || error "python3-venv is required but ensurepip is still unavailable"
     fi
 
@@ -324,40 +398,54 @@ sys.exit(0 if ensure_java_available(int(sys.argv[1])) else 1)
 PY
 }
 
-# Gets software version from binary
-getCurrentVersion(){
+# Gets installed CL or VC version from binary.
+# Args: client (optional, defaults to CLIENT from getClient), role cl|vc (optional, defaults to cl).
+# Use role=cl for consensus/beacon (consensus.service); role=vc for validator (validator.service).
+getClVcCurrentVersion(){
+    local client="${1:-$CLIENT}"
+    local role="${2:-cl}"
+    local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local svc_file
+    if [[ "$role" == "vc" ]]; then
+        svc_file="$validator_svc"
+    else
+        svc_file="$consensus_svc"
+    fi
     VERSION="NotInstalled"
-    case "$CLIENT" in
+    case "$client" in
       Lighthouse)
-        LH_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lighthouse")
-        VERSION=$("$LH_BIN" --version | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+")
+        LH_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lighthouse")
+        VERSION=$("$LH_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
         ;;
       Lodestar)
-        LODESTAR_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lodestar")
-        VERSION=$("$LODESTAR_BIN" --version | grep -oE "v[0-9]+.[0-9]+.[0-9]+")
+        LODESTAR_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lodestar")
+        VERSION=$("$LODESTAR_BIN" --version 2>&1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
         ;;
       Teku)
-        TEKU_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/teku/bin/teku")
-        VERSION=$("$TEKU_BIN" --version | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+")
+        TEKU_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/teku/bin/teku")
+        VERSION=$("$TEKU_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
         ;;
       Nimbus)
-        NIMBUS_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/nimbus_beacon_node")
-        test -f "$NIMBUS_BIN" || NIMBUS_BIN=$(get_systemd_exec_path "/etc/systemd/system/validator.service" "/usr/local/bin/nimbus_validator_client")
-        VERSION=$("$NIMBUS_BIN" --version | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+")
+        if [[ "$role" == "vc" ]]; then
+          NIMBUS_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/nimbus_validator_client")
+        else
+          NIMBUS_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/nimbus_beacon_node")
+        fi
+        VERSION=$("$NIMBUS_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
         ;;
       Grandine)
-        GRANDINE_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/grandine")
-        VERSION=$("$GRANDINE_BIN" --version | head -1 | grep -oE "v?[0-9]+\.[0-9]+\.[0-9]+")
+        GRANDINE_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/grandine")
+        VERSION=$("$GRANDINE_BIN" --version 2>&1 | head -1 | grep -oE "v?[0-9]+\.[0-9]+\.[0-9]+" || true)
         if [[ $VERSION != v* ]]; then VERSION="v$VERSION"; fi
         ;;
       Prysm)
-        PRYSM_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/prysm-beacon-chain")
-        if [[ -f "$PRYSM_BIN" ]]; then
-            VERSION=$("$PRYSM_BIN" --version | head -1 | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+")
+        if [[ "$role" == "vc" ]]; then
+          PRYSM_BIN=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/prysm-validator")
         else
-            PRYSM_BIN=$(get_systemd_exec_path "/etc/systemd/system/validator.service" "/usr/local/bin/prysm-validator")
-            VERSION=$("$PRYSM_BIN" --version | head -1 | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+")
+          PRYSM_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/prysm-beacon-chain")
         fi
+        VERSION=$("$PRYSM_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+" || true)
         ;;
       *)
         echo "ERROR: Unable to determine client."
@@ -1420,5 +1508,22 @@ function export_logs() {
     whiptail --title "Export Complete" --msgbox "Logs have been exported to $HOME/$output_file" 10 60
 }
 
-# Auto-install Python dependencies on first load
+# Install apt packages required by the TUI, deploy scripts, and updates.
+# List lives in deploy/runtime_packages.txt (no Python imports — safe before venv exists).
+ensure_host_runtime_packages() {
+    local pkg packages_file="${BASE_DIR}/deploy/runtime_packages.txt"
+    local -a packages missing=()
+    [[ -f "$packages_file" ]] || error "runtime_packages.txt not found in ${BASE_DIR}/deploy"
+    mapfile -t packages < <(grep -v '^#' "$packages_file" | grep -v '^[[:space:]]*$')
+    for pkg in "${packages[@]}"; do
+        dpkg -s "$pkg" &>/dev/null || missing+=("$pkg")
+    done
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+    ohai "Installing host packages: ${missing[*]}"
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${missing[@]}"
+}
+
+# Host tools first (whiptail, curl, …), then Python venv deps.
+ensure_host_runtime_packages
 ensure_python_deps

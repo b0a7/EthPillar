@@ -25,17 +25,6 @@ source "$BASE_DIR"/functions.sh
 _platform=$(get_platform)
 _arch=$(get_arch)
 
-function getCurrentVersion(){
-  EL_INSTALLED=$(curl -s -X POST -H "Content-Type: application/json" \
-    --data '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":2}' \
-    "${EL_RPC_ENDPOINT}" | jq -r '.result // empty')
-  if [[ -z "$EL_INSTALLED" ]]; then
-    VERSION="Client not running or still starting up. Unable to query version."
-    return
-  fi
-  VERSION=$(sed -E 's/.*[v\/]([0-9]+\.[0-9]+\.[0-9]+).*/\1/' <<< "$EL_INSTALLED")
-}
-
 function getClient(){
     EL=$(cat /etc/systemd/system/execution.service | grep Description= | awk -F'=' '{print $2}' | awk '{print $1}')
     # Handle integrated ELs i.e. Erigon-Caplin
@@ -58,6 +47,9 @@ function selectCustomTag(){
 	    ;;
 	  Reth)
 	    _repo="paradigmxyz/reth"
+	    ;;
+	  Ethrex)
+	    _repo="lambdaclass/ethrex"
 	    ;;
 	  *)
 	    error "❌ Unsupported or unknown client '$EL'."
@@ -126,6 +118,7 @@ function getLatestVersion(){
 	  Erigon)     CHANGES_URL="https://github.com/erigontech/erigon/releases" ;;
 	  Geth)       CHANGES_URL="https://github.com/ethereum/go-ethereum/releases" ;;
 	  Reth)       CHANGES_URL="https://github.com/paradigmxyz/reth/releases" ;;
+	  Ethrex)     CHANGES_URL="https://github.com/lambdaclass/ethrex/releases" ;;
 	  *)          CHANGES_URL="" ;;
 	esac
 }
@@ -242,6 +235,21 @@ function updateClient(){
 		sudo systemctl start execution
 		rm -rf "$EXTRACTED_DIR"
 	    ;;
+	  Ethrex)
+		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
+		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
+		info "✅ Downloading URL: $BINARIES_URL"
+		cd "$HOME" || true
+		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/ethrex")
+		sudo systemctl stop execution
+		sudo rm -f "$EXEC_PATH"
+		sudo mkdir -p "$(dirname "$EXEC_PATH")"
+		# install_system_binary will move and configure the binary at the full exec path
+		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_binary; install_system_binary('${FILENAME}', '${EXEC_PATH}')"
+		sudo systemctl start execution
+		rm -f "$FILENAME"
+	    ;;
 	esac
 }
 
@@ -251,7 +259,7 @@ if [[ "${1:-}" == "--auto" ]]; then
     updateClient "LATEST"
 else
     getClient
-    getCurrentVersion
+    getExecutionCurrentVersion "$EL"
     getLatestVersion
     promptYesNo
 fi

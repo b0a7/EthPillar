@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build test image
         run: docker build -t ethpillar-test -f tests/integration/Dockerfile.test .
@@ -46,7 +46,7 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build test image
         run: docker build -t ethpillar-test -f tests/integration/Dockerfile.test .
@@ -68,10 +68,10 @@ jobs:
       CI: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Restore binary download cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tests/integration/cache
           key: binary-cache-${{ runner.os }}-${{ hashFiles('tests/integration/cache/**') }}
@@ -79,7 +79,7 @@ jobs:
             binary-cache-${{ runner.os }}-
 
       - name: Restore checkpoint cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: tests/integration/checkpoint_cache
           key: checkpoint-${{ runner.os }}-${{ hashFiles('tests/integration/checkpoint_cache/manifest.json') }}
@@ -95,7 +95,7 @@ jobs:
 
       - name: Upload integration report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-integration-${{ github.run_id }}
           path: tests/integration/results/

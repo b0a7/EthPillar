@@ -28,6 +28,7 @@ from deploy.common import (
     write_service_file,
     setup_node,
     setup_client_user_and_dir,
+    NODE_RUNTIME_PACKAGES,
 )
 
 
@@ -212,33 +213,39 @@ class TestSetupNode:
     def test_validator_only_skips_jwt_creation(self, mock_run):
         setup_node('/secrets/jwtsecret', validator_only=True)
         calls_as_str = [str(c) for c in mock_run.call_args_list]
-        assert not any('openssl' in s for s in calls_as_str)
-        assert not any('mkdir -p' in s for s in calls_as_str)
+        assert not any("openssl', 'rand'" in s or 'openssl", "rand"' in s for s in calls_as_str)
+        assert not any('mkdir' in s and '-p' in s for s in calls_as_str)
 
     @patch('subprocess.run')
     def test_always_runs_apt_update(self, mock_run):
         setup_node('/secrets/jwtsecret', validator_only=False)
-        mock_run.assert_any_call(['sudo', 'apt', '-y', '-qq', 'update'])
+        mock_run.assert_any_call(['sudo', 'apt', '-y', '-qq', 'update'], check=True)
 
     @patch('subprocess.run')
     def test_always_runs_apt_upgrade(self, mock_run):
         setup_node('/secrets/jwtsecret', validator_only=False)
-        mock_run.assert_any_call(['sudo', 'apt', '-y', '-qq', 'upgrade'])
+        mock_run.assert_any_call(['sudo', 'apt', '-y', '-qq', 'upgrade'], check=True)
 
     @patch('subprocess.run')
-    def test_always_installs_chrony(self, mock_run):
+    def test_always_installs_runtime_packages(self, mock_run):
         setup_node('/secrets/jwtsecret', validator_only=False)
-        mock_run.assert_any_call(['sudo', 'apt', '-y', '-qq', 'install', 'chrony'])
+        mock_run.assert_any_call(
+            ['sudo', 'apt', '-y', '-qq', 'install', '--no-install-recommends', *NODE_RUNTIME_PACKAGES],
+            check=True,
+        )
 
     @patch('subprocess.run')
     def test_validator_only_still_runs_apt_commands(self, mock_run):
         setup_node('/secrets/jwtsecret', validator_only=True)
-        mock_run.assert_any_call(['sudo', 'apt', '-y', '-qq', 'update'])
-        mock_run.assert_any_call(['sudo', 'apt', '-y', '-qq', 'install', 'chrony'])
+        mock_run.assert_any_call(['sudo', 'apt', '-y', '-qq', 'update'], check=True)
+        mock_run.assert_any_call(
+            ['sudo', 'apt', '-y', '-qq', 'install', '--no-install-recommends', *NODE_RUNTIME_PACKAGES],
+            check=True,
+        )
 
     @patch('subprocess.run')
     def test_full_node_call_count(self, mock_run):
-        # mkdir + openssl + tee + update + upgrade + autoremove + install = 7
+        # update + upgrade + autoremove + install + mkdir + openssl + tee = 7
         setup_node('/secrets/jwtsecret', validator_only=False)
         assert mock_run.call_count == 7
 
@@ -257,8 +264,8 @@ class TestSetupNode:
         calls_as_str = [str(c) for c in mock_run.call_args_list]
         # Should NOT create jwt directory
         assert not any('mkdir' in s and '-p' in s for s in calls_as_str)
-        # Should NOT run openssl
-        assert not any('openssl' in s for s in calls_as_str)
+        # Should NOT run openssl rand to generate a new jwtsecret
+        assert not any("openssl', 'rand'" in s or 'openssl", "rand"' in s for s in calls_as_str)
         # Should still run apt commands
         assert any('apt' in s and 'update' in s for s in calls_as_str)
 

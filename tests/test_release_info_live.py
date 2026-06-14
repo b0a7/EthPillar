@@ -15,7 +15,7 @@ These tests exercise the same code path used by ``update_execution.sh``,
 
 What each test does
 -------------------
-For every supported client (12 total), ``test_client_release_info_live`` verifies
+For every supported client, ``test_client_release_info_live`` verifies
 three scenarios that mirror the update menus:
 
 1. **LATEST** — same as choosing "install latest release"
@@ -50,7 +50,9 @@ from functools import lru_cache
 import pytest
 import requests
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_tests_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.dirname(_tests_dir)
+sys.path.insert(0, _repo_root)
 
 from deploy.common import _github_api_headers, get_client_release_info
 
@@ -72,6 +74,7 @@ CLIENT_REPOS: list[tuple[str, str | None]] = [
     ("grandine", "grandinetech/grandine"),
     ("prysm", "prysmaticlabs/prysm"),
     ("mevboost", "flashbots/mev-boost"),
+    ("ethrex", "lambdaclass/ethrex"),
 ]
 
 _GETH_DOWNLOADS_URL = "https://geth.ethereum.org/downloads"

@@ -8,6 +8,7 @@ The integration tests simulate various validator configurations (Solo Staking, L
 - Binaries are correctly downloaded and installed.
 - Systemd service files are syntactically valid (`daemon-reload` passes).
 - Services can be **actually started and stopped** via `systemctl`.
+- Installed client versions are parsed correctly via `functions.sh` (same path as the update menus).
 - Users and directories are properly set up.
 - All configurations work as expected without manual intervention.
 
@@ -50,12 +51,13 @@ The `Dockerfile.test` uses `ubuntu:24.04` and sets systemd as the `CMD`. The tes
 
 ## Project Structure
 
-- `Dockerfile.test`: Ubuntu 24.04 with systemd as PID 1. EthPillar runtime Python deps are not pre-installed; only test-harness tools (`pytest`, `pyyaml`) are.
+- `Dockerfile.test`: Ubuntu 24.04 with systemd as PID 1. Only container infrastructure is pre-installed (systemd, sudo, python3, bats). EthPillar runtime apt packages are installed by `setup_node()` during deploy.
 - `run_docker_tests.py`: Main orchestrator — builds the image, runs the test matrix with live UI, and generates HTML reports.
 - `run_docker_tests.ps1`: (Windows) Thin WSL wrapper that invokes `run_docker_tests.sh`.
 - `run_docker_tests.sh`: (Linux/WSL) Ensures host `rich` is installed, then invokes `run_docker_tests.py`.
 - `run_test.sh`: Production bootstrap wrapper — sources `functions.sh` (venv + `ensure_python_deps`) then execs the test runner.
 - `run_inside_docker.py`: Executes inside each container to run the deployment and verify artifacts via `systemctl`. Does not install Python deps itself.
+- `check_client_versions.sh`: After deploy (and after update tests), verifies installed versions parse via `getExecutionCurrentVersion` / `getClVcCurrentVersion` and match `release_info … LATEST` (same comparison as the update menu’s “already on latest” path).
 - `sitecustomize.py`: Caches release **binaries** only (revalidated with `HEAD` before reuse). GitHub API / release metadata always hits the network.
 - `cache/`: Persistent cache for validated release binaries.
 
@@ -116,8 +118,8 @@ Release **binaries** may be served from `cache/` after a live `HEAD` check confi
 ### Checkpoint sync (SEPOLIA + HOODI)
 
 Before the test matrix runs, `warm_checkpoint_cache.py` prefetches Beacon checkpoint API
-responses from ethpandaops. Entries expire after **20 hours**; a fresh run re-downloads only
-when stale (suited to nightly CI).
+responses from ethpandaops. Entries expire after **2 hours**; a fresh run re-downloads only
+when stale.
 
 **Cache location:** WSL/Windows runs store the cache at
 ``~/.cache/ethpillar/checkpoint_cache`` (not under the repo). Docker Desktop's repo bind

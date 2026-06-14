@@ -684,7 +684,7 @@ while true; do
         if whiptail --title "Shutdown" --defaultno --yesno "Are you sure you want to shutdown?" 8 78; then sudo shutdown now; fi
         ;;
       📦)
-        test -f /etc/systemd/system/validator.service && getClient && getCurrentVersion && _VC="Validator client: $CLIENT $VERSION"
+        test -f /etc/systemd/system/validator.service && getClient && getClVcCurrentVersion "$VC" vc && _VC="Validator client: $VC $VERSION"
         test -f /etc/systemd/system/consensus.service && _CL=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/version" -H "accept: application/json" | jq -r '.data.version')
         test -f /etc/systemd/system/execution.service && _EL=$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":2}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
         [[ $EL == "Erigon-Caplin" ]] && _CL=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/version" -H "accept: application/json" | jq -r '.data.version')
@@ -1559,7 +1559,7 @@ function getBackTitle(){
     getClient
     # Latest block
     latest_block_number=$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
-    if [[ -n "$latest_block_number" && "$latest_block_number" != "0x0" ]]; then LB=$(printf '🧱 Block %d' "$latest_block_number"); else LB="🔄 EL Syncing"; fi
+    if [[ -n "$latest_block_number" && "$latest_block_number" != "null" && "$latest_block_number" != "0x0" ]]; then LB=$(printf '🧱 Block %d' "$latest_block_number"); else LB="🔄 EL Syncing"; fi
 
     # Latest slot
     LS=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/syncing" -H "accept: application/json" | jq -r '.data.head_slot')
@@ -1568,7 +1568,7 @@ function getBackTitle(){
     # Format gas price
     GP="N/A"
     latest_gas_price=$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":73}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
-    if [[ -n "$latest_gas_price" ]]; then
+    if [[ -n "$latest_gas_price" && "$latest_gas_price" != "null" && "$latest_gas_price" =~ ^0x[0-9a-fA-F]+$ ]]; then
       WEI=$(printf '%d' "$latest_gas_price");
       if ((1000000000<="$WEI" && "$WEI"<=1000000000000)); then
           GP="$(echo "scale=1; $WEI / 1000000000" | bc) Gwei"

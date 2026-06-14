@@ -15,6 +15,20 @@ DOWNLOAD_DIR = "/tmp"
 BASE_DATA_DIR = "/var/lib"
 
 
+def _load_runtime_packages() -> tuple[str, ...]:
+    packages_path = os.path.join(os.path.dirname(__file__), 'runtime_packages.txt')
+    with open(packages_path, encoding='utf-8') as handle:
+        return tuple(
+            line.strip()
+            for line in handle
+            if line.strip() and not line.startswith('#')
+        )
+
+
+# Apt packages installed during node setup (deploy + update scripts + health checks).
+NODE_RUNTIME_PACKAGES = _load_runtime_packages()
+
+
 def install_system_binary(src_path: str, dest: str) -> str:
     """Move or install a binary and enforce secure perms/ownership.
 
@@ -412,6 +426,14 @@ def setup_node(jwt_secret_path: str, validator_only: bool = False) -> None:
         jwt_secret_path: Path to save the JWT secret.
         validator_only: If True, only setup validator-specific parts.
     """
+    subprocess.run(['sudo', 'apt', '-y', '-qq', 'update'], check=True)
+    subprocess.run(['sudo', 'apt', '-y', '-qq', 'upgrade'], check=True)
+    subprocess.run(['sudo', 'apt', '-y', '-qq', 'autoremove'], check=True)
+    subprocess.run(
+        ['sudo', 'apt', '-y', '-qq', 'install', '--no-install-recommends', *NODE_RUNTIME_PACKAGES],
+        check=True,
+    )
+
     if not validator_only:
         # Generate JWT secret only if it doesn't exist (don't regenerate on client switch)
         if not os.path.exists(jwt_secret_path):
@@ -422,16 +444,6 @@ def setup_node(jwt_secret_path: str, validator_only: bool = False) -> None:
             # Generate random hex string and save to file
             rand_hex = subprocess.run(['openssl', 'rand', '-hex', '32'], stdout=subprocess.PIPE, check=True)
             subprocess.run(['sudo', 'tee', jwt_secret_path], input=rand_hex.stdout, stdout=subprocess.DEVNULL, check=True)
-
-    # Update and upgrade packages
-    subprocess.run(['sudo', 'apt', '-y', '-qq', 'update'], check=True)
-    subprocess.run(['sudo', 'apt', '-y', '-qq', 'upgrade'], check=True)
-
-    # Autoremove packages
-    subprocess.run(['sudo', 'apt', '-y', '-qq' , 'autoremove'], check=True)
-
-    # Chrony timesync package
-    subprocess.run(['sudo', 'apt', '-y', '-qq', 'install', 'chrony'], check=True)
 
 def write_service_file(content: str, target_path: str, temp_filename: str = 'temp.service') -> None:
     """Write service content to a target path using a temporary file.
