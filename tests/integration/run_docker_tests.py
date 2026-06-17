@@ -374,6 +374,22 @@ def generate_html_report(tasks, results_dir, total_duration, timestamp, commit):
         f.write(html)
     return html_path
 
+def fix_cache_permissions_for_ci() -> None:
+    """Broaden read access on host cache dirs after Docker integration tests.
+
+    Containers run as root, so bind-mounted cache files arrive on the host as
+    root-owned. Per-file chmod 644 at write time helps, but directories and any
+    missed files still block the non-root CI runner from tarring caches for
+    actions/cache/save. sudo chmod -R a+rX fixes the whole tree without chown.
+    """
+    if os.environ.get("CI") != "true":
+        return
+    for name in ("cache", "checkpoint_cache"):
+        path = os.path.join(os.getcwd(), "tests", "integration", name)
+        if os.path.isdir(path):
+            subprocess.run(["sudo", "chmod", "-R", "a+rX", path], check=False)
+
+
 async def main():
     """Entry point: build image, warm caches, run matrix, emit report, set exit code."""
     parser = argparse.ArgumentParser()
@@ -432,6 +448,8 @@ async def main():
         await headless_monitor(tasks, exec_coros)
     
     total_duration = int(time.time() - start_time)
+
+    fix_cache_permissions_for_ci()
     
     html_path = generate_html_report(tasks, results_dir, total_duration, timestamp, get_git_commit())
     print(f"\n✅ Report generated: {html_path}")

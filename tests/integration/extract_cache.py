@@ -151,9 +151,12 @@ def write_selective_cache(
         print(f"[EXTRACT CACHE] Warning: Could not cache extracted files for {dest_dir}")
         return
 
-    subprocess.run(["/usr/bin/sudo", "/usr/bin/chmod", "666", temp_tar], check=False)
+    # temp_tar is created via sudo tar (root-owned); make it readable before rename.
+    subprocess.run(["/usr/bin/sudo", "/usr/bin/chmod", "644", temp_tar], check=False)
     try:
         os.rename(temp_tar, cache_tar)
+        # Same root-ownership story as sitecustomize.py — runner must read extracted_*.tar.
+        os.chmod(cache_tar, 0o644)
     except OSError:
         subprocess.run(["/usr/bin/sudo", "/usr/bin/rm", "-f", temp_tar], check=False)
 

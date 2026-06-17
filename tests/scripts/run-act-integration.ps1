@@ -6,9 +6,9 @@
 #   - Optional: $env:GITHUB_TOKEN for API rate limits during the test matrix
 #
 # Usage:
-#   .\scripts\run-act-integration.ps1              # dry-run (list steps)
-#   .\scripts\run-act-integration.ps1 -Run         # execute workflow
-#   .\scripts\run-act-integration.ps1 -Run -Job cache-smoke  # cache restore/save smoke test
+#   .\tests\scripts\run-act-integration.ps1              # dry-run (list steps)
+#   .\tests\scripts\run-act-integration.ps1 -Run         # execute workflow
+#   .\tests\scripts\run-act-integration.ps1 -Run -Job cache-smoke  # cache restore/save smoke test
 
 [CmdletBinding()]
 param(
@@ -20,7 +20,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-Set-Location (Join-Path $PSScriptRoot "..")
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+Set-Location $RepoRoot
 
 $act = Get-Command act -ErrorAction SilentlyContinue
 if (-not $act) {
