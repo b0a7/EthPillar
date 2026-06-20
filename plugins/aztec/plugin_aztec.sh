@@ -118,6 +118,7 @@ function exposeETHRPC(){
         Erigon     ) _flag='--http.addr';;
         Geth       ) _flag='--http.addr';;
         Reth       ) _flag='--http.addr';;
+        Ethrex     ) _flag='--http.addr';;
         * ) echo "Execution client not detected"; return 0;;
     esac
     if sudo grep -e "^ExecStart=.*${_flag}=${_exposed}" "$_file"; then

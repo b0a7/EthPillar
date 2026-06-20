@@ -294,8 +294,12 @@ class TestEthrexService:
         assert "KillSignal=SIGINT" in result
         assert "TimeoutStopSec=900" in result
         assert "Environment=RUST_LOG=info" in result
-        # Ethrex-specific flags
-        assert "--http.addr 0.0.0.0 \\" in result
+        # Ethrex binds management APIs to localhost by default
+        assert "--http.addr 127.0.0.1 \\" in result
+        assert "--ws.addr 127.0.0.1 \\" in result
+        assert "--metrics.addr 127.0.0.1 \\" in result
+        assert "--authrpc.addr 127.0.0.1 \\" in result
+        assert "0.0.0.0" not in result
         assert "--authrpc.port 8551 \\" in result
         assert "--ws.enabled \\" in result
         assert "--ws.port 8546 \\" in result
