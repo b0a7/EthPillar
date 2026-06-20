@@ -78,13 +78,17 @@ ohai() {
 
 # Resolve repo location: use this checkout when install.sh is run from a clone,
 # otherwise default to ~/git/ethpillar (curl | bash one-liner).
-SOURCE="${BASH_SOURCE[0]}"
+SOURCE="${BASH_SOURCE[0]:-${0:-}}"
 while [ -h "$SOURCE" ]; do
   DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
   SOURCE="$(readlink "$SOURCE")"
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 SCRIPT_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+# Piped installs (curl | bash) expose $0 as "bash" or "-"; treat as outside the repo.
+if [[ "$SOURCE" == "bash" || "$SOURCE" == "-" || "$SOURCE" == */bash ]]; then
+  SCRIPT_DIR="$(pwd)"
+fi
 
 if [[ -f "$SCRIPT_DIR/ethpillar.sh" ]]; then
   # running from a cloned repo, use that as the source location
@@ -127,13 +131,28 @@ linux_install_python_deps() {
 
 linux_install_installer() {
     if [[ -f "$SCRIPT_DIR/ethpillar.sh" ]]; then
+        # install from manually cloned repo (user defined location)
         ohai "Installing ethpillar from ${REPO}"
     else
+        # Curl | bash one-liner; REPO is ~/git/ethpillar default location
         ohai "Cloning EthPillar into ${REPO}"
-        mkdir -p "${REPO}"
-        # Updated to use this maintained fork
-        git clone https://github.com/mjkeating/EthPillar.git "${REPO}/" 2> /dev/null || \
-          (cd "${REPO}" ; git fetch origin main ; git checkout main ; git pull)
+        INSTALL_GIT_URL="${ETHPILLAR_INSTALL_GIT_URL:-https://github.com/mjkeating/EthPillar.git}"
+        if [[ -n "${ETHPILLAR_INSTALL_COPY_FROM:-}" && -f "${ETHPILLAR_INSTALL_COPY_FROM}/ethpillar.sh" ]]; then
+            # Install smoke test only - copy files instead of cloning
+            # (see tests/integration/install_smoke/)
+            rm -rf "${REPO}"
+            mkdir -p "${REPO}"
+            cp -a "${ETHPILLAR_INSTALL_COPY_FROM}/." "${REPO}/"
+        elif [[ -d "${REPO}/.git" ]]; then
+            # Re-run: default path already cloned - fetch latest code
+            (cd "${REPO}" ; git fetch origin main ; git checkout main ; git pull)
+        else
+            # First-time curl | bash install - clone repo
+            rm -rf "${REPO}"
+            mkdir -p "$(dirname "${REPO}")"
+            git clone "${INSTALL_GIT_URL}" "${REPO}" 2> /dev/null || \
+              (cd "${REPO}" ; git fetch origin main ; git checkout main ; git pull)
+        fi
     fi
     chmod +x "${REPO}"/*.sh
     ohai "Installing ethpillar"
@@ -163,7 +182,9 @@ if [[ "$OS" == "Linux" ]]; then
     """
     ohai "This script will install a node management tool called 'ethpillar'"
 
-    wait_for_user
+    if [[ -t 0 && -z "${ETHPILLAR_INSTALL_NONINTERACTIVE:-}" ]]; then
+      wait_for_user
+    fi
     linux_install_pre
     linux_install_installer
     linux_install_python_deps
