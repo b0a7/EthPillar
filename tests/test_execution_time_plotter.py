@@ -72,6 +72,7 @@ def test_resolve_journalctl_cmd_uses_unprivileged_journalctl(monkeypatch):
 def test_resolve_journalctl_cmd_falls_back_to_sudo(monkeypatch):
     from producers import resolve_journalctl_cmd
 
+    monkeypatch.setattr("producers.os.geteuid", lambda: 1000)
     monkeypatch.setattr(
         "producers.subprocess.run",
         lambda *args, **kwargs: type("Result", (), {"returncode": 1})(),
