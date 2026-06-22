@@ -4,11 +4,18 @@ from pathlib import Path
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "logging" / "plotExecutionTimes" / "plotProcessingTimes.py"
+SYSTEM_INFO_PATH = Path(__file__).resolve().parents[1] / "logging" / "plotExecutionTimes" / "system_info.py"
 SPEC = importlib.util.spec_from_file_location("plot_processing_times", MODULE_PATH)
 plotter = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = plotter
 SPEC.loader.exec_module(plotter)
+
+SYSTEM_INFO_SPEC = importlib.util.spec_from_file_location("plot_system_info", SYSTEM_INFO_PATH)
+system_info = importlib.util.module_from_spec(SYSTEM_INFO_SPEC)
+assert SYSTEM_INFO_SPEC.loader is not None
+sys.modules[SYSTEM_INFO_SPEC.name] = system_info
+SYSTEM_INFO_SPEC.loader.exec_module(system_info)
 
 
 def test_geth_parser_normalizes_milliseconds():
@@ -56,3 +63,21 @@ def test_auto_source_uses_journalctl_reader():
     producer = plotter.choose_producer("auto", "execution", 0)
 
     assert producer.__class__.__name__ == "JournalctlProducer"
+
+
+def test_parse_execution_client_version_strips_ethrex_rpc_noise():
+    raw = (
+        "ethrex:v17.0.0-HEAD-d7492778060776019f49dad9b5b2acff82a0a007/"
+        "x86_64-unknown-linux-gnu/rustc-v1.91.0"
+    )
+
+    assert system_info.parse_execution_client_version("ethrex", raw) == "17.0.0"
+    assert system_info.format_client_version_label("ethrex", raw) == "ethrex:17.0.0"
+
+
+def test_parse_execution_client_version_strips_reth_and_nethermind_rpc_noise():
+    reth_raw = "reth:v2.3.0-9384bc5/x86_64-unknown-linux-gnu"
+    nethermind_raw = "Nethermind:v1.38.0+c07a4d65/linux-x64/dotnet10.0.7"
+
+    assert system_info.format_client_version_label("reth", reth_raw) == "reth:2.3.0"
+    assert system_info.format_client_version_label("Nethermind", nethermind_raw) == "Nethermind:1.38.0"
