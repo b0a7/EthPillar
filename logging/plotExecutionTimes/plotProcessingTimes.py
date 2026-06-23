@@ -33,7 +33,7 @@ from models import REDRAW_REQUESTED, ProcessingPoint
 from parsers import ExecutionLogParser
 from plotting import PlotRenderer, PlotState, calculate_tier_percentages, consume_points
 from producers import LineProducer, choose_producer
-from system_info import build_machine_info, detect_client_info
+from system_info import build_machine_info, detect_client_info, format_manual_client_label, is_unknown_client_version
 
 
 DEFAULT_MAX_POINTS = 320
@@ -123,8 +123,8 @@ async def refresh_client_info(
         if auto_client:
             parser_state.update_client(client_name)
         detected_client_name = (client_name or "unknown").lower()
-        detected_unknown_version = client_version == "Client:Unknown" or client_version.endswith(":Unknown")
-        current_known_version = not plot_state.machine_info.client_version.endswith(":Unknown")
+        detected_unknown_version = is_unknown_client_version(client_version)
+        current_known_version = not is_unknown_client_version(plot_state.machine_info.client_version)
         same_client = detected_client_name == previous_client_name
         if detected_unknown_version and current_known_version and same_client:
             continue
@@ -174,6 +174,10 @@ def run_self_test() -> int:
         "reth": "INFO number=23493228 gas_used=8.50Mgas elapsed=59.916758ms",
         "besu": "INFO | 20,237,520 (100.0%) gas; 1.2 mwei bfee| 20,237,520 (0.154s exec)",
         "nethermind": "Processed 123 | 345.6 ms Block 123 17.42 MGas",
+        "ethrex": (
+            "[METRIC] BLOCK 25376968 0x2c14fb16115945ffac5dfaefae96638e13865063183a038c838f314d51f90c77 "
+            "| 0.642 Ggas/s | 76.29 ms | 1023 txs | 49 Mgas (82%)"
+        ),
     }
 
     for client, line in samples.items():
@@ -196,7 +200,7 @@ async def async_main(args: argparse.Namespace) -> None:
     auto_client = args.client == "auto"
     if not auto_client:
         client_name = args.client
-        client_version = f"{args.client}:manual"
+        client_version = format_manual_client_label(args.client)
 
     parser_state = ParserState(client_name)
     producer = choose_producer(args.source, args.unit, args.tail, args.journalctl_cmd)

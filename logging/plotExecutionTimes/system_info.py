@@ -26,6 +26,81 @@ from typing import Optional, Sequence
 
 from models import MachineInfo
 
+_CLIENT_VERSION_PREFIXES: dict[str, tuple[str, ...]] = {
+    "geth": (r"[Gg]eth\s*[^0-9]*",),
+    "besu": (r"[Bb]esu[^0-9]*",),
+    "nethermind": (r"[Nn]ethermind\s*[^0-9]*", r"[Vv]ersion\s*[^0-9]*"),
+    "erigon": (r"[Ee]rigon[^0-9]*",),
+    "reth": (r"[Rr]eth[^0-9]*",),
+    "ethrex": (r"[Ee]threx[^0-9]*",),
+}
+_SEMVER_PATTERN = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+
+
+def parse_execution_client_version(client_name: str, output: str) -> Optional[str]:
+    """Extract an x.y.z version from client version output.
+
+    Mirrors ``parse_execution_client_version`` in ``functions.sh`` so RPC and
+    binary version strings can be shown compactly in the plot header.
+
+    Args:
+        client_name: Execution client name (e.g. ``"ethrex"``, ``"reth"``).
+        output: Raw version string from RPC or the client binary.
+
+    Returns:
+        The parsed ``x.y.z`` version, or ``None`` when parsing fails.
+    """
+
+    client_key = (client_name or "").lower()
+    prefixes = _CLIENT_VERSION_PREFIXES.get(client_key)
+    if prefixes:
+        for prefix in prefixes:
+            match = re.search(rf".*{prefix}v?([0-9]+\.[0-9]+\.[0-9]+)", output, re.DOTALL)
+            if match:
+                return match.group(1)
+
+    match = _SEMVER_PATTERN.search(output)
+    return match.group(0) if match else None
+
+
+def _display_client_name(client_name: str) -> str:
+    """Return a display-friendly execution client name."""
+
+    name = (client_name or "unknown").strip()
+    if not name or name.lower() == "unknown":
+        return "Unknown"
+    return name[0].upper() + name[1:]
+
+
+def format_client_version_label(client_name: str, raw_version: str) -> str:
+    """Return a compact client label for the plot header.
+
+    Args:
+        client_name: Detected execution client name.
+        raw_version: Raw ``web3_clientVersion`` result or similar.
+
+    Returns:
+        A short label such as ``"Nethermind v1.38.0"``, or ``"Ethrex Unknown"``.
+    """
+
+    display_name = _display_client_name(client_name)
+    parsed = parse_execution_client_version(client_name, raw_version)
+    if parsed:
+        return f"{display_name} v{parsed}"
+    return f"{display_name} Unknown"
+
+
+def format_manual_client_label(client_name: str) -> str:
+    """Return a plot header label for a manually selected client."""
+
+    return f"{_display_client_name(client_name)} manual"
+
+
+def is_unknown_client_version(client_version: str) -> bool:
+    """Return True when a client version label has no resolved semver."""
+
+    return client_version.endswith(" Unknown") or client_version == "Unknown client"
+
 
 def _run_command(command: Sequence[str], timeout: float = 2.0) -> Optional[str]:
     """Run a command and return its stdout output.
@@ -147,12 +222,11 @@ def detect_execution_rpc(endpoint: str, timeout: float = 2.0) -> Optional[tuple[
     if not result:
         return None
 
-    match = re.match(r"([A-Za-z0-9_-]+)[/ ]?([^ ]*)", str(result))
+    match = re.match(r"([A-Za-z0-9_-]+)", str(result))
     if not match:
         return None
     name = match.group(1)
-    version = match.group(2) or "Unknown"
-    return name, f"{name}:{version}"
+    return name.lower(), format_client_version_label(name, str(result))
 
 
 def detect_execution_service_client() -> Optional[str]:
@@ -174,14 +248,14 @@ def detect_execution_service_client() -> Optional[str]:
     description = re.search(r"^Description=(.+)$", content, re.MULTILINE)
     if description:
         first_word = description.group(1).strip().split()[0].lower()
-        known_names = {"geth", "reth", "nethermind", "besu", "erigon"}
+        known_names = {"geth", "reth", "nethermind", "besu", "erigon", "ethrex"}
         if first_word in known_names:
             return first_word
 
     exec_start = re.search(r"^ExecStart=(.+)$", content, re.MULTILINE)
     if exec_start:
         value = exec_start.group(1).lower()
-        for name in ("geth", "reth", "nethermind", "besu", "erigon"):
+        for name in ("geth", "reth", "nethermind", "besu", "erigon", "ethrex"):
             if name in value:
                 return name
     return None
@@ -203,9 +277,9 @@ def detect_client_info(endpoint: str) -> tuple[str, str]:
 
     service_client = detect_execution_service_client()
     if service_client:
-        return service_client, f"{service_client}:Unknown"
+        return service_client, format_client_version_label(service_client, "")
 
-    return "unknown", "Client:Unknown"
+    return "unknown", "Unknown client"
 
 
 def build_machine_info(client_version: str) -> MachineInfo:
