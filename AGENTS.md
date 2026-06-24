@@ -24,9 +24,9 @@ EthPillar is a Linux Bash TUI (`ethpillar.sh`) plus a Python deploy layer (`depl
 
 ## Testing
 See `tests/README.md` for instructions on how to test via docker and what test suites exist.
+- Systemd output: golden tests in `tests/test_service_generators.py`
 
 ## Conventions
 - Match existing Bash/Python patterns; minimal diffs, avoid code duplication, provide function docstrings and type-hinting
 - Client modules must satisfy `deploy/protocols.py` (`tests/test_client_module_contracts.py`)
-- Systemd output: golden tests in `tests/test_service_generators.py`
 - Never commit secrets (`.env.overrides`, keys, tokens)
