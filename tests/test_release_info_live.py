@@ -46,6 +46,7 @@ import os
 import re
 import sys
 from functools import lru_cache
+from unittest.mock import patch
 
 import pytest
 import requests
@@ -55,8 +56,6 @@ _repo_root = os.path.dirname(_tests_dir)
 sys.path.insert(0, _repo_root)
 
 from deploy.common import _github_api_headers, get_client_release_info
-
-pytestmark = pytest.mark.live
 
 # EthPillar client name -> GitHub repo used to find an older *published* release.
 # Geth download URLs come from geth.ethereum.org; the repo is only used as a
@@ -104,13 +103,26 @@ def _github_releases(repo: str) -> tuple[dict, ...]:
     )
 
 
-def _older_release_tag(repo: str, latest_version: str) -> str | None:
-    """First published GitHub release tag that differs from *latest_version*."""
+def _older_release_tag(client: str, repo: str, latest_version: str) -> str | None:
+    """First older GitHub release whose assets resolve via ``get_client_release_info``.
+
+    Releases are returned newest-first. Special tags (for example Nethermind's
+    ``zisk-guest-r7``) may appear before or after the real ``/releases/latest``
+    tag; only releases that actually resolve to installable binaries count.
+    """
     latest_norm = _normalize_version(latest_version)
+    passed_latest = False
     for release in _github_releases(repo):
         tag = release["tag_name"]
-        if _normalize_version(tag) != latest_norm:
-            return tag
+        if not passed_latest:
+            if _normalize_version(tag) == latest_norm:
+                passed_latest = True
+            continue
+        try:
+            _release_info(client, tag)
+        except ValueError:
+            continue
+        return tag
     return None
 
 
@@ -201,6 +213,46 @@ def _release_info(client: str, version_tag: str) -> dict:
         raise
 
 
+def _mock_nethermind_release_info(client: str, tag: str) -> dict:
+    if tag.startswith("zisk-guest"):
+        raise ValueError("No Linux amd64 Nethermind asset found")
+    return {
+        "version": tag,
+        "download_urls": [f"https://example.com/{tag}.zip"],
+        "filenames": [f"nethermind-{tag}.zip"],
+    }
+
+
+@patch("tests.test_release_info_live._release_info", side_effect=_mock_nethermind_release_info)
+@patch("tests.test_release_info_live._github_releases")
+def test_older_release_tag_skips_newer_special_releases(
+    mock_releases, _mock_release_info
+) -> None:
+    """Regression: do not treat a newer non-latest release as the older tag."""
+    mock_releases.return_value = (
+        {"tag_name": "zisk-guest-r7"},
+        {"tag_name": "1.38.1"},
+        {"tag_name": "1.38.0"},
+    )
+    assert _older_release_tag("nethermind", "NethermindEth/nethermind", "1.38.1") == "1.38.0"
+
+
+@patch("tests.test_release_info_live._release_info", side_effect=_mock_nethermind_release_info)
+@patch("tests.test_release_info_live._github_releases")
+def test_older_release_tag_skips_special_release_between_versions(
+    mock_releases, _mock_release_info
+) -> None:
+    """Regression: special releases sandwiched between real versions are not older."""
+    mock_releases.return_value = (
+        {"tag_name": "zisk-guest-r8"},
+        {"tag_name": "1.39.0"},
+        {"tag_name": "zisk-guest-r7"},
+        {"tag_name": "1.38.1"},
+    )
+    assert _older_release_tag("nethermind", "NethermindEth/nethermind", "1.39.0") == "1.38.1"
+
+
+@pytest.mark.live
 @pytest.mark.parametrize("client,repo", CLIENT_REPOS, ids=[c for c, _ in CLIENT_REPOS])
 def test_client_release_info_live(client: str, repo: str | None) -> None:
     """End-to-end release resolution for one client: LATEST, explicit, and older tag.
@@ -229,7 +281,7 @@ def test_client_release_info_live(client: str, repo: str | None) -> None:
         older_tag = _older_geth_version(latest["version"])
     else:
         assert repo is not None
-        older_tag = _older_release_tag(repo, latest["version"])
+        older_tag = _older_release_tag(client, repo, latest["version"])
 
     if older_tag is None:
         pytest.skip(f"{client}: no older release found")
