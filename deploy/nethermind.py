@@ -117,7 +117,9 @@ def download_and_install_nethermind(eth_network: str, el_p2p_port: str, el_rpc_p
 
     # Extract to a temporary directory and install atomically
     subprocess.run(["sudo", "apt-get", "-y", "-qq", "install", "unzip"], check=False)
-    tmp_dir = f"{DOWNLOAD_DIR}/nethermind_temp"
+    # Using /tmp/nethermind_extract as a stable intermediate so the extract-cache key
+    # matches the upgrade flow in update_execution.sh.
+    tmp_dir = "/tmp/nethermind_extract"
     subprocess.run(["rm", "-rf", tmp_dir], check=False)
     subprocess.run(["mkdir", "-p", tmp_dir], check=True)
     subprocess.run(["unzip", "-o", download_path, "-d", tmp_dir], check=True)

@@ -174,8 +174,10 @@ def download_teku(eth_network: str) -> str:
         print("❌ JDK 25 is required by Teku but could not be installed. Aborting Teku install.")
         exit(1)
 
-    # Extract to a temporary directory then install and harden
-    tmp_dir = f"{DOWNLOAD_DIR}/teku_temp"
+    # Extract to canonical temp dir (strip=1 removes the top-level teku-*/ folder).
+    # Using /tmp/teku_extract as a stable intermediate so the extract-cache key
+    # matches the upgrade flow in update_consensus.sh and update_validator.sh.
+    tmp_dir = "/tmp/teku_extract"
     subprocess.run(["rm", "-rf", tmp_dir], check=False)
     subprocess.run(["mkdir", "-p", tmp_dir], check=True)
     subprocess.run(["tar", "xzf", download_path, "-C", tmp_dir, "--strip-components=1"], check=True)

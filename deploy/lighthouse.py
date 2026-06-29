@@ -161,12 +161,17 @@ def download_lighthouse(eth_network: str) -> str:
     download_path = f"{DOWNLOAD_DIR}/{filename}"
     download_file(download_url, download_path, "Lighthouse")
 
-    # Extract the binary to /usr/local/bin/ using sudo
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"], check=True)
+    # Extract to canonical temp dir (strip=0; lighthouse ships the binary at archive root).
+    # Using /tmp/lighthouse_extract as a stable intermediate so the extract-cache key
+    # matches the upgrade flow in update_consensus.sh and update_validator.sh.
+    tmp_dir = "/tmp/lighthouse_extract"
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
+    subprocess.run(["sudo", "mkdir", "-p", tmp_dir], check=True)
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", tmp_dir], check=True)
 
-    # Ensure the binary is owned by root:root with correct permissions
-    # (same as other clients — tar extracts with the running user's uid in some envs)
-    install_system_binary(f"{INSTALL_DIR}/lighthouse", f"{INSTALL_DIR}/lighthouse")
+    # Binary lands at the root of the archive.
+    install_system_binary(os.path.join(tmp_dir, "lighthouse"), f"{INSTALL_DIR}/lighthouse")
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
 
     # Remove the tar file
     os.remove(download_path)

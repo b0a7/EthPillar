@@ -115,13 +115,18 @@ def download_and_install_reth(eth_network: str, el_p2p_port: str, el_p2p_port_2:
     download_path = f"{DOWNLOAD_DIR}/{filename}"
     download_file(download_url, download_path, "Reth")
 
-    # Extract the binary to /usr/local/bin/ using sudo
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"], check=True)
+    # Extract to canonical temp dir (strip=0; reth ships the binary at archive root).
+    # Using /tmp/reth_extract as a stable intermediate so the extract-cache key
+    # matches the upgrade flow in update_execution.sh.
+    tmp_dir = "/tmp/reth_extract"
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
+    subprocess.run(["sudo", "mkdir", "-p", tmp_dir], check=True)
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", tmp_dir], check=True)
 
     # v2.3+ ships ``reth`` at archive root; older reproducible builds used ``reth-*``.
     dest_path = os.path.join(INSTALL_DIR, "reth")
     find_result = subprocess.run(
-        ["sudo", "find", INSTALL_DIR, "-maxdepth", "1", "-type", "f", "-name", "reth*"],
+        ["sudo", "find", tmp_dir, "-maxdepth", "1", "-type", "f", "-name", "reth*"],
         capture_output=True,
         text=True,
         check=True,
@@ -131,10 +136,8 @@ def download_and_install_reth(eth_network: str, el_p2p_port: str, el_p2p_port_2:
         print("Error: Could not find reth binary after extracting archive.")
         exit(1)
     src_path = next((path for path in matches if os.path.basename(path) == "reth"), matches[0])
-    if os.path.abspath(src_path) != os.path.abspath(dest_path):
-        subprocess.run(["sudo", "mv", src_path, dest_path], check=True)
-
-    install_system_binary(dest_path, dest_path)
+    install_system_binary(src_path, dest_path)
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
 
     # Remove the tar file
     os.remove(download_path)

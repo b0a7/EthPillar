@@ -109,7 +109,8 @@ function updateClient(){
         info "✅ Downloading URL: $BINARIES_URL"
         cd "$HOME" || true
         wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-        EXTRACT_DIR="$HOME/lighthouse_vc_temp"
+        EXTRACT_DIR="/tmp/lighthouse_extract"
+        rm -rf "$EXTRACT_DIR"
         mkdir -p "$EXTRACT_DIR"
         tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
         rm "$FILENAME"
@@ -131,7 +132,8 @@ function updateClient(){
         info "✅ Downloading URL: $BINARIES_URL"
         cd "$HOME" || true
         wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-        EXTRACTED_DIR="$HOME/lodestar_vc_temp"
+        EXTRACTED_DIR="/tmp/lodestar_extract"
+        rm -rf "$EXTRACTED_DIR"
         mkdir -p "$EXTRACTED_DIR"
         tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" || error "❌ Unable to untar file"
         rm "$FILENAME"
@@ -151,14 +153,12 @@ function updateClient(){
         info "✅ Downloading URL: $BINARIES_URL"
         cd "$HOME" || true
         wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-        EXTRACT_DIR="$HOME/teku_vc_temp"
+        EXTRACT_DIR="/tmp/teku_extract"
+        rm -rf "$EXTRACT_DIR"
         mkdir -p "$EXTRACT_DIR"
-        tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
+        tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" --strip-components=1 || error "❌ Unable to untar file"
         rm "$FILENAME"
-        TEKU_DIR=$(find "$EXTRACT_DIR" -maxdepth 1 -type d -name "teku-*" | head -n 1)
-        if [ -z "$TEKU_DIR" ]; then
-            error "❌ Could not find the extracted teku directory"
-        fi
+        TEKU_DIR="$EXTRACT_DIR"
         EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/teku/bin/teku")
         DEST_DIR=$(dirname "$(dirname "$EXEC_PATH")")
         test -f "$VALIDATOR_SVC" && sudo systemctl stop validator
@@ -172,9 +172,10 @@ function updateClient(){
         info "✅ Downloading URL: $BINARIES_URL"
         cd "$HOME" || true
         wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-        EXTRACT_DIR="$HOME/nimbus_vc_temp"
+        EXTRACT_DIR="/tmp/nimbus_extract"
+        rm -rf "$EXTRACT_DIR"
         mkdir -p "$EXTRACT_DIR"
-        tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
+        tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" --strip-components=1 || error "❌ Unable to untar file"
         rm "$FILENAME"
         VC_BIN=$(find "$EXTRACT_DIR" -type f -name "nimbus_validator_client" | head -n 1)
         if [ -z "$VC_BIN" ]; then

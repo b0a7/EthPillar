@@ -192,11 +192,16 @@ def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port:
     download_path = f"{DOWNLOAD_DIR}/{filename}"
     download_file(download_url, download_path, "Erigon")
 
-    # Extract the binary using sudo
-    # Erigon tarball typically contains a folder, so we strip one component and extract to /usr/local/bin
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}", "--strip-components=1"], check=True)
-    # Ensure binary is configured correctly
-    install_system_binary(f"{INSTALL_DIR}/erigon", os.path.join(INSTALL_DIR, "erigon"))
+    # Extract to canonical temp dir (strip=1 removes the top-level version folder).
+    # Using /tmp/erigon_extract as a stable intermediate so the extract-cache key
+    # matches the upgrade flow in update_execution.sh.
+    tmp_dir = "/tmp/erigon_extract"
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
+    subprocess.run(["sudo", "mkdir", "-p", tmp_dir], check=True)
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", tmp_dir, "--strip-components=1"], check=True)
+    # Binary lands directly in tmp_dir after stripping the version folder.
+    install_system_binary(os.path.join(tmp_dir, "erigon"), os.path.join(INSTALL_DIR, "erigon"))
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
 
     # Remove the tar file
     os.remove(download_path)
@@ -243,10 +248,16 @@ def download_and_install_erigon_standalone(eth_network: str, el_p2p_port: str, e
     download_path = f"{DOWNLOAD_DIR}/{filename}"
     download_file(download_url, download_path, "Erigon Standalone")
 
-    # Extract the binary using sudo
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}", "--strip-components=1"], check=True)
-    subprocess.run(["sudo", "chmod", "a+x", f"{INSTALL_DIR}/erigon"], check=True)
-    install_system_binary(f"{INSTALL_DIR}/erigon", os.path.join(INSTALL_DIR, "erigon"))
+    # Extract to canonical temp dir (strip=1 removes the top-level version folder).
+    # Using /tmp/erigon_extract as a stable intermediate so the extract-cache key
+    # matches the upgrade flow in update_execution.sh.
+    tmp_dir = "/tmp/erigon_extract"
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
+    subprocess.run(["sudo", "mkdir", "-p", tmp_dir], check=True)
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", tmp_dir, "--strip-components=1"], check=True)
+    # Binary lands directly in tmp_dir after stripping the version folder.
+    install_system_binary(os.path.join(tmp_dir, "erigon"), os.path.join(INSTALL_DIR, "erigon"))
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
 
     # Remove the tar file
     os.remove(download_path)

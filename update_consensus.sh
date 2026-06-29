@@ -116,7 +116,8 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		EXTRACT_DIR="$HOME/lighthouse_temp"
+		EXTRACT_DIR="/tmp/lighthouse_extract"
+		rm -rf "$EXTRACT_DIR"
 		mkdir -p "$EXTRACT_DIR"
 		tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
 		rm "$FILENAME"
@@ -133,6 +134,7 @@ function updateClient(){
 		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_binary; install_system_binary('${LH_BIN}', '${EXEC_PATH}')"
 		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
 		test -f /etc/systemd/system/validator.service && sudo service validator start
+		rm -rf "$EXTRACT_DIR"
 	    ;;
 	  Lodestar)
 		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
@@ -140,7 +142,8 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		EXTRACTED_DIR="$HOME/lodestar_temp"
+		EXTRACTED_DIR="/tmp/lodestar_extract"
+		rm -rf "$EXTRACTED_DIR"
 		mkdir -p "$EXTRACTED_DIR"
 		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" || error "❌ Unable to untar file"
 		rm "$FILENAME"
@@ -168,14 +171,12 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		EXTRACT_DIR="$HOME/teku_temp"
+		EXTRACT_DIR="/tmp/teku_extract"
+		rm -rf "$EXTRACT_DIR"
 		mkdir -p "$EXTRACT_DIR"
-		tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
+		tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" --strip-components=1 || error "❌ Unable to untar file"
 		rm "$FILENAME"
-		TEKU_DIR=$(find "$EXTRACT_DIR" -maxdepth 1 -type d -name "teku-*" | head -n 1)
-		if [ -z "$TEKU_DIR" ]; then
-			error "❌ Could not find the extracted teku directory"
-		fi
+		TEKU_DIR="$EXTRACT_DIR"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/teku/bin/teku")
 		DEST_DIR=$(dirname "$(dirname "$EXEC_PATH")")
 		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
@@ -192,9 +193,10 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		EXTRACT_DIR="$HOME/nimbus_temp"
+		EXTRACT_DIR="/tmp/nimbus_extract"
+		rm -rf "$EXTRACT_DIR"
 		mkdir -p "$EXTRACT_DIR"
-		tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" || error "❌ Unable to untar file"
+		tar -xzvf "$FILENAME" -C "$EXTRACT_DIR" --strip-components=1 || error "❌ Unable to untar file"
 		rm "$FILENAME"
 		BN_BIN=$(find "$EXTRACT_DIR" -type f -name "nimbus_beacon_node" | head -n 1)
 		if [ -z "$BN_BIN" ]; then

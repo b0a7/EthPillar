@@ -113,14 +113,18 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		unzip -o "$FILENAME" -d "$HOME"/nethermind || error "❌ Unable to unzip file"
+		EXTRACTED_DIR="/tmp/nethermind_extract"
+		rm -rf "$EXTRACTED_DIR"
+		mkdir -p "$EXTRACTED_DIR"
+		unzip -o "$FILENAME" -d "$EXTRACTED_DIR" || error "❌ Unable to unzip file"
 		rm -f "$FILENAME"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/nethermind/nethermind")
 		DEST_DIR=$(dirname "$EXEC_PATH")
 		sudo systemctl stop execution
 		# install_system_directory will move nethermind and harden perms
-		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_directory; install_system_directory('$HOME/nethermind', '${DEST_DIR}')"
-		sudo systemctl start execution		
+		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_directory; install_system_directory('${EXTRACTED_DIR}', '${DEST_DIR}')"
+		sudo systemctl start execution
+		rm -rf "$EXTRACTED_DIR"
 		;;
 	  Besu)
 		# Ensure JDK 25 is available BEFORE touching the running client; abort
@@ -133,14 +137,18 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		tar -xzvf "$FILENAME" -C "$HOME" || error "❌ Unable to untar file"
+		EXTRACTED_DIR="/tmp/besu_extract"
+		rm -rf "$EXTRACTED_DIR"
+		mkdir -p "$EXTRACTED_DIR"
+		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" --strip-components=1 || error "❌ Unable to untar file"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/besu/bin/besu")
 		DEST_DIR=$(dirname "$(dirname "$EXEC_PATH")")
 		sudo systemctl stop execution
 		# install_system_directory will move besu directory and harden perms
-		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_directory; install_system_directory('$HOME/besu-${TAG}', '${DEST_DIR}')"
+		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_directory; install_system_directory('${EXTRACTED_DIR}', '${DEST_DIR}')"
 		sudo systemctl start execution
-		rm "$FILENAME"
+		rm -f "$FILENAME"
+		rm -rf "$EXTRACTED_DIR"
 		;;
 	  Erigon)
 		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
@@ -148,9 +156,10 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		EXTRACTED_DIR="$HOME/erigon_temp"
+		EXTRACTED_DIR="/tmp/erigon_extract"
+		rm -rf "$EXTRACTED_DIR"
 		mkdir -p "$EXTRACTED_DIR"
-		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" || error "❌ Unable to untar file"
+		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" --strip-components=1 || error "❌ Unable to untar file"
 		rm "$FILENAME"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/erigon")
 		ERIGON_BIN=$(find "$EXTRACTED_DIR" -type f -name "erigon" | head -n 1)
@@ -168,10 +177,11 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		EXTRACTED_DIR="geth_temp"
+		EXTRACTED_DIR="/tmp/geth_extract"
+		rm -rf "$EXTRACTED_DIR"
 		mkdir -p "$EXTRACTED_DIR"
-		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" || error "❌ Unable to untar file"
-		GETH_BIN=$(find "./$EXTRACTED_DIR" -type f -name "geth" | head -n 1)
+		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" --strip-components=1 || error "❌ Unable to untar file"
+		GETH_BIN=$(find "$EXTRACTED_DIR" -type f -name "geth" | head -n 1)
 		if [ -z "$GETH_BIN" ]; then
 			error "❌ Could not find the extracted geth binary"
 		fi
@@ -190,7 +200,8 @@ function updateClient(){
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
-		EXTRACTED_DIR="$HOME/reth_temp"
+		EXTRACTED_DIR="/tmp/reth_extract"
+		rm -rf "$EXTRACTED_DIR"
 		mkdir -p "$EXTRACTED_DIR"
 		tar -xzvf "$FILENAME" -C "$EXTRACTED_DIR" || error "❌ Unable to untar file"
 		rm "$FILENAME"

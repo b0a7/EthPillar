@@ -133,23 +133,16 @@ def download_and_install_geth(eth_network: str, el_p2p_port: str, el_rpc_port: s
     download_path = f"{DOWNLOAD_DIR}/{filename}"
     download_file(download_url, download_path, "Geth")
 
-    # Extract the binary to /usr/local/bin/geth using sudo
-    
-    # Extract to a temporary directory in DOWNLOAD_DIR, INSTALL_DIR
-    temp_extract_dir = f"{DOWNLOAD_DIR}/geth_temp"
-    subprocess.run(["mkdir", "-p", temp_extract_dir], check=True)
-    subprocess.run(["tar", "xzf", download_path, "-C", temp_extract_dir], check=True)
-
-    # Find the geth binary and move it
-    extracted_dirs = [d for d in os.listdir(temp_extract_dir) if d.startswith("geth-linux")]
-    if not extracted_dirs:
-        print("Error: Could not find geth binary after extracting archive.")
-        exit(1)
-    geth_bin_path = f"{temp_extract_dir}/{extracted_dirs[0]}/geth"
-    install_system_binary(geth_bin_path, f"{INSTALL_DIR}/geth")
-    
-    # Cleanup temp directory
-    subprocess.run(["rm", "-rf", temp_extract_dir])
+    # Extract to canonical temp dir (strip=1 removes the top-level geth-linux-*/ folder).
+    # Using /tmp/geth_extract as a stable intermediate so the extract-cache key
+    # matches the upgrade flow in update_execution.sh.
+    tmp_dir = "/tmp/geth_extract"
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
+    subprocess.run(["sudo", "mkdir", "-p", tmp_dir], check=True)
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", tmp_dir, "--strip-components=1"], check=True)
+    # Binary lands directly in tmp_dir after stripping the version folder.
+    install_system_binary(os.path.join(tmp_dir, "geth"), f"{INSTALL_DIR}/geth")
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
 
     # Remove the tar file
     os.remove(download_path)

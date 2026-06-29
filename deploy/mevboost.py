@@ -95,11 +95,17 @@ def install_mevboost(eth_network: str, mev_min_bid: str, relay_options: List[Dic
     download_path = f"{DOWNLOAD_DIR}/{filename}"
     download_file(download_url, download_path, "mevboost")
 
-    # Extract the binary
-    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", f"{INSTALL_DIR}"], check=True)
+    # Extract to canonical temp dir (strip=0; mev-boost ships the binary at archive root).
+    # Using /tmp/mevboost_extract as a stable intermediate so the extract-cache key
+    # matches the upgrade flow in update_mevboost.sh.
+    tmp_dir = "/tmp/mevboost_extract"
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
+    subprocess.run(["sudo", "mkdir", "-p", tmp_dir], check=True)
+    subprocess.run(["sudo", "tar", "xzf", download_path, "-C", tmp_dir], check=True)
 
     # Ensure binary is moved/configured and follows system best-practices
-    install_system_binary(f"{INSTALL_DIR}/mev-boost", os.path.join(INSTALL_DIR, "mev-boost"))
+    install_system_binary(os.path.join(tmp_dir, "mev-boost"), os.path.join(INSTALL_DIR, "mev-boost"))
+    subprocess.run(["sudo", "rm", "-rf", tmp_dir], check=False)
 
     # Remove the downloaded .tar.gz file
     os.remove(download_path)
