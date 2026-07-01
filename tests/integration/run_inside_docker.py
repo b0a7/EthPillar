@@ -277,6 +277,14 @@ def integration_subprocess_env() -> Dict[str, str]:
     return env
 
 
+def require_non_root_integration_runner() -> None:
+    """Integration installs must mirror production: non-root user + passwordless sudo."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        print("❌ Integration tests must not run as root.")
+        print("   run_test.sh should drop privileges to the integration user before calling this script.")
+        sys.exit(1)
+
+
 def require_production_python_deps() -> None:
     """Fail fast if production bootstrap did not install EthPillar Python deps."""
     required = (
@@ -847,6 +855,7 @@ if __name__ == "__main__":
     parser.add_argument('--test-switching', action='store_true', default=False)
     parser.add_argument('--service', type=str, default="", help='Service name for verify-service-health')
     args = parser.parse_args()
+    require_non_root_integration_runner()
     require_production_python_deps()
 
     if args.script_name == "verify-service-health":

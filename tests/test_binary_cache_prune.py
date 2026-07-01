@@ -9,6 +9,7 @@ import unittest
 from tests.integration.binary_cache_common import (
     ACCESS_LOG_NAME,
     load_accessed_basenames,
+    prepare_binary_cache_dir,
     prune_unaccessed_binary_cache,
     record_cache_access,
     reset_access_log,
@@ -56,6 +57,18 @@ class BinaryCachePruneTests(unittest.TestCase):
         record_cache_access("b.bin", self.cache_dir)
         self.assertEqual(load_accessed_basenames(self.cache_dir), {"a.bin", "b.bin"})
         self.assertTrue(os.path.isfile(os.path.join(self.cache_dir, ACCESS_LOG_NAME)))
+
+    def test_record_cache_access_writes_after_root_only_dir_mode(self) -> None:
+        os.chmod(self.cache_dir, 0o755)
+        log_path = os.path.join(self.cache_dir, ACCESS_LOG_NAME)
+        with open(log_path, "w", encoding="utf-8") as handle:
+            handle.write("stale.bin\n")
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            os.chmod(log_path, 0o644)
+            os.chmod(self.cache_dir, 0o777)
+        prepare_binary_cache_dir(self.cache_dir)
+        record_cache_access("fresh.bin", self.cache_dir)
+        self.assertIn("fresh.bin", load_accessed_basenames(self.cache_dir))
 
 
 if __name__ == "__main__":

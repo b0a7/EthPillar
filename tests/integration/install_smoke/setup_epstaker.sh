@@ -3,11 +3,11 @@
 set -euo pipefail
 
 EPSTAKER_USER="${EPSTAKER_USER:-epstaker}"
+export ETHPILLAR_INTEGRATION_USER="${EPSTAKER_USER}"
+
+# shellcheck source=../docker/setup_integration_user.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../docker/setup_integration_user.sh"
 
 ensure_epstaker() {
-  if ! id "$EPSTAKER_USER" &>/dev/null; then
-    useradd -m -s /bin/bash "$EPSTAKER_USER"
-    echo "${EPSTAKER_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${EPSTAKER_USER}-install-smoke"
-    chmod 440 "/etc/sudoers.d/${EPSTAKER_USER}-install-smoke"
-  fi
+  ensure_integration_user
 }

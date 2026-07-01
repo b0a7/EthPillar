@@ -46,7 +46,7 @@ The `Dockerfile.test` uses `ubuntu:24.04` and sets systemd as the `CMD`. The tes
    - `--cgroupns=host` — shares the host cgroup namespace
    - `--tmpfs /run --tmpfs /run/lock` — systemd runtime directories
 2. Waits 3 seconds for systemd to initialize.
-3. Runs the test via `docker exec <container> bash /ethpillar/tests/integration/run_test.sh ...`, which sources `functions.sh` to install Python deps the same way production does, then runs the test runner.
+3. Runs the test via `docker exec <container> bash /ethpillar/tests/integration/run_test.sh ...`. `docker exec` starts as **root**, but `run_test.sh` immediately creates the **`epstaker`** user (UID/GID matched to the host checkout owner), grants **passwordless sudo**, and re-execs itself via `runuser` so deploy/update scripts run unprivileged — the same shape as production. Python deps bootstrap into `/tmp/ethpillar-integration-venv` (not the bind-mounted `.venv`).
 4. Cleans up the container with `docker rm -f` in a `finally` block.
 
 ## Project Structure
@@ -55,7 +55,7 @@ The `Dockerfile.test` uses `ubuntu:24.04` and sets systemd as the `CMD`. The tes
 - `run_docker_tests.py`: Main orchestrator — builds the image, runs the test matrix with live UI, and generates HTML reports.
 - `run_docker_tests.ps1`: (Windows) Thin WSL wrapper that invokes `run_docker_tests.sh`.
 - `run_docker_tests.sh`: (Linux/WSL) Ensures host `rich` is installed, then invokes `run_docker_tests.py`.
-- `run_test.sh`: Production bootstrap wrapper — sources `functions.sh` (venv + `ensure_python_deps`) then execs the test runner.
+- `run_test.sh`: Bootstrap wrapper — drops root to `epstaker` (passwordless sudo), sources `functions.sh`, then execs the test runner.
 - `run_inside_docker.py`: Executes inside each container to run the deployment and verify artifacts via `systemctl`. Does not install Python deps itself.
 - `check_client_versions.sh`: After deploy (and after update tests), verifies installed versions parse via `getExecutionCurrentVersion` / `getClVcCurrentVersion` and match `release_info … LATEST` (same comparison as the update menu’s “already on latest” path).
 - `sitecustomize.py`: Caches release **binaries** only (revalidated with `HEAD` before reuse). GitHub API / release metadata always hits the network.
