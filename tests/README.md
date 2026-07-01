@@ -100,23 +100,54 @@ Optional: set `$env:GITHUB_TOKEN` to avoid API rate limits when running the full
 
 ## Manual Testing
 
-Run a fresh container with systemd support:
+Manual installs should mirror production: **non-root user + passwordless sudo** (same as the integration matrix). `docker exec` starts as root; use `manual_shell.sh` to drop privileges before running the TUI or deploy scripts.
+
+Build the image once (from the project root):
+
 ```bash
-# From the project root
-docker run -d --name ep-manual --privileged --cgroupns=host --tmpfs /run --tmpfs /run/lock -v "${PWD}:/ethpillar" ethpillar-test
+docker build -t ethpillar-test -f tests/integration/Dockerfile.test .
 ```
 
-Enter the running container:
+**Linux / WSL / Git Bash** — start the container (UID/GID match the host checkout for bind-mount writes):
+
 ```bash
-docker exec -it ep-manual bash
+bash tests/integration/docker/start_manual_container.sh
+docker exec -it ep-manual bash /ethpillar/tests/integration/docker/manual_shell.sh
 ```
 
-In the container, simply run the TUI:
+**PowerShell** — equivalent `docker run` (use your WSL uid/gid if not `1000`):
+
+```powershell
+docker run -d --name ep-manual --privileged --cgroupns=host --tmpfs /run --tmpfs /run/lock `
+  -e ETHPILLAR_INTEGRATION_UID=1000 -e ETHPILLAR_INTEGRATION_GID=1000 `
+  -v "${PWD}:/ethpillar" ethpillar-test
+
+docker exec -it ep-manual bash /ethpillar/tests/integration/docker/manual_shell.sh
+```
+
+You should see:
+
+```
+[manual] Dropping root; shell as ubuntu (uid=1000)
+```
+
+Then run the TUI or deploy tooling:
+
 ```bash
 ./ethpillar.sh
+# or: python3 deploy/deploy-node.py ...
 ```
 
-When finished, clean up the container:
+Use `sudo systemctl …` for service control (same as on a production node). Plain `systemctl` as the test user will fail with “Failed to connect to bus”.
+
+If you already opened a root shell (`docker exec -it ep-manual bash`), drop privileges from inside the container:
+
+```bash
+bash /ethpillar/tests/integration/docker/manual_shell.sh
+```
+
+When finished:
+
 ```bash
 docker rm -f ep-manual
 ```

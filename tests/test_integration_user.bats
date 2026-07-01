@@ -29,6 +29,12 @@ setup() {
   grep -Fq '_pid1_is_systemd' tests/integration/run_inside_docker.py
 }
 
+@test "manual docker entry drops to integration user" {
+  test -x tests/integration/docker/manual_shell.sh
+  grep -Fq 'runuser -u "${INTEGRATION_USER}"' tests/integration/docker/manual_shell.sh
+  grep -Fq 'manual_shell.sh' tests/README.md
+}
+
 @test "orchestrator passes host uid to containers" {
   grep -Fq 'ETHPILLAR_INTEGRATION_UID' tests/integration/run_docker_tests.py
   grep -Fq 'integration_container_env_flags' tests/integration/run_docker_tests.py

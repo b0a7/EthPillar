@@ -105,33 +105,40 @@ Non-interactive installs skip the “Press RETURN” prompt when stdin is not a 
 
 ## Manual Testing in the Docker Container
 
-To manually test inside the container (e.g. to debug a service file):
+Manual testing uses the same **non-root + passwordless sudo** shape as the integration matrix. Do not run `./ethpillar.sh` or deploy scripts as root inside the container.
 
 ```bash
 # Build the image
 docker build -t ethpillar-rebuild -f tests/integration/Dockerfile.test .
 
-# Start a long-lived container with systemd
-docker run -d --name ep-manual \
-  --privileged --cgroupns=host \
-  --tmpfs /run --tmpfs /run/lock \
-  -v $(pwd):/ethpillar \
-  ethpillar-rebuild
+# Start a long-lived container with systemd (bash helper sets host UID/GID)
+bash tests/integration/docker/start_manual_container.sh
+# Or set ETHPILLAR_TEST_IMAGE=ethpillar-rebuild if you used that tag
 
-# Open a shell inside
-docker exec -it ep-manual bash
+# Shell as the test user (not root)
+docker exec -it ep-manual bash /ethpillar/tests/integration/docker/manual_shell.sh
+```
 
-# Inside: bootstrap deps like production, then run a deployment
+Inside the container (prompt should be the test user, e.g. `ubuntu`):
+
+```bash
+./ethpillar.sh
+# or bootstrap deps then deploy:
 source /ethpillar/functions.sh
 python3 /ethpillar/deploy/deploy-node.py --skip_prompts true \
   --network SEPOLIA --install_config "Custom Setup" \
   --ec Nethermind --cc Grandine --vc Lighthouse
 
-systemctl status consensus
-systemctl status execution
+sudo systemctl status consensus
+sudo systemctl status execution
 journalctl -fu consensus --no-pager -n 50
+```
 
-# Stop and remove when done
+Pass `ETHPILLAR_INTEGRATION_UID` / `ETHPILLAR_INTEGRATION_GID` on `docker run` so the in-container user can write the bind-mounted repo (especially on WSL). `start_manual_container.sh` sets these from `id -u` / `id -g`.
+
+Stop and remove when done:
+
+```bash
 docker rm -f ep-manual
 ```
 
