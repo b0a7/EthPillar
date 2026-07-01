@@ -11,7 +11,9 @@ import asyncio
 import subprocess
 import argparse
 import shlex
+import re
 from datetime import datetime
+from typing import List, Optional, Tuple
 
 try:
     from rich.live import Live
@@ -33,6 +35,12 @@ from checkpoint_cache_common import (  # noqa: E402
     get_cache_root,
     get_manifest_path,
 )
+from port_bindings import cl_supports_rpc_expose, el_supports_rpc_expose  # noqa: E402
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(_INTEGRATION_DIR))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+from deploy.orchestrator import PREDEFINED_COMBOS  # noqa: E402
 
 # Matrices
 combos = [
@@ -68,6 +76,60 @@ upgrade_tests = [
 switch_tests = [
     ("Switch-Reth-Lighthouse-to-Besu-Nimbus", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-switching"),
 ]
+
+def parse_clients_from_cmd(cmd: str) -> Tuple[Optional[str], Optional[str]]:
+    """Extract execution and consensus client names from a deploy command."""
+    ec_match = re.search(r"--ec\s+(\S+)", cmd)
+    cc_match = re.search(r"--cc\s+(\S+)", cmd)
+    combo_match = re.search(r'--combo\s+"([^"]+)"', cmd) or re.search(r"--combo\s+(\S+)", cmd)
+    ec = ec_match.group(1) if ec_match else None
+    cc = cc_match.group(1) if cc_match else None
+    if combo_match:
+        combo_ec, combo_cc = PREDEFINED_COMBOS.get(combo_match.group(1), (None, None))
+        ec = ec or combo_ec
+        cc = cc or combo_cc
+    return ec, cc
+
+
+def assign_rpc_exposure_flags(tasks: List["TestTask"]) -> None:
+    """Schedule the slow RPC expose/revoke cycle once per supported EL/CL client."""
+    el_seen: set[str] = set()
+    cl_seen: set[str] = set()
+    for task in tasks:
+        ec, cc = parse_clients_from_cmd(task.cmd)
+        flags: List[str] = []
+        if ec and el_supports_rpc_expose(ec) and ec not in el_seen:
+            flags.append("--rpc-exposure-el")
+            el_seen.add(ec)
+        if cc and cl_supports_rpc_expose(cc) and cc not in cl_seen:
+            flags.append("--rpc-exposure-cl")
+            cl_seen.add(cc)
+        if flags:
+            task.cmd = f"{task.cmd} {' '.join(flags)}"
+
+    missing_el = {
+        name for name in ("Nethermind", "Besu", "Erigon", "Geth", "Reth", "Ethrex")
+        if el_supports_rpc_expose(name)
+    } - el_seen
+    missing_cl = {
+        name for name in ("Nimbus", "Lodestar", "Lighthouse", "Grandine", "Prysm", "Teku")
+        if cl_supports_rpc_expose(name)
+    } - cl_seen
+    if missing_el or missing_cl:
+        print(
+            f"WARNING: RPC exposure not scheduled for EL={sorted(missing_el)} CL={sorted(missing_cl)}",
+            flush=True,
+        )
+    else:
+        exposure_cases = sum(
+            "--rpc-exposure-el" in task.cmd or "--rpc-exposure-cl" in task.cmd
+            for task in tasks
+        )
+        print(
+            f"RPC exposure scheduled for {len(el_seen)} EL and {len(cl_seen)} CL clients "
+            f"({exposure_cases} test cases)",
+            flush=True,
+        )
 
 class TestTask:
     """Mutable state for one integration case (container, log path, status, timing)."""
@@ -490,6 +552,7 @@ async def main():
         print("WARNING: Checkpoint cache warm failed; tests will use upstream checkpoint URLs.")
 
     tasks = generate_tests()
+    assign_rpc_exposure_flags(tasks)
     semaphore = asyncio.Semaphore(args.parallel)
     
     start_time = time.time()

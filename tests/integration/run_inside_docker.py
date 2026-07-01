@@ -695,6 +695,9 @@ def _verify_default_port_bindings(args: Any, expected_services: List[str]) -> bo
 
 def _verify_rpc_exposure(args: Any, expected_services: List[str]) -> bool:
     """Exercise exposeRpc helpers: open RPC to 0.0.0.0, then revoke to localhost."""
+    if not getattr(args, "rpc_exposure_el", False) and not getattr(args, "rpc_exposure_cl", False):
+        return True
+
     if not systemd_available():
         return True
 
@@ -705,7 +708,7 @@ def _verify_rpc_exposure(args: Any, expected_services: List[str]) -> bool:
     ports = read_env_ports(env_path)
     success = True
 
-    if "execution" in expected_services:
+    if getattr(args, "rpc_exposure_el", False) and "execution" in expected_services:
         el_name = client_from_service("execution")
         if el_supports_rpc_expose(el_name):
             print("\n🔓 Testing EL RPC exposure via _updateFlagAndRestartService...", flush=True)
@@ -739,7 +742,7 @@ def _verify_rpc_exposure(args: Any, expected_services: List[str]) -> bool:
         else:
             print(f"  ℹ️  Skipping EL RPC exposure test (unsupported client: {el_name or 'unknown'})", flush=True)
 
-    if "consensus" in expected_services:
+    if getattr(args, "rpc_exposure_cl", False) and "consensus" in expected_services:
         cl_name = client_from_service("consensus")
         if cl_supports_rpc_expose(cl_name):
             print("\n🔓 Testing CL RPC exposure via _updateFlagAndRestartService...", flush=True)
@@ -863,7 +866,7 @@ def verify(args: Any):
     if success and not service_health_failed:
         if not _verify_default_port_bindings(args, expected_services):
             success = False
-        elif not _verify_rpc_exposure(args, expected_services):
+        if success and not _verify_rpc_exposure(args, expected_services):
             success = False
 
     return success
@@ -882,6 +885,18 @@ if __name__ == "__main__":
     parser.add_argument('--vc_only_bn_address', type=str, default="http://192.168.1.123:5052")
     parser.add_argument('--test-updates', action='store_true', default=False)
     parser.add_argument('--test-switching', action='store_true', default=False)
+    parser.add_argument(
+        '--rpc-exposure-el',
+        action='store_true',
+        default=False,
+        help='Run EL expose/revoke RPC bind cycle (once per client in the matrix)',
+    )
+    parser.add_argument(
+        '--rpc-exposure-cl',
+        action='store_true',
+        default=False,
+        help='Run CL expose/revoke RPC bind cycle (once per client in the matrix)',
+    )
     parser.add_argument('--service', type=str, default="", help='Service name for verify-service-health')
     args = parser.parse_args()
     require_non_root_integration_runner()
