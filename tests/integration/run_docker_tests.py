@@ -37,10 +37,14 @@ from checkpoint_cache_common import (  # noqa: E402
 )
 from port_bindings import cl_supports_rpc_expose, el_supports_rpc_expose  # noqa: E402
 
-_REPO_ROOT = os.path.dirname(os.path.dirname(_INTEGRATION_DIR))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-from deploy.orchestrator import PREDEFINED_COMBOS  # noqa: E402
+# Keep in sync with deploy.orchestrator.PREDEFINED_COMBOS (avoid importing deploy on the host).
+PREDEFINED_COMBOS = {
+    "Nimbus-Nethermind": ("Nethermind", "Nimbus"),
+    "Lodestar-Besu": ("Besu", "Lodestar"),
+    "Teku-Besu": ("Besu", "Teku"),
+    "Lighthouse-Reth": ("Reth", "Lighthouse"),
+    "Caplin-Erigon": ("Erigon", "Caplin"),
+}
 
 # Matrices
 combos = [
