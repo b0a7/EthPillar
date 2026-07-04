@@ -457,17 +457,21 @@ getClVcCurrentVersion(){
 # Read clients from systemd config files
 getClient(){
     EL=""; CL=""; VC=""; CSM_VC=""
-    if [ -f /etc/systemd/system/execution.service ]; then
-        EL=$(grep Description= /etc/systemd/system/execution.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    local execution_svc="${EXECUTION_SERVICE_FILE:-${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}}"
+    local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local csm_validator_svc="${CSM_VALIDATOR_SERVICE_FILE:-/etc/systemd/system/csm_nimbusvalidator.service}"
+    if [ -f "$execution_svc" ]; then
+        EL=$(grep Description= "$execution_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
-    if [ -f /etc/systemd/system/consensus.service ]; then
-        CL=$(grep Description= /etc/systemd/system/consensus.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    if [ -f "$consensus_svc" ]; then
+        CL=$(grep Description= "$consensus_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
-    if [ -f /etc/systemd/system/validator.service ]; then
-        VC=$(grep Description= /etc/systemd/system/validator.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    if [ -f "$validator_svc" ]; then
+        VC=$(grep Description= "$validator_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
-    if [ -f /etc/systemd/system/csm_nimbusvalidator.service ]; then
-        CSM_VC=$(grep Description= /etc/systemd/system/csm_nimbusvalidator.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    if [ -f "$csm_validator_svc" ]; then
+        CSM_VC=$(grep Description= "$csm_validator_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
     if [[ -n $CL  ]]; then
         CLIENT=$CL
@@ -1210,16 +1214,31 @@ exposeRpcCL(){
     _closed='127.0.0.1'
     _exposed='0.0.0.0'
     _service='consensus'
-    _file="/etc/systemd/system/${_service}.service"
+    _file="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/${_service}.service}"
     getNetworkConfig
 
-    case "${CL}" in
+    case "${CL:-}" in
         Nimbus     ) _flag='--rest-address';;
         Lodestar   ) _flag='--rest.address';;
         Lighthouse ) _flag='--http-address';;
         Grandine   ) _flag='--http-address';;
         Prysm      ) _flag='--http-host';;
         Teku       ) _flag='--rest-api-interface';;
+        Caplin     )
+            _service='execution'
+            _file="${EXECUTION_SERVICE_FILE:-${EXEC_SERVICE_FILE:-/etc/systemd/system/${_service}.service}}"
+            _flag='--beacon.api.addr'
+            ;;
+        "" )
+            if [[ "${EL:-}" == "Erigon-Caplin" ]]; then
+                CL='Caplin'
+                _service='execution'
+                _file="${EXECUTION_SERVICE_FILE:-${EXEC_SERVICE_FILE:-/etc/systemd/system/${_service}.service}}"
+                _flag='--beacon.api.addr'
+            else
+                echo "Consensus client not detected."; return 0
+            fi
+            ;;
         * ) echo "Consensus client not detected."; return 0;;
     esac
 
@@ -1260,13 +1279,14 @@ exposeRpcEL(){
     _closed='127.0.0.1'
     _exposed='0.0.0.0'
     _service='execution'
-    _file="/etc/systemd/system/${_service}.service"
+    _file="${EXECUTION_SERVICE_FILE:-${EXEC_SERVICE_FILE:-/etc/systemd/system/${_service}.service}}"
     getNetworkConfig
 
-    case "${EL}" in
+    case "${EL:-}" in
         Nethermind ) _flag='--JsonRpc.Host';;
         Besu       ) _flag='--rpc-http-host';;
         Erigon     ) _flag='--http.addr';;
+        Erigon-Caplin ) _flag='--http.addr';;
         Geth       ) _flag='--http.addr';;
         Reth       ) _flag='--http.addr';;
         Ethrex     ) _flag='--http.addr';;

@@ -706,6 +706,12 @@ def _verify_rpc_exposure(args: Any, expected_services: List[str]) -> bool:
 
     env_path = os.environ.get("ETHPILLAR_ENV_FILE", INTEGRATION_ENV_FILE)
     ports = read_env_ports(env_path)
+    has_consensus = "consensus" in expected_services
+    has_caplin = has_caplin_execution() or (
+        "execution" in expected_services
+        and not has_consensus
+        and ("caplin" in (args.combo or "").lower() or "caplin" in (args.cc or "").lower())
+    )
     success = True
 
     if getattr(args, "rpc_exposure_el", False) and "execution" in expected_services:
@@ -742,20 +748,21 @@ def _verify_rpc_exposure(args: Any, expected_services: List[str]) -> bool:
         else:
             print(f"  ℹ️  Skipping EL RPC exposure test (unsupported client: {el_name or 'unknown'})", flush=True)
 
-    if getattr(args, "rpc_exposure_cl", False) and "consensus" in expected_services:
-        cl_name = client_from_service("consensus")
+    if getattr(args, "rpc_exposure_cl", False) and (has_consensus or has_caplin):
+        cl_name = "Caplin" if has_caplin and not has_consensus else client_from_service("consensus")
+        cl_label = "Caplin REST" if cl_name == "Caplin" else "CL REST"
         if cl_supports_rpc_expose(cl_name):
-            print("\n🔓 Testing CL RPC exposure via _updateFlagAndRestartService...", flush=True)
+            print(f"\n🔓 Testing {cl_label} exposure via exposeRpcCL...", flush=True)
             if not _apply_rpc_bind("consensus", "0.0.0.0"):
                 success = False
             else:
                 ok, message = wait_for_port_scope(
                     ports["cl_rest"],
                     "public",
-                    label="CL REST",
+                    label=cl_label,
                 )
                 if ok:
-                    print(f"  ✅ CL REST (:{ports['cl_rest']}) exposed on all interfaces", flush=True)
+                    print(f"  ✅ {cl_label} (:{ports['cl_rest']}) exposed on all interfaces", flush=True)
                 else:
                     print(f"  ❌ {message}", flush=True)
                     success = False
@@ -766,10 +773,10 @@ def _verify_rpc_exposure(args: Any, expected_services: List[str]) -> bool:
                 ok, message = wait_for_port_scope(
                     ports["cl_rest"],
                     "localhost",
-                    label="CL REST",
+                    label=cl_label,
                 )
                 if ok:
-                    print(f"  ✅ CL REST (:{ports['cl_rest']}) revoked to localhost", flush=True)
+                    print(f"  ✅ {cl_label} (:{ports['cl_rest']}) revoked to localhost", flush=True)
                 else:
                     print(f"  ❌ {message}", flush=True)
                     success = False

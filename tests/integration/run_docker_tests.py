@@ -116,7 +116,7 @@ def assign_rpc_exposure_flags(tasks: List["TestTask"]) -> None:
         if el_supports_rpc_expose(name)
     } - el_seen
     missing_cl = {
-        name for name in ("Nimbus", "Lodestar", "Lighthouse", "Grandine", "Prysm", "Teku")
+        name for name in ("Nimbus", "Lodestar", "Lighthouse", "Grandine", "Prysm", "Teku", "Caplin")
         if cl_supports_rpc_expose(name)
     } - cl_seen
     if missing_el or missing_cl:

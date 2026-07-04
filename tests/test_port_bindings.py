@@ -2,9 +2,11 @@
 from tests.integration.port_bindings import (
     check_port_scope,
     cl_supports_rpc_expose,
+    el_supports_rpc_expose,
     parse_ss_listeners,
     PortBinding,
 )
+from tests.integration.run_docker_tests import TestTask as IntegrationTestTask, assign_rpc_exposure_flags
 
 
 SS_SAMPLE = """
@@ -35,6 +37,24 @@ def test_check_port_scope_localhost_and_public():
 
 def test_cl_supports_rpc_expose_includes_grandine():
     assert cl_supports_rpc_expose("Grandine")
+
+
+def test_rpc_exposure_supports_integrated_caplin():
+    assert cl_supports_rpc_expose("Caplin")
+    assert el_supports_rpc_expose("Erigon-Caplin")
+
+
+def test_assign_rpc_exposure_flags_schedules_caplin_cl_rest():
+    task = IntegrationTestTask(
+        "Caplin-Erigon-HOODI",
+        "bash /ethpillar/tests/integration/run_test.sh deploy/deploy-node.py --combo Caplin-Erigon --network HOODI",
+        "--network HOODI",
+    )
+
+    assign_rpc_exposure_flags([task])
+
+    assert "--rpc-exposure-el" in task.cmd
+    assert "--rpc-exposure-cl" in task.cmd
 
 
 def test_check_port_scope_detects_public_rpc_binding():
