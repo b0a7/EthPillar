@@ -1156,6 +1156,9 @@ while true; do
         getClient
         # Client specific ports
         [[ $CL == "Lighthouse" ]] && sudo ufw allow 9001/udp comment 'Allow lighthouse QUIC port'
+        # Teku 26.7.0+ enables QUIC by default: UDP 9001 (IPv4) and UDP 9091 (IPv6)
+        [[ $CL == "Teku" ]] && sudo ufw allow 9001/udp comment 'Allow teku QUIC port (IPv4)'
+        [[ $CL == "Teku" ]] && sudo ufw allow 9091/udp comment 'Allow teku QUIC port (IPv6)'
         [[ $EL == "Reth" ]] && sudo ufw allow 30304/udp comment 'Allow reth discv5 port'
         [[ $EL =~ "Erigon" ]] && sudo ufw allow 42069 comment 'Allow erigon torrent port'
         [[ $EL =~ "Erigon" ]] && sudo ufw allow 30304 comment 'Allow erigon p2p port'
