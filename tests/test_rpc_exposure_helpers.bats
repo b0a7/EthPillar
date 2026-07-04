@@ -54,6 +54,15 @@ EOF
   grep -q -- "--http.addr=0.0.0.0" "$EXECUTION_SERVICE_FILE"
 }
 
+@test "getClient sets Caplin when Erigon-Caplin is integrated" {
+  write_caplin_execution_service
+  rm -f "$CONSENSUS_SERVICE_FILE"
+  export CONSENSUS_SERVICE_FILE="/nonexistent/consensus.service"
+  getClient
+  [ "$CL" = "Caplin" ]
+  isIntegratedCaplin
+}
+
 @test "exposeRpcCL updates integrated Caplin REST on execution service" {
   write_caplin_execution_service
   getClient

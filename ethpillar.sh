@@ -143,8 +143,15 @@ function testAndPluginCommand() {
 }
 
 function buildMenu() {
+  getClient
   for (( i=0; i<${#_SERVICES[@]}; i++ )); do
-    test -f /etc/systemd/system/"${_SERVICES[i]}".service && OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
+    if [[ "${_SERVICES[i]}" == "consensus" ]]; then
+      if [[ -f /etc/systemd/system/consensus.service ]] || isIntegratedCaplin; then
+        OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
+      fi
+    else
+      test -f /etc/systemd/system/"${_SERVICES[i]}".service && OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
+    fi
   done
 }
 
@@ -445,6 +452,12 @@ done
 submenuConsensus(){
 while true; do
     getBackTitle
+    local _svc='consensus'
+    local _svc_file='/etc/systemd/system/consensus.service'
+    if isIntegratedCaplin; then
+        _svc='execution'
+        _svc_file='/etc/systemd/system/execution.service'
+    fi
     # Define the options for the submenu
     SUBOPTIONS=(
       1 "View logs"
@@ -476,28 +489,39 @@ while true; do
     # Handle the user's choice from the submenu
     case $SUBCHOICE in
       1)
-        view_journal_logs -fu consensus
+        view_journal_logs -fu "${_svc}"
         ;;
       2)
-        sudo service consensus start
+        sudo service "${_svc}" start
         ;;
       3)
-        sudo service consensus stop
+        sudo service "${_svc}" stop
         ;;
       4)
-        sudo service consensus restart
+        sudo service "${_svc}" restart
         ;;
       5)
-        sudo "${EDITOR}" /etc/systemd/system/consensus.service
+        sudo "${EDITOR}" "${_svc_file}"
         if whiptail --title "Reload daemon and restart services" --yesno "Do you want to restart consensus client?" 8 78; then
-          sudo systemctl daemon-reload && sudo service consensus restart
+          sudo systemctl daemon-reload && sudo service "${_svc}" restart
         fi
         ;;
       6)
-        runScript update_consensus.sh
+        if isIntegratedCaplin; then
+          runScript update_execution.sh
+        else
+          runScript update_consensus.sh
+        fi
         ;;
       7)
-        runScript resync_consensus.sh
+        if isIntegratedCaplin; then
+          whiptail --title "Resync Caplin" --msgbox \
+            "Caplin runs inside Erigon and shares its datadir.\nResyncing will wipe /var/lib/erigon and resync both execution and consensus layers." \
+            10 78
+          runScript resync_execution.sh
+        else
+          runScript resync_consensus.sh
+        fi
         ;;
       8)
         exposeRpcCL
@@ -506,6 +530,11 @@ while true; do
         if [[ "$(getValidatorMode)" == "separate" ]]; then
           whiptail --title "Separate Validator Client" --msgbox \
             "A separate validator client is installed.\n\nDuring the consensus client switch, its beacon endpoint will be updated automatically." \
+            10 78
+        fi
+        if isIntegratedCaplin; then
+          whiptail --title "Switch from integrated Caplin" --msgbox \
+            "Caplin is integrated into Erigon.\n\nSwitching will install a standalone consensus client and convert Erigon to execution-only." \
             10 78
         fi
         runScript switch_client.sh consensus

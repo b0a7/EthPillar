@@ -52,7 +52,7 @@ function resyncClient(){
 		sudo rm -rf /var/lib/geth/*
 		sudo systemctl restart execution
 		;;
-	  Erigon)
+	  Erigon|Erigon-Caplin)
 		sudo systemctl stop execution
 		sudo rm -rf /var/lib/erigon/*
 		sudo systemctl restart execution

@@ -478,6 +478,15 @@ getClient(){
     elif [[ -n $VC ]]; then
         CLIENT=$VC
     fi
+    if [[ "${EL:-}" == "Erigon-Caplin" && -z "${CL:-}" ]]; then
+        CL='Caplin'
+        CLIENT=$CL
+    fi
+}
+
+# Return true when Caplin runs inside execution.service (no separate consensus unit).
+isIntegratedCaplin(){
+    [[ "${EL:-}" == "Erigon-Caplin" ]] && [[ ! -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]
 }
 
 # ── Validator mode helpers (used by CC switch, update_validator.sh, TUI) ──

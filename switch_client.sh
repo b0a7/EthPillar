@@ -106,19 +106,29 @@ function switchClient(){
         Nimbus) DATADIR="${BASE_DATA_DIR}/nimbus" ;;
         Teku) DATADIR="${BASE_DATA_DIR}/teku" ;;
         Lodestar) DATADIR="${BASE_DATA_DIR}/lodestar" ;;
-        Caplin) DATADIR="${BASE_DATA_DIR}/erigon" ;;
+        Caplin)
+            if [ "$TARGET_CLIENT" == "consensus" ] && isIntegratedCaplin; then
+                DATADIR=""
+            else
+                DATADIR="${BASE_DATA_DIR}/erigon"
+            fi
+            ;;
         Grandine) DATADIR="${BASE_DATA_DIR}/grandine" ;;
         Prysm) DATADIR="${BASE_DATA_DIR}/prysm" ;;
     esac
 
     if [ -n "$DATADIR" ] && [ -d "$DATADIR" ]; then
+        local _stop_unit="${TARGET_CLIENT}"
+        if [ "$TARGET_CLIENT" == "consensus" ] && isIntegratedCaplin; then
+            _stop_unit="execution"
+        fi
         if [ "$AUTO" = true ]; then
             # Automated test assumption: always wipe the old client's datadir to free space
-            sudo systemctl stop ${TARGET_CLIENT}
-            sudo rm -rf $DATADIR
+            sudo systemctl stop "${_stop_unit}"
+            sudo rm -rf "$DATADIR"
         elif whiptail --title "Switch $TARGET_CLIENT Client" --yesno "Remove existing client data directory ($DATADIR)?\n\nSelecting Yes will free up disk space. If you select No, the data will be preserved in case you want to switch back later." 10 78; then
-            sudo systemctl stop ${TARGET_CLIENT}
-            sudo rm -rf $DATADIR
+            sudo systemctl stop "${_stop_unit}"
+            sudo rm -rf "$DATADIR"
         fi
     fi
 
@@ -145,7 +155,11 @@ function switchClient(){
     fi
 
     # 4) Stop the service before installing the new one
-    sudo systemctl stop ${TARGET_CLIENT} > /dev/null 2>&1
+    local _stop_unit="${TARGET_CLIENT}"
+    if [ "$TARGET_CLIENT" == "consensus" ] && isIntegratedCaplin; then
+        _stop_unit="execution"
+    fi
+    sudo systemctl stop "${_stop_unit}" > /dev/null 2>&1
 
     # 5) Detect if MEV-Boost is enabled (only relevant when switching CC)
     MEVBOOST_FLAG=""
@@ -167,7 +181,9 @@ function switchClient(){
     if [ "$TARGET_CLIENT" == "execution" ]; then
         runScript deploy/install-node.sh deploy/deploy-node.py --switch_client execution --cc "$CL" $NETWORK_ARG $AUTO_ARGS
     elif [ "$TARGET_CLIENT" == "consensus" ]; then
-        runScript deploy/install-node.sh deploy/deploy-node.py --switch_client consensus --ec "$EL" $MEVBOOST_FLAG $NETWORK_ARG $AUTO_ARGS
+        local _ec="${EL}"
+        [[ "${EL:-}" == "Erigon-Caplin" ]] && _ec="Erigon"
+        runScript deploy/install-node.sh deploy/deploy-node.py --switch_client consensus --ec "$_ec" $MEVBOOST_FLAG $NETWORK_ARG $AUTO_ARGS
 
         # Reconnect separate VC to the new beacon node after BN install.
         if [ "$VALIDATOR_MODE" == "separate" ]; then
