@@ -29,11 +29,16 @@ hoodi_relay_options = [
 ]
 
 # Checkpoint-Sync Data
+#
+# Public endpoints from the community-maintained list:
+#   https://eth-clients.github.io/checkpoint-sync-endpoints/
+# EthStaker beaconstate.ethstaker.cc (and related) endpoints were removed as
+# defunct. Prefer known-good providers first; always verify against the list
+# above before relying on an endpoint in production.
 mainnet_sync_urls = [
-    ("ETHSTAKER", "https://beaconstate.ethstaker.cc"),
     ("BEACONCHA.IN", "https://sync-mainnet.beaconcha.in"),
-    ("ATTESTANT", "https://mainnet-checkpoint-sync.attestant.io"),
     ("SIGMA PRIME", "https://mainnet.checkpoint.sigp.io"),
+    ("ATTESTANT", "https://mainnet-checkpoint-sync.attestant.io"),
     ("Lodestar", "https://beaconstate-mainnet.chainsafe.io"),
     ("BeaconState.info", "https://beaconstate.info"),
     ("PietjePuk", "https://checkpointz.pietjepuk.net"),
@@ -42,9 +47,10 @@ mainnet_sync_urls = [
 ]
 
 holesky_sync_urls = [
+    ("Lodestar", "https://beaconstate-holesky.chainsafe.io"),
+    ("Stakely", "https://holesky-checkpoint-sync.stakely.io"),
     ("BEACONSTATE", "https://holesky.beaconstate.info"),
     ("EF DevOps", "https://checkpoint-sync.holesky.ethpandaops.io"),
-    ("Lodestar", "https://beaconstate-holesky.chainsafe.io"),
 ]
 
 sepolia_sync_urls = [
@@ -54,11 +60,13 @@ sepolia_sync_urls = [
 ]
 
 ephemery_sync_urls = [
-    ("ETHSTAKER", "https://ephemery.beaconstate.ethstaker.cc"),
+    ("Bordel.wtf", "https://checkpointz.bordel.wtf/"),
     ("EF DevOps", "https://checkpoint-sync.ephemery.ethpandaops.io"),
 ]
 
 hoodi_sync_urls = [
+    ("Lodestar", "https://beaconstate-hoodi.chainsafe.io"),
+    ("SIGMA PRIME", "https://hoodi.checkpoint.sigp.io"),
     ("EF DevOps", "https://checkpoint-sync.hoodi.ethpandaops.io"),
     ("ATTESTANT", "https://hoodi-checkpoint-sync.attestant.io"),
 ]

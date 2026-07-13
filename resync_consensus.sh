@@ -5,101 +5,551 @@
 # Source: https://github.com/coincashew/ethpillar
 #
 # Made for home and solo stakers 🏠🥩
+#
+# Resync a consensus (beacon) client via checkpoint sync where supported.
+#
+# USAGE
+#   ./resync_consensus.sh [options]
+#   CLIENT=nimbus NETWORK=mainnet ./resync_consensus.sh --yes
+#
+# OPTIONS
+#   -c, --client NAME       Consensus client: nimbus, lighthouse, teku, prysm,
+#                           lodestar, grandine (case-insensitive)
+#   -n, --network NAME      mainnet | holesky | hoodi | sepolia | ephemery
+#   -u, --checkpoint-url U  Override checkpoint sync base URL
+#   -y, --yes               Skip interactive confirmation (still prints warning)
+#   -h, --help              Show this help
+#
+# ENVIRONMENT
+#   CLIENT / CL             Same as --client
+#   NETWORK                 Same as --network
+#   CHECKPOINT_SYNC_URL     Same as --checkpoint-url
+#   CONSENSUS_SERVICE_FILE  Path to systemd unit (default: /etc/systemd/system/consensus.service)
+#
+# EXAMPLES
+#   # Auto-detect client + network from systemd / EL RPC, confirm in TUI
+#   ./resync_consensus.sh
+#
+#   # Explicit client and network, non-interactive
+#   ./resync_consensus.sh --client lighthouse --network mainnet --yes
+#
+#   # Nimbus with a custom checkpoint endpoint
+#   ./resync_consensus.sh -c nimbus -n hoodi -u https://hoodi.checkpoint.sigp.io -y
+#
+# SAFETY
+#   This DELETES beacon-chain database directories under /var/lib/<client>/ and
+#   restarts the consensus systemd service. Validator keystores (separate VC
+#   data dirs) are NOT removed. Always confirm you have the correct client and
+#   that you understand downtime + re-sync cost before proceeding.
+#
+# CLIENT STRATEGY (EthPillar install layout)
+#   Lighthouse / Prysm / Teku / Lodestar / Grandine:
+#     Checkpoint flags are already in consensus.service from deploy/*.py.
+#     Resync = stop service → wipe beacon DB → restart service so the unit's
+#     checkpoint flags re-apply on startup:
+#       Lighthouse: --checkpoint-sync-url=URL
+#       Prysm:      --checkpoint-sync-url=URL --genesis-beacon-api-url=URL
+#       Teku:       --checkpoint-sync-url=URL
+#                   (older docs also mention --initial-state=URL/path)
+#       Lodestar:   --checkpointSyncUrl=URL
+#       Grandine:   --checkpoint-sync-url=URL
+#   Nimbus:
+#     Service unit does NOT embed checkpoint sync. Offline tool is required:
+#       nimbus_beacon_node trustedNodeSync \
+#         --network=... --trusted-node-url=URL \
+#         --data-dir=/var/lib/nimbus --backfill=false
+#
+# Checkpoint endpoints: community list at
+#   https://eth-clients.github.io/checkpoint-sync-endpoints/
+# Verify endpoints there if sync fails; public providers can go offline.
 
-# Load functions
-BASE_DIR=$(pwd)
-source $BASE_DIR/functions.sh
+# Intentionally no `set -e`: this script sources functions.sh and uses whiptail
+# (non-zero = cancel). Failures are checked explicitly where needed.
+set -uo pipefail
 
-function getClient(){
-	CL=$(cat /etc/systemd/system/consensus.service | grep Description= | awk -F'=' '{print $2}' | awk '{print $1}')
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="${BASE_DIR:-$SCRIPT_DIR}"
+# shellcheck source=functions.sh
+source "$BASE_DIR/functions.sh"
+
+CONSENSUS_SERVICE_FILE="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+
+# CLI / env state (populated by parse_args + resolve_*)
+CL="${CL:-${CLIENT:-}}"
+NETWORK="${NETWORK:-}"
+CHECKPOINT_SYNC_URL="${CHECKPOINT_SYNC_URL:-}"
+ASSUME_YES=0
+EPHEMERY_NETWORK_PATH="/opt/ethpillar/testnet"
+
+# ---------------------------------------------------------------------------
+# Help
+# ---------------------------------------------------------------------------
+usage() {
+	sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
+	exit 0
 }
 
-function promptYesNo(){
-	if whiptail --title "Resync Consensus - $CL" --yesno "This will only take a minute or two.\nAre you sure you want to resync $CL?" 9 78; then
-		resyncClient
-		promptViewLogs
-	fi
-}
-
-function promptViewLogs(){
-	if whiptail --title "Resync $CL complete" --yesno "Would you like to view logs and confirm everything is running properly?" 8 78; then
-		view_journal_logs -fu consensus
-	fi
-}
-
-function resyncClient(){
-	case $CL in
-	  Lighthouse)
-		sudo systemctl stop consensus
-		sudo rm -rf /var/lib/lighthouse/beacon
-		sudo systemctl restart consensus
-		;;
-	  Lodestar)
-		sudo systemctl stop consensus
-		sudo rm -rf /var/lib/lodestar/chain-db
-		sudo systemctl restart consensus
-		;;
-	  Teku)
-		sudo systemctl stop consensus
-		sudo rm -rf /var/lib/teku/beacon
-		sudo systemctl restart consensus
-		;;
-	  Nimbus)
-		getNetwork
-		case $NETWORK in
-		Holesky)
-			_checkpointsync="--network=holesky --trusted-node-url=https://holesky.beaconstate.ethstaker.cc"
-			;;
-		Mainnet)
-			_checkpointsync="--network=mainnet --trusted-node-url=https://beaconstate.ethstaker.cc"
-			;;
-		Sepolia)
-			_checkpointsync="--network=sepolia --trusted-node-url=https://checkpoint-sync.sepolia.ethpandaops.io"
-			;;
-		Ephemery)
-			_checkpointsync="--network=/opt/ethpillar/testnet --trusted-node-url=https://ephemery.beaconstate.ethstaker.cc"
-			;;
-		Hoodi)
-			_checkpointsync="--network=hoodi --trusted-node-url=https://checkpoint-sync.hoodi.ethpandaops.io"
-			;;
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+parse_args() {
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+			-c|--client)
+				CL="${2:-}"
+				shift 2
+				;;
+			-n|--network)
+				NETWORK="${2:-}"
+				shift 2
+				;;
+			-u|--checkpoint-url)
+				CHECKPOINT_SYNC_URL="${2:-}"
+				shift 2
+				;;
+			-y|--yes)
+				ASSUME_YES=1
+				shift
+				;;
+			-h|--help)
+				usage
+				;;
+			*)
+				error "Unknown argument: $1 (try --help)"
+				;;
 		esac
+	done
+}
 
-		sudo systemctl stop consensus
-		sudo rm -rf /var/lib/nimbus/db
+# ---------------------------------------------------------------------------
+# Client detection / selection
+# ---------------------------------------------------------------------------
+# Normalize free-form client names to Title-case used by systemd Description.
+normalize_client() {
+	local raw
+	raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+	case "$raw" in
+		nimbus) echo "Nimbus" ;;
+		lighthouse|lh) echo "Lighthouse" ;;
+		teku) echo "Teku" ;;
+		prysm) echo "Prysm" ;;
+		lodestar|ls) echo "Lodestar" ;;
+		grandine) echo "Grandine" ;;
+		"") echo "" ;;
+		*) echo "" ;;
+	esac
+}
 
-		NIMBUS_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/nimbus_beacon_node")
-		sudo -u consensus "$NIMBUS_BIN" trustedNodeSync \
-		${_checkpointsync} \
+detect_client_from_systemd() {
+	local desc
+	[[ -f "$CONSENSUS_SERVICE_FILE" ]] || return 1
+	desc=$(grep -m1 '^Description=' "$CONSENSUS_SERVICE_FILE" 2>/dev/null \
+		| awk -F'=' '{print $2}' | awk '{print $1}')
+	[[ -n "$desc" ]] || return 1
+	normalize_client "$desc"
+}
+
+prompt_client_interactive() {
+	local choice
+	if command -v whiptail >/dev/null 2>&1; then
+		choice=$(whiptail --title "Resync Consensus" --menu \
+			"Select consensus client to resync:" 16 60 7 \
+			"Nimbus" "" \
+			"Lighthouse" "" \
+			"Teku" "" \
+			"Prysm" "" \
+			"Lodestar" "" \
+			"Grandine" "" \
+			3>&1 1>&2 2>&3) || error "Client selection cancelled."
+		echo "$choice"
+	else
+		echo "Available clients: nimbus lighthouse teku prysm lodestar grandine" >&2
+		read -r -p "Consensus client: " choice
+		normalize_client "$choice"
+	fi
+}
+
+resolve_client() {
+	local detected=""
+	if [[ -n "$CL" ]]; then
+		CL="$(normalize_client "$CL")"
+		[[ -n "$CL" ]] || error "Unsupported client. Use: nimbus, lighthouse, teku, prysm, lodestar, grandine"
+		return
+	fi
+
+	detected="$(detect_client_from_systemd || true)"
+	if [[ -n "$detected" ]]; then
+		CL="$detected"
+		ohai "Detected consensus client from systemd: $CL"
+		return
+	fi
+
+	if [[ -t 0 ]] || command -v whiptail >/dev/null 2>&1; then
+		CL="$(prompt_client_interactive)"
+		CL="$(normalize_client "$CL")"
+	fi
+	[[ -n "$CL" ]] || error "Could not determine consensus client. Pass --client NAME or set CLIENT=."
+}
+
+# ---------------------------------------------------------------------------
+# Network detection / selection
+# ---------------------------------------------------------------------------
+normalize_network() {
+	local raw
+	raw="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+	case "$raw" in
+		mainnet|main) echo "Mainnet" ;;
+		holesky) echo "Holesky" ;;
+		hoodi) echo "Hoodi" ;;
+		sepolia) echo "Sepolia" ;;
+		ephemery|ephemeral) echo "Ephemery" ;;
+		"") echo "" ;;
+		*) echo "" ;;
+	esac
+}
+
+network_to_slug() {
+	# Lowercase network id used in client flags / paths
+	echo "${1:-}" | tr '[:upper:]' '[:lower:]'
+}
+
+detect_network_from_systemd() {
+	local found slug
+	[[ -f "$CONSENSUS_SERVICE_FILE" ]] || return 1
+
+	# Description often contains MAINNET / HOODI / etc.
+	found=$(grep -m1 '^Description=' "$CONSENSUS_SERVICE_FILE" 2>/dev/null \
+		| grep -oEi '(MAINNET|HOLESKY|SEPOLIA|HOODI|EPHEMERY)' | head -1 || true)
+	if [[ -n "$found" ]]; then
+		normalize_network "$found"
+		return 0
+	fi
+
+	# Flags: --network=mainnet, --mainnet, --hoodi, etc.
+	if grep -qE -- '--mainnet(\s|\\|$)' "$CONSENSUS_SERVICE_FILE" 2>/dev/null; then
+		echo "Mainnet"; return 0
+	fi
+	for slug in holesky hoodi sepolia ephemery mainnet; do
+		if grep -qE -- "--${slug}(\s|\\|$)|--network[= ]${slug}" "$CONSENSUS_SERVICE_FILE" 2>/dev/null; then
+			normalize_network "$slug"
+			return 0
+		fi
+	done
+	# Ephemery custom config path used by EthPillar Nimbus
+	if grep -q '/opt/ethpillar/testnet' "$CONSENSUS_SERVICE_FILE" 2>/dev/null; then
+		echo "Ephemery"; return 0
+	fi
+	return 1
+}
+
+resolve_network() {
+	local detected=""
+	if [[ -n "$NETWORK" ]]; then
+		NETWORK="$(normalize_network "$NETWORK")"
+		[[ -n "$NETWORK" ]] || error "Unsupported network. Use: mainnet, holesky, hoodi, sepolia, ephemery"
+		return
+	fi
+
+	# Live EL RPC (may fail if execution is down / still syncing)
+	if declare -f getNetwork >/dev/null 2>&1; then
+		getNetwork || true
+		if [[ -n "${NETWORK:-}" && "$NETWORK" != "Network Syncing" && "$NETWORK" != "Custom Network" ]]; then
+			NETWORK="$(normalize_network "$NETWORK")"
+			if [[ -n "$NETWORK" ]]; then
+				ohai "Detected network from execution RPC: $NETWORK"
+				return
+			fi
+		fi
+		NETWORK=""
+	fi
+
+	detected="$(detect_network_from_systemd || true)"
+	if [[ -n "$detected" ]]; then
+		NETWORK="$detected"
+		ohai "Detected network from systemd unit: $NETWORK"
+		return
+	fi
+
+	if command -v whiptail >/dev/null 2>&1; then
+		NETWORK=$(whiptail --title "Resync Consensus" --menu \
+			"Select network:" 14 50 5 \
+			"Mainnet" "" \
+			"Holesky" "" \
+			"Hoodi" "" \
+			"Sepolia" "" \
+			"Ephemery" "" \
+			3>&1 1>&2 2>&3) || error "Network selection cancelled."
+		return
+	fi
+
+	error "Could not determine network. Pass --network NAME or set NETWORK=."
+}
+
+# ---------------------------------------------------------------------------
+# Checkpoint sync URLs
+# Prefer community list:
+#   https://eth-clients.github.io/checkpoint-sync-endpoints/
+# ---------------------------------------------------------------------------
+default_checkpoint_url() {
+	case "$(network_to_slug "$1")" in
+		mainnet)  echo "https://sync-mainnet.beaconcha.in" ;;
+		holesky)  echo "https://beaconstate-holesky.chainsafe.io" ;;
+		hoodi)    echo "https://beaconstate-hoodi.chainsafe.io" ;;
+		sepolia)  echo "https://checkpoint-sync.sepolia.ethpandaops.io" ;;
+		ephemery) echo "https://checkpointz.bordel.wtf/" ;;
+		*)        echo "" ;;
+	esac
+}
+
+resolve_checkpoint_url() {
+	if [[ -n "$CHECKPOINT_SYNC_URL" ]]; then
+		return
+	fi
+	CHECKPOINT_SYNC_URL="$(default_checkpoint_url "$NETWORK")"
+	[[ -n "$CHECKPOINT_SYNC_URL" ]] || error "No default checkpoint URL for network: $NETWORK"
+}
+
+# Scrape existing checkpoint URL from the unit (informational / verification).
+scrape_unit_checkpoint_url() {
+	[[ -f "$CONSENSUS_SERVICE_FILE" ]] || return 1
+	# Match common flag forms used by EthPillar-generated units
+	grep -oE \
+		'--(checkpoint-sync-url|checkpointSyncUrl|trusted-node-url|genesis-beacon-api-url|initial-state)=[^[:space:]\\]+' \
+		"$CONSENSUS_SERVICE_FILE" 2>/dev/null \
+		| head -1 \
+		| sed -E 's/^[^=]+=//' || true
+}
+
+# ---------------------------------------------------------------------------
+# Per-client data paths (beacon only — never wipe validator keystores)
+# ---------------------------------------------------------------------------
+beacon_datadir_for_client() {
+	local net_slug
+	net_slug="$(network_to_slug "$NETWORK")"
+	case "$CL" in
+		Lighthouse) echo "/var/lib/lighthouse/beacon" ;;
+		Lodestar)   echo "/var/lib/lodestar/chain-db" ;;
+		Teku)       echo "/var/lib/teku/beacon" ;;
+		Nimbus)     echo "/var/lib/nimbus/db" ;;
+		Prysm)      echo "/var/lib/prysm/beacon/beaconchaindata" ;;
+		Grandine)   echo "/var/lib/grandine/${net_slug:-mainnet}/beacon" ;;
+		*)          error "No beacon data path mapping for client: $CL" ;;
+	esac
+}
+
+# Human-readable note of how checkpoint sync is applied for this client
+checkpoint_strategy_note() {
+	case "$CL" in
+		Nimbus)
+			cat <<EOF
+Nimbus: offline trustedNodeSync with --trusted-node-url, then restart.
+EOF
+			;;
+		Lighthouse)
+			cat <<EOF
+Lighthouse: wipe beacon DB and restart. Unit should already contain
+  --checkpoint-sync-url=${CHECKPOINT_SYNC_URL}
+EOF
+			;;
+		Prysm)
+			cat <<EOF
+Prysm: wipe beacon DB and restart. Unit should already contain
+  --checkpoint-sync-url=${CHECKPOINT_SYNC_URL}
+  --genesis-beacon-api-url=${CHECKPOINT_SYNC_URL}
+EOF
+			;;
+		Teku)
+			cat <<EOF
+Teku: wipe beacon DB and restart. Unit should already contain
+  --checkpoint-sync-url=${CHECKPOINT_SYNC_URL}
+(Alternative flag used by some setups: --initial-state=<url-or-ssz>)
+EOF
+			;;
+		Lodestar)
+			cat <<EOF
+Lodestar: wipe beacon DB and restart. Unit should already contain
+  --checkpointSyncUrl=${CHECKPOINT_SYNC_URL}
+EOF
+			;;
+		Grandine)
+			cat <<EOF
+Grandine: wipe beacon DB and restart. Unit should already contain
+  --checkpoint-sync-url=${CHECKPOINT_SYNC_URL}
+EOF
+			;;
+	esac
+}
+
+warn_if_unit_missing_checkpoint_flag() {
+	local unit_url
+	[[ "$CL" == "Nimbus" ]] && return 0
+	[[ -f "$CONSENSUS_SERVICE_FILE" ]] || return 0
+	unit_url="$(scrape_unit_checkpoint_url || true)"
+	if [[ -z "$unit_url" ]]; then
+		echo
+		echo "WARNING: No checkpoint-sync flag found in $CONSENSUS_SERVICE_FILE."
+		echo "After restart, $CL may fall back to a slow genesis / P2P sync."
+		echo "Expected flag forms: --checkpoint-sync-url= | --checkpointSyncUrl= | --initial-state="
+		echo "Edit the unit or re-run node deploy with a checkpoint URL if needed."
+		echo
+	else
+		ohai "Unit checkpoint flag points at: $unit_url"
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# Destructive resync implementations
+# ---------------------------------------------------------------------------
+stop_consensus() {
+	ohai "Stopping consensus service..."
+	sudo systemctl stop consensus || true
+}
+
+start_consensus() {
+	ohai "Starting consensus service..."
+	sudo systemctl restart consensus
+}
+
+wipe_beacon_datadir() {
+	local datadir="$1"
+	ohai "Deleting beacon data: $datadir"
+	# Safety: only allow EthPillar-style data paths under /var/lib/
+	if [[ -z "$datadir" || "$datadir" == "/" || "$datadir" != /var/lib/* ]]; then
+		error "Refusing to delete unsafe path: '${datadir:-}'"
+	fi
+	# Defense in depth if error() is ever mocked / non-exiting
+	if [[ "$datadir" != /var/lib/* ]]; then
+		return 1
+	fi
+	sudo rm -rf "$datadir"
+}
+
+resync_nimbus() {
+	local net_slug nimbus_bin network_arg
+	net_slug="$(network_to_slug "$NETWORK")"
+	if [[ "$net_slug" == "ephemery" ]]; then
+		network_arg="--network=${EPHEMERY_NETWORK_PATH}"
+	else
+		network_arg="--network=${net_slug}"
+	fi
+
+	stop_consensus
+	wipe_beacon_datadir "$(beacon_datadir_for_client)"
+
+	nimbus_bin=$(get_systemd_exec_path "$CONSENSUS_SERVICE_FILE" "/usr/local/bin/nimbus_beacon_node")
+	ohai "Running Nimbus trustedNodeSync (checkpoint: $CHECKPOINT_SYNC_URL)..."
+	# shellcheck disable=SC2086
+	sudo -u consensus "$nimbus_bin" trustedNodeSync \
+		${network_arg} \
+		--trusted-node-url="${CHECKPOINT_SYNC_URL}" \
 		--data-dir=/var/lib/nimbus \
 		--backfill=false
 
-		sudo systemctl restart consensus
-		;;
-	  Prysm)
-		sudo systemctl stop consensus
-		sudo rm -rf /var/lib/prysm/beacon/beaconchaindata
-		sudo systemctl restart consensus
-		;;
-	  Grandine)
-		getNetwork
-		if [ "$NETWORK" == "Network Syncing" ] || [ -z "$NETWORK" ]; then
-			if [ -f /etc/systemd/system/consensus.service ]; then
-				NETWORK=$(grep "Description=" "/etc/systemd/system/consensus.service" | grep -oEi "(MAINNET|HOLESKY|SEPOLIA|HOODI|EPHEMERY)" | head -1)
-			fi
-		fi
-		_net_lower=$(echo "$NETWORK" | tr '[:upper:]' '[:lower:]')
-		if [ -z "$_net_lower" ]; then
-			_net_lower="mainnet"
-		fi
-
-		sudo systemctl stop consensus
-		sudo rm -rf /var/lib/grandine/$_net_lower/beacon
-		sudo systemctl restart consensus
-		;;
-	  esac
+	start_consensus
 }
 
+# Lighthouse, Teku, Prysm, Lodestar, Grandine: rely on systemd unit flags.
+resync_via_unit_checkpoint() {
+	warn_if_unit_missing_checkpoint_flag
+	stop_consensus
+	wipe_beacon_datadir "$(beacon_datadir_for_client)"
+	start_consensus
+}
+
+resyncClient() {
+	clear 2>/dev/null || true
+	ohai "Resyncing $CL on $NETWORK"
+	ohai "Checkpoint URL (reference / Nimbus): $CHECKPOINT_SYNC_URL"
+	checkpoint_strategy_note
+
+	case "$CL" in
+		Nimbus)
+			resync_nimbus
+			;;
+		Lighthouse|Lodestar|Teku|Prysm|Grandine)
+			resync_via_unit_checkpoint
+			;;
+		*)
+			error "Unsupported client for resync: $CL"
+			;;
+	esac
+	ohai "Resync procedure finished for $CL. Monitor logs until the node is healthy."
+}
+
+# ---------------------------------------------------------------------------
+# Confirmation UI
+# ---------------------------------------------------------------------------
+confirm_resync() {
+	local datadir msg
+	datadir="$(beacon_datadir_for_client)"
+	msg=$(cat <<EOF
+WARNING: Destructive consensus resync
+
+Client:     $CL
+Network:    $NETWORK
+Will delete:
+  $datadir
+
+Strategy:
+$(checkpoint_strategy_note)
+
+Validator keystores are not deleted.
+Node will be offline until checkpoint sync completes
+(usually minutes, not days — if checkpoint URL works).
+
+Verify endpoints if sync fails:
+https://eth-clients.github.io/checkpoint-sync-endpoints/
+EOF
+)
+
+	if [[ "$ASSUME_YES" -eq 1 ]]; then
+		echo "$msg"
+		echo
+		ohai "--yes set: proceeding without interactive confirmation."
+		return 0
+	fi
+
+	if command -v whiptail >/dev/null 2>&1; then
+		if whiptail --title "Resync Consensus - $CL" --yesno "$msg
+
+Proceed with resync?" 22 78; then
+			return 0
+		fi
+		ohai "Resync cancelled."
+		exit 0
+	fi
+
+	echo "$msg"
+	read -r -p "Type 'yes' to permanently delete beacon data and resync: " answer
+	[[ "$answer" == "yes" ]] || { ohai "Resync cancelled."; exit 0; }
+}
+
+promptViewLogs() {
+	if [[ "$ASSUME_YES" -eq 1 ]]; then
+		return 0
+	fi
+	if command -v whiptail >/dev/null 2>&1; then
+		if whiptail --title "Resync $CL complete" --yesno \
+			"Would you like to view logs and confirm everything is running properly?" 8 78; then
+			view_journal_logs -fu consensus
+		fi
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+	parse_args "$@"
+	resolve_client
+	resolve_network
+	resolve_checkpoint_url
+	confirm_resync
+	resyncClient
+	promptViewLogs
+}
+
+# Allow sourcing for tests / TUI without auto-running
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  getClient
-  promptYesNo
+	main "$@"
 fi
