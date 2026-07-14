@@ -140,15 +140,6 @@ normalize_client() {
 	esac
 }
 
-detect_client_from_systemd() {
-	local desc
-	[[ -f "$CONSENSUS_SERVICE_FILE" ]] || return 1
-	desc=$(grep -m1 '^Description=' "$CONSENSUS_SERVICE_FILE" 2>/dev/null \
-		| awk -F'=' '{print $2}' | awk '{print $1}')
-	[[ -n "$desc" ]] || return 1
-	normalize_client "$desc"
-}
-
 prompt_client_interactive() {
 	local choice
 	if command -v whiptail >/dev/null 2>&1; then
@@ -170,18 +161,20 @@ prompt_client_interactive() {
 }
 
 resolve_client() {
-	local detected=""
 	if [[ -n "$CL" ]]; then
 		CL="$(normalize_client "$CL")"
 		[[ -n "$CL" ]] || error "Unsupported client. Use: nimbus, lighthouse, teku, prysm, lodestar, grandine"
 		return
 	fi
 
-	detected="$(detect_client_from_systemd || true)"
-	if [[ -n "$detected" ]]; then
-		CL="$detected"
-		ohai "Detected consensus client from systemd: $CL"
-		return
+	# Reuse functions.sh getClient() (reads Description= from consensus.service → CL)
+	getClient
+	if [[ -n "${CL:-}" ]]; then
+		CL="$(normalize_client "$CL")"
+		if [[ -n "$CL" ]]; then
+			ohai "Detected consensus client from systemd: $CL"
+			return
+		fi
 	fi
 
 	if [[ -t 0 ]] || command -v whiptail >/dev/null 2>&1; then
