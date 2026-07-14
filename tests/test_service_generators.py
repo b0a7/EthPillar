@@ -50,7 +50,10 @@ JWTSECRET_PATH = '"/secrets/jwtsecret"'
 GRAFFITI = "🏠🥩🪙🛡️🦓EthPillar"
 FEE_RECIPIENT_ADDRESS = "0x1234567890abcdef1234567890abcdef12345678"
 MEV_MIN_BID = "0.006"
-SYNC_URL = "https://beaconstate.ethstaker.cc"
+# Fixture only — not a live dependency. Prefer endpoints from:
+# https://eth-clients.github.io/checkpoint-sync-endpoints/
+# (EthStaker beaconstate.ethstaker.cc removed as defunct.)
+SYNC_URL = "https://sync-mainnet.beaconcha.in"
 
 
 def check_constant_substitutions(result: str):

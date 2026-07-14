@@ -267,7 +267,8 @@ function setConfig(){
             EXPLORER="https://beaconcha.in"
           ;;
           holesky)
-            LAUNCHPAD_URL="https://holesky.launchpad.ethstaker.cc"
+            # holesky.launchpad.ethstaker.cc is unreachable; use official EF launchpad.
+            LAUNCHPAD_URL="https://holesky.launchpad.ethereum.org"
             LAUNCHPAD_URL_LIDO=${LAUNCHPAD_URL_LIDO_HOLESKY}
             CSM_WITHDRAWAL_ADDRESS=${CSM_WITHDRAWAL_ADDRESS_HOLESKY}
             CSM_SENTINEL_URL="https://t.me/CSMSentinelHolesky_bot"
@@ -276,7 +277,9 @@ function setConfig(){
             EXPLORER="https://holesky.beaconcha.in"
           ;;
           hoodi)
-            LAUNCHPAD_URL="https://hoodi.launchpad.ethstaker.cc"
+            # hoodi.launchpad.ethstaker.cc redirects to hoodi.console.ethstaker.org;
+            # use official EF launchpad for consistency with mainnet.
+            LAUNCHPAD_URL="https://hoodi.launchpad.ethereum.org"
             LAUNCHPAD_URL_LIDO=${LAUNCHPAD_URL_LIDO_HOODI}
             CSM_WITHDRAWAL_ADDRESS=${CSM_WITHDRAWAL_ADDRESS_HOODI}
             CSM_SENTINEL_URL="https://t.me/CSMSentinelHoodi_bot"
