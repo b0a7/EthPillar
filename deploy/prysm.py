@@ -75,18 +75,31 @@ def generate_prysm_bn_service(eth_network: str, sync_url: str, jwtsecret_path: s
         limit_nofile=None
     )
 
-def generate_prysm_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
-                              fee_parameters: str = '', mev_parameters: str = '',
-                              network_override: Optional[str] = None) -> str:
+def generate_prysm_vc_service(
+    eth_network: str,
+    graffiti: str,
+    beacon_node_address: str,
+    fee_parameters: str = '',
+    mev_parameters: str = '',
+    network_override: Optional[str] = None,
+    beacon_rpc_provider: Optional[str] = "127.0.0.1:4000",
+) -> str:
     """Generate Prysm validator client systemd service file content.
+
+    Includes Keymanager HTTP RPC flags (``--rpc``) and beacon REST enablement so
+    a fresh EthPillar Prysm VC is Keymanager-ready without manual unit edits.
 
     Args:
         eth_network: Network name
         graffiti: Graffiti string
-        beacon_node_address: Beacon node address parameter (usually full flag string from orchestrator)
+        beacon_node_address: Beacon node address parameter (usually full flag
+            string from orchestrator, e.g. ``--beacon-rest-api-provider=...``)
         fee_parameters: Optional fee recipient parameters
         mev_parameters: Optional MEV relay parameters
         network_override: Optional network flag override
+        beacon_rpc_provider: Optional gRPC beacon endpoint (``host:port``).
+            Set when the consensus client is Prysm (default ``127.0.0.1:4000``).
+            Pass ``None`` to omit (non-Prysm beacon nodes).
 
     Returns:
         Service file content as a string
@@ -112,9 +125,20 @@ def generate_prysm_vc_service(eth_network: str, graffiti: str, beacon_node_addre
         f"--wallet-dir={BASE_DATA_DIR}/prysm_validator/validator_keys",
         f"--wallet-password-file={BASE_DATA_DIR}/prysm_validator/password.txt",
         beacon_node_address,
-        f"--graffiti={graffiti}",
-        "--accept-terms-of-use"
+        "--enable-beacon-rest-api",
     ]
+    if beacon_rpc_provider:
+        _args.append(f"--beacon-rpc-provider={beacon_rpc_provider}")
+    _args.extend(
+        [
+            f"--graffiti={graffiti}",
+            # Keymanager API (local keystores)
+            "--rpc",
+            "--rpc-host=127.0.0.1",
+            "--rpc-port=7500",
+            "--accept-terms-of-use",
+        ]
+    )
     if fee_parameters:
         _args.append(fee_parameters.strip())
     if mev_parameters:
@@ -126,7 +150,8 @@ def generate_prysm_vc_service(eth_network: str, graffiti: str, beacon_node_addre
         description=f"Prysm Validator Client service for {eth_network.upper()}",
         user="validator",
         exec_start=_exec_start,
-        extra_env=None,
+        # Stable home so auth-token is written under /home/validator/.eth2validators/
+        extra_env=['"HOME=/home/validator"'],
         working_dir=None,
         timeout_stop_sec=900,
         limit_nofile=65536
@@ -214,13 +239,34 @@ def install_prysm_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path:
     write_service_file(service_content, service_file_path, 'consensus_temp.service')
     return service_file_path
 
-def install_prysm_vc(pr_version: str, eth_network: str, cl_rest_port: str, graffiti: str, beacon_node_address: str,
-                     fee_parameters: str = '', mev_parameters: str = '') -> str:
-    """Generate and write Prysm validator client service file."""
+def install_prysm_vc(
+    pr_version: str,
+    eth_network: str,
+    cl_rest_port: str,
+    graffiti: str,
+    beacon_node_address: str,
+    fee_parameters: str = '',
+    mev_parameters: str = '',
+    beacon_rpc_provider: Optional[str] = "127.0.0.1:4000",
+) -> str:
+    """Generate and write Prysm validator client service file.
+
+    Also bootstraps an empty direct wallet + password file when missing
+    (no keystore import). Safe to re-run: existing wallet/password are kept.
+    """
     service_content = generate_prysm_vc_service(
-        eth_network, graffiti, beacon_node_address,
-        fee_parameters, mev_parameters
+        eth_network,
+        graffiti,
+        beacon_node_address,
+        fee_parameters,
+        mev_parameters,
+        beacon_rpc_provider=beacon_rpc_provider,
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')
+
+    # Keymanager-ready bootstrap (dirs, password.txt, empty direct wallet).
+    from deploy.keymanager import ensure_prysm_wallet
+
+    ensure_prysm_wallet(network=eth_network, dry_run=False)
     return service_file_path

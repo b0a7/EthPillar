@@ -585,12 +585,599 @@ function setMessage(){
 \nContinue?"
 }
 
+# ---------------------------------------------------------------------------
+# Keymanager API helpers (deploy/keymanager.py — Lighthouse/Lodestar/Nimbus/Prysm)
+# ---------------------------------------------------------------------------
+
+# True if VC is supported for Keymanager API Phase 1.
+keymanagerClientSupported() {
+    local c
+    c=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')
+    case "$c" in
+        lighthouse|lodestar|nimbus|prysm) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Normalize NETWORK (Mainnet/Hoodi/…) to keymanager lowercase slug.
+keymanagerNetwork() {
+    local n
+    n=$(echo "${NETWORK:-mainnet}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+    case "$n" in
+        ""|"network-syncing"|"custom-network") echo "mainnet" ;;
+        *) echo "$n" ;;
+    esac
+}
+
+# Resolve VC + network for keymanager actions. Sets KM_CLIENT, KM_NETWORK.
+keymanagerResolveContext() {
+    getClientVC
+    if [[ -z "${VC:-}" ]]; then
+        getValidatorClient >/dev/null 2>&1 || true
+    fi
+    if [[ -z "${VC:-}" ]]; then
+        whiptail --title "Keymanager API" --msgbox \
+            "No validator client detected.\n\nInstall a separate validator service first." 10 70
+        return 1
+    fi
+    if ! keymanagerClientSupported "$VC"; then
+        whiptail --title "Keymanager API" --msgbox \
+            "Keymanager API helpers support Lighthouse, Lodestar, Nimbus, and Prysm only.\n\nDetected: ${VC}\n\nUse the classic import/generate options for this client." 12 70
+        return 1
+    fi
+    # Prefer live network detection when available; fall back to mainnet.
+    if [[ -z "${NETWORK:-}" || "${NETWORK}" == "Network Syncing" || "${NETWORK}" == "Custom Network" ]]; then
+        if declare -f getNetwork >/dev/null 2>&1 && declare -f initializeRpcEndpoints >/dev/null 2>&1; then
+            initializeRpcEndpoints 2>/dev/null || true
+            getNetwork 2>/dev/null || true
+        fi
+    fi
+    KM_CLIENT="$VC"
+    KM_NETWORK="$(keymanagerNetwork)"
+    return 0
+}
+
+# Run deploy.keymanager CLI; prints JSON on stdout. Ensures venv deps first.
+# Usage: keymanagerPy <subcommand> [extra args…]
+# Globals: KM_CLIENT, KM_NETWORK
+# Note: bootstrap messages go to stderr so command substitution stays clean JSON.
+keymanagerPy() {
+    local cmd="$1"
+    shift || true
+    ensure_python_deps >&2
+    local py="${ETHPILLAR_PYTHON:-python3}"
+    PYTHONPATH="${BASE_DIR}" "$py" -m deploy.keymanager \
+        --client "$KM_CLIENT" \
+        --network "$KM_NETWORK" \
+        "$cmd" "$@"
+}
+
+# Parse last JSON object from mixed stdout (logging may precede JSON).
+keymanagerJsonField() {
+    local json="$1"
+    local field="$2"
+    echo "$json" | jq -r --arg f "$field" '
+      (if type=="array" then .[-1] else . end)
+      | if type=="object" then .[$f] // empty else empty end
+    ' 2>/dev/null | tail -n1
+}
+
+# Resolve which systemd unit hosts validator duties.
+# Sets KM_VALIDATOR_MODE (none|separate|integrated_grandine) and KM_VALIDATOR_UNIT
+# (short name: validator|consensus). Returns 1 if nothing to start.
+keymanagerResolveValidatorUnit() {
+    local mode
+    if declare -f getValidatorMode >/dev/null 2>&1; then
+        mode=$(getValidatorMode)
+    else
+        if [[ -f "${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}" ]]; then
+            mode="separate"
+        elif [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]] \
+            && grep -q 'keystore-dir' "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" 2>/dev/null; then
+            mode="integrated_grandine"
+        else
+            mode="none"
+        fi
+    fi
+    KM_VALIDATOR_MODE="$mode"
+    case "$mode" in
+        separate)
+            KM_VALIDATOR_UNIT="validator"
+            ;;
+        integrated_grandine)
+            KM_VALIDATOR_UNIT="consensus"
+            ;;
+        *)
+            KM_VALIDATOR_UNIT=""
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+# True if systemd unit *unit* is active (short name, e.g. validator).
+keymanagerValidatorIsActive() {
+    local unit="${1:-}"
+    [[ -n "$unit" ]] || return 1
+    systemctl is-active --quiet "$unit" 2>/dev/null
+}
+
+# Probe Keymanager status up to ~10s. Sets KM_STATUS_JSON on success.
+# Returns 0 when available=true (includes Prysm empty-wallet available).
+keymanagerWaitForApi() {
+    local i json available
+    for i in 1 2 3 4 5; do
+        if json=$(keymanagerPy status 2>/dev/null); then
+            available=$(keymanagerJsonField "$json" "available")
+            if [[ "$available" == "true" ]]; then
+                KM_STATUS_JSON="$json"
+                return 0
+            fi
+        fi
+        [[ "$i" -lt 5 ]] && sleep 2
+    done
+    return 1
+}
+
+# If the validator unit is inactive, offer to start it and re-probe Keymanager.
+# Args: optional base_url for messaging.
+# Returns 0 only if Keymanager becomes available after a successful start.
+keymanagerOfferStartValidator() {
+    local base_url="${1:-}"
+    local unit
+
+    if ! keymanagerResolveValidatorUnit; then
+        return 1
+    fi
+    unit="$KM_VALIDATOR_UNIT"
+
+    if keymanagerValidatorIsActive "$unit"; then
+        return 1
+    fi
+
+    if ! whiptail --title "Validator Not Running" --yesno \
+        "Validator service is not running. Keymanager requires it${base_url:+ (expected ${base_url})}.\n\nStart ${unit}.service now?" \
+        12 72; then
+        return 1
+    fi
+
+    ohai "Starting ${unit}.service…"
+    if declare -f startValidatorService >/dev/null 2>&1; then
+        startValidatorService || true
+    else
+        sudo systemctl daemon-reload 2>/dev/null || true
+        sudo systemctl start "$unit" 2>/dev/null || true
+    fi
+
+    # Confirm the unit came up (direct start as fallback).
+    if ! keymanagerValidatorIsActive "$unit"; then
+        sudo systemctl start "$unit" 2>/dev/null || true
+    fi
+    if ! keymanagerValidatorIsActive "$unit"; then
+        whiptail --title "Start Failed" --msgbox \
+            "Could not start ${unit}.service.\n\nCheck:\n  systemctl status ${unit}\n  journalctl -u ${unit} -n 50" \
+            12 72
+        return 1
+    fi
+
+    ohai "Waiting for Keymanager API after starting ${unit}…"
+    if keymanagerWaitForApi; then
+        return 0
+    fi
+    # Process started but API still not answering — caller may offer Enable.
+    return 1
+}
+
+# Show API status; return 0 if available, 1 otherwise.
+# If unreachable, offer to start a stopped validator, then optionally Enable.
+# Sets KM_STATUS_JSON on success path.
+keymanagerEnsureAvailable() {
+    local json available msg base_url
+    if ! keymanagerResolveContext; then
+        return 1
+    fi
+
+    ohai "Checking Keymanager API for ${KM_CLIENT} (${KM_NETWORK})…"
+    if ! json=$(keymanagerPy status 2>/tmp/ethpillar_km_err.$$); then
+        msg=$(cat /tmp/ethpillar_km_err.$$ 2>/dev/null || true)
+        rm -f /tmp/ethpillar_km_err.$$
+        # Still try to parse JSON error body on stdout if present
+        if [[ -n "$json" ]]; then
+            msg=$(keymanagerJsonField "$json" "error")
+        fi
+        # Status command hard-failed — still try starting a stopped VC once.
+        base_url=""
+        if keymanagerOfferStartValidator "$base_url"; then
+            return 0
+        fi
+        whiptail --title "Keymanager API" --msgbox \
+            "Failed to check Keymanager API status.\n\n${msg:-Unknown error}" 12 70
+        return 1
+    fi
+    rm -f /tmp/ethpillar_km_err.$$
+    KM_STATUS_JSON="$json"
+    available=$(keymanagerJsonField "$json" "available")
+
+    if [[ "$available" == "true" ]]; then
+        return 0
+    fi
+
+    base_url=$(keymanagerJsonField "$json" "base_url")
+
+    # Common case: flags/wallet OK but validator.service never started.
+    if keymanagerOfferStartValidator "$base_url"; then
+        return 0
+    fi
+
+    if whiptail --title "Keymanager API Not Available" --yesno \
+        "The Keymanager API is not reachable for ${KM_CLIENT}.\n\nExpected near: ${base_url}\n\nEnable the Keymanager API now? (updates validator.service and restarts the validator)" \
+        14 70; then
+        keymanagerEnableApi
+        # Re-check (enable may have restarted; also try start if still down)
+        if keymanagerWaitForApi; then
+            return 0
+        fi
+        if keymanagerOfferStartValidator "$base_url"; then
+            return 0
+        fi
+        whiptail --title "Keymanager API" --msgbox \
+            "Keymanager API is still not available after enable attempt.\n\nCheck validator logs and that keymanager flags are present in validator.service.\n\n  systemctl status validator\n  journalctl -u validator -n 50" 14 72
+        return 1
+    fi
+    return 1
+}
+
+keymanagerListKeys() {
+    local json count keys_text empty_hint msg
+    if ! keymanagerEnsureAvailable; then
+        return 1
+    fi
+    if ! json=$(keymanagerPy list 2>/tmp/ethpillar_km_err.$$); then
+        local err
+        err=$(keymanagerJsonField "${json:-}" "error")
+        [[ -z "$err" ]] && err=$(cat /tmp/ethpillar_km_err.$$ 2>/dev/null || echo "list failed")
+        rm -f /tmp/ethpillar_km_err.$$
+        whiptail --title "List Keys Failed" --msgbox "$err" 12 70
+        return 1
+    fi
+    rm -f /tmp/ethpillar_km_err.$$
+    count=$(keymanagerJsonField "$json" "key_count")
+    keys_text=$(echo "$json" | jq -r '
+      (if type=="array" then .[-1] else . end)
+      | (.keys // [])
+      | if length==0 then "(no keys)"
+        else
+          to_entries
+          | map("\(.key+1). \(.value.validating_pubkey // .value.pubkey // "unknown")")
+          | join("\n")
+        end
+    ' 2>/dev/null)
+
+    empty_hint=""
+    if [[ "${count:-0}" -eq 0 ]]; then
+        empty_hint=$'\n\nNo keys loaded in the Keymanager API.'
+        # Prysm returns this state before the first keystore import.
+        if [[ "$(echo "${KM_CLIENT:-}" | tr '[:upper:]' '[:lower:]')" == "prysm" ]] \
+            || [[ "$(keymanagerJsonField "$json" "prysm_empty_wallet")" == "true" ]] \
+            || [[ "$(keymanagerJsonField "$json" "empty_uninitialized")" == "true" ]]; then
+            empty_hint+=$'\nImport keystores first (Import Keys), or use prysm-validator accounts import.'
+        fi
+    fi
+
+    msg="Client: ${KM_CLIENT}  Network: ${KM_NETWORK}\nEndpoint: $(keymanagerJsonField "$json" "base_url")\n\n${keys_text}${empty_hint}"
+    whiptail --title "Keymanager API — Keys (${count:-0})" \
+        --scrolltext \
+        --msgbox \
+        "$msg" \
+        18 105
+}
+
+
+keymanagerImportKeystores() {
+    local key_dir password verify json err count statuses_text
+    if ! keymanagerEnsureAvailable; then
+        return 1
+    fi
+
+    if ! whiptail --title "Import via Keymanager API" --defaultno --yesno \
+        "Import EIP-2335 keystores through the live Keymanager API (no validator stop required for most clients).\n\n${MSG_IMPORT}" 20 78; then
+        return 1
+    fi
+
+    key_dir=$(whiptail --title "Keystore Directory" --inputbox "$MSG_PATH" 16 78 --ok-button "Submit" 3>&1 1>&2 2>&3) || return 1
+    if [[ ! -d "$key_dir" ]]; then
+        whiptail --title "Error" --msgbox "Directory does not exist:\n$key_dir" 10 70
+        return 1
+    fi
+    if ! compgen -G "${key_dir}/keystore*.json" >/dev/null \
+        && ! compgen -G "${key_dir}/*.json" >/dev/null; then
+        whiptail --title "Error" --msgbox "No keystore JSON files found in:\n$key_dir" 10 70
+        return 1
+    fi
+
+    password=$(whiptail --title "Keystore Password" --passwordbox "Enter keystore password (used for all files in this directory)" 10 70 3>&1 1>&2 2>&3) || return 1
+    verify=$(whiptail --title "Confirm Password" --passwordbox "Re-enter keystore password" 10 70 3>&1 1>&2 2>&3) || return 1
+    if [[ "$password" != "$verify" ]]; then
+        whiptail --title "Error" --msgbox "Passwords do not match." 8 50
+        return 1
+    fi
+
+    ohai "Importing keystores via Keymanager API…"
+    if ! json=$(keymanagerPy import --dir "$key_dir" --password "$password" 2>/tmp/ethpillar_km_err.$$); then
+        err=$(keymanagerJsonField "${json:-}" "error")
+        [[ -z "$err" ]] && err=$(cat /tmp/ethpillar_km_err.$$ 2>/dev/null || echo "import failed")
+        rm -f /tmp/ethpillar_km_err.$$
+        whiptail --title "Import Failed" --msgbox "$err" 14 70
+        return 1
+    fi
+    rm -f /tmp/ethpillar_km_err.$$
+    count=$(keymanagerJsonField "$json" "imported")
+    statuses_text=$(echo "$json" | jq -r '
+      (if type=="array" then .[-1] else . end)
+      | (.statuses // [])
+      | to_entries
+      | map("\(.key+1). \(.value.status // "?") \(.value.message // "")")
+      | join("\n")
+    ' 2>/dev/null)
+
+    whiptail --title "Import Complete" --msgbox \
+        "Imported ${count:-?} keystore(s) via Keymanager API.\n\n${statuses_text}" 18 78
+}
+
+# Truncate a pubkey for display: first 10 chars + "…" + last 6 (e.g. 0xb1da40f8…f9af).
+keymanagerTruncatePubkey() {
+    local pk="$1"
+    local len=${#pk}
+    if [[ "$len" -le 18 ]]; then
+        echo "$pk"
+        return
+    fi
+    echo "${pk:0:10}…${pk: -6}"
+}
+
+keymanagerDeleteKeys() {
+    local json count confirm err response_text
+    local selection sel_clean idx display_list selected_full selected_display
+    local num already existing pubkeys_csv
+    local -a ALL_PUBKEYS=()
+    local -a SELECTED_PUBKEYS=()
+    local -a _nums=()
+    if ! keymanagerEnsureAvailable; then
+        return 1
+    fi
+
+    if ! json=$(keymanagerPy list 2>/tmp/ethpillar_km_err.$$); then
+        err=$(keymanagerJsonField "${json:-}" "error")
+        [[ -z "$err" ]] && err=$(cat /tmp/ethpillar_km_err.$$ 2>/dev/null || echo "list failed")
+        rm -f /tmp/ethpillar_km_err.$$
+        whiptail --title "List Keys Failed" --msgbox "$err" 12 70
+        return 1
+    fi
+    rm -f /tmp/ethpillar_km_err.$$
+    count=$(keymanagerJsonField "$json" "key_count")
+    if [[ "${count:-0}" -eq 0 ]]; then
+        whiptail --title "Delete Keys" --msgbox "No keys are loaded in the Keymanager API." 8 60
+        return 1
+    fi
+
+    # Full pubkeys (1-based line number → ALL_PUBKEYS[n-1])
+    mapfile -t ALL_PUBKEYS < <(echo "$json" | jq -r '
+      (if type=="array" then .[-1] else . end)
+      | (.keys // [])
+      | .[]
+      | (.validating_pubkey // .pubkey // empty)
+    ' 2>/dev/null)
+    if [[ ${#ALL_PUBKEYS[@]} -eq 0 ]]; then
+        whiptail --title "Delete Keys" --msgbox "No keys are loaded in the Keymanager API." 8 60
+        return 1
+    fi
+    count=${#ALL_PUBKEYS[@]}
+
+    display_list=""
+    for i in "${!ALL_PUBKEYS[@]}"; do
+        display_list+="$((i + 1)). $(keymanagerTruncatePubkey "${ALL_PUBKEYS[$i]}")"$'\n'
+    done
+
+    selection=$(whiptail --title "Delete Keystores (Keymanager API)" --inputbox \
+        "Keys currently loaded (${count}):\n\n${display_list}\nEnter line number(s) to DELETE, comma-separated (e.g. 1,3 or 2).\nThis removes them from the local validator only." \
+        22 78 --ok-button "Continue" 3>&1 1>&2 2>&3) || return 1
+    # Allow spaces around commas: "1, 3" → "1,3"
+    sel_clean=$(echo "$selection" | tr -d '[:space:]')
+    if [[ -z "$sel_clean" ]]; then
+        return 1
+    fi
+    # Only digits and commas
+    if [[ ! "$sel_clean" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+        whiptail --title "Invalid Selection" --msgbox \
+            "Enter comma-separated line numbers only (e.g. 1,3).\n\nGot: ${selection}" 10 70
+        return 1
+    fi
+
+    SELECTED_PUBKEYS=()
+    selected_full=""
+    selected_display=""
+    IFS=',' read -ra _nums <<< "$sel_clean"
+    for num in "${_nums[@]}"; do
+        if [[ -z "$num" || "$num" -lt 1 || "$num" -gt "$count" ]]; then
+            whiptail --title "Invalid Selection" --msgbox \
+                "Line number '${num}' is out of range (1–${count})." 10 70
+            return 1
+        fi
+        idx=$((num - 1))
+        # Skip duplicate selections
+        already=0
+        for existing in "${SELECTED_PUBKEYS[@]}"; do
+            if [[ "$existing" == "${ALL_PUBKEYS[$idx]}" ]]; then
+                already=1
+                break
+            fi
+        done
+        if [[ "$already" -eq 1 ]]; then
+            continue
+        fi
+        SELECTED_PUBKEYS+=("${ALL_PUBKEYS[$idx]}")
+        selected_full+="${ALL_PUBKEYS[$idx]}"$'\n'
+        selected_display+="${num}. $(keymanagerTruncatePubkey "${ALL_PUBKEYS[$idx]}")"$'\n'
+    done
+    if [[ ${#SELECTED_PUBKEYS[@]} -eq 0 ]]; then
+        whiptail --title "Delete Keys" --msgbox "No keys selected." 8 50
+        return 1
+    fi
+
+    if ! whiptail --title "⚠️ CONFIRM DELETE" --defaultno --yesno \
+        "You are about to DELETE these validating keys from the local client:\n\n${selected_full}\nThis cannot be undone from this menu (restore from keystore backup if needed).\n\nProceed?" \
+        20 78; then
+        return 1
+    fi
+
+    confirm=$(whiptail --title "Type DELETE to confirm" --inputbox \
+        "Selected: ${selected_display}\nType DELETE (all caps) to permanently remove the selected keys from this validator." \
+        14 78 3>&1 1>&2 2>&3) || return 1
+    if [[ "$confirm" != "DELETE" ]]; then
+        whiptail --title "Cancelled" --msgbox "Confirmation text did not match. No keys were deleted." 8 60
+        return 1
+    fi
+
+    # Comma-separated full pubkeys for the API
+    pubkeys_csv=$(IFS=,; echo "${SELECTED_PUBKEYS[*]}")
+
+    ohai "Deleting keys via Keymanager API…"
+    if ! json=$(keymanagerPy delete --pubkeys "$pubkeys_csv" 2>/tmp/ethpillar_km_err.$$); then
+        err=$(keymanagerJsonField "${json:-}" "error")
+        [[ -z "$err" ]] && err=$(cat /tmp/ethpillar_km_err.$$ 2>/dev/null || echo "delete failed")
+        rm -f /tmp/ethpillar_km_err.$$
+        whiptail --title "Delete Failed" --msgbox "$err" 14 70
+        return 1
+    fi
+    rm -f /tmp/ethpillar_km_err.$$
+    response_text=$(echo "$json" | jq -r '
+      (if type=="array" then .[-1] else . end)
+      | (.response.data // .response // .)
+      | if type=="array" then
+          to_entries | map("\(.key+1). \(.value.status // .value)") | join("\n")
+        else tostring end
+    ' 2>/dev/null)
+
+    whiptail --title "Delete Complete" --msgbox \
+        "Delete request finished.\n\n${response_text}" 16 78
+}
+
+keymanagerEnableApi() {
+    local dry_json real_json msg flags err
+    if ! keymanagerResolveContext; then
+        return 1
+    fi
+
+    ohai "Planning Keymanager API enablement for ${KM_CLIENT}…"
+    if ! dry_json=$(keymanagerPy enable --dry-run 2>/tmp/ethpillar_km_err.$$); then
+        err=$(keymanagerJsonField "${dry_json:-}" "error")
+        [[ -z "$err" ]] && err=$(cat /tmp/ethpillar_km_err.$$ 2>/dev/null || echo "dry-run failed")
+        rm -f /tmp/ethpillar_km_err.$$
+        whiptail --title "Enable Failed" --msgbox "$err" 14 70
+        return 1
+    fi
+    rm -f /tmp/ethpillar_km_err.$$
+
+    flags=$(echo "$dry_json" | jq -r '
+      (if type=="array" then .[-1] else . end)
+      | "Service: \(.service_path // "?")\n"
+        + "Flags to add: \((.flags_added // []) | join(" "))\n"
+        + "Already present: \((.flags_already_present // []) | join(" "))\n"
+        + "Changed: \(.changed // false)\n"
+        + "Message: \(.message // "")"
+    ' 2>/dev/null)
+
+    local base_url
+    base_url=$(keymanagerJsonField "$dry_json" "base_url")
+
+    if [[ "$(keymanagerJsonField "$dry_json" "changed")" != "true" ]]; then
+        whiptail --title "Keymanager API" --msgbox \
+            "No service changes needed — keymanager flags already present.\n\n${flags}" 14 78
+        # Flags alone are not enough if the VC process never started.
+        if keymanagerWaitForApi; then
+            return 0
+        fi
+        if keymanagerOfferStartValidator "${base_url}"; then
+            whiptail --title "Keymanager API" --msgbox \
+                "Keymanager API is available after starting the validator service.\n\nEndpoint: ${base_url}" 10 70
+            return 0
+        fi
+        # Unit may already be active but API still down — not necessarily a hard failure.
+        return 0
+    fi
+
+    if ! whiptail --title "Enable Keymanager API" --defaultno --yesno \
+        "Apply these changes to the systemd unit and restart the validator?\n\n${flags}\n\nA backup of the service file will be created first." \
+        18 78; then
+        return 1
+    fi
+
+    ohai "Enabling Keymanager API (backup + write + restart)…"
+    if ! real_json=$(keymanagerPy enable 2>/tmp/ethpillar_km_err.$$); then
+        err=$(keymanagerJsonField "${real_json:-}" "error")
+        [[ -z "$err" ]] && err=$(cat /tmp/ethpillar_km_err.$$ 2>/dev/null || echo "enable failed")
+        rm -f /tmp/ethpillar_km_err.$$
+        whiptail --title "Enable Failed" --msgbox "$err" 14 70
+        return 1
+    fi
+    rm -f /tmp/ethpillar_km_err.$$
+
+    base_url=$(keymanagerJsonField "$real_json" "base_url")
+    # Ensure the unit is actually listening after enable/restart.
+    if ! keymanagerWaitForApi; then
+        keymanagerOfferStartValidator "${base_url}" || true
+    fi
+
+    msg=$(echo "$real_json" | jq -r '
+      (if type=="array" then .[-1] else . end)
+      | "\(.message // "Done")\n\n"
+        + "Backup: \(.backup_path // "n/a")\n"
+        + "Endpoint: \(.base_url // "?")\n"
+        + "Token found: \(if .token then "yes" else "no" end)"
+    ' 2>/dev/null)
+
+    whiptail --title "Keymanager API Enabled" --msgbox "$msg" 16 78
+}
+
+menuKeymanager() {
+    local OPTIONS CHOICE
+    OPTIONS=(
+      1 "List Keys (Keymanager API)"
+      2 "Import Keystores (Keymanager API)"
+      3 "Delete Keystores (Keymanager API)"
+      4 "Enable Keymanager API"
+      - ""
+      99 "Back"
+    )
+    while true; do
+        CHOICE=$(whiptail --clear --cancel-button "Back" \
+          --backtitle "Public Goods by Coincashew.eth" \
+          --title "EthPillar - Keymanager API" \
+          --menu "Local keystores only (Lighthouse, Lodestar, Nimbus, Prysm).\nClassic import methods remain available in the previous menu." \
+          0 72 0 \
+          "${OPTIONS[@]}" \
+          3>&1 1>&2 2>&3) || break
+        case $CHOICE in
+          1) keymanagerListKeys ;;
+          2) keymanagerImportKeystores ;;
+          3) keymanagerDeleteKeys ;;
+          4) keymanagerEnableApi ;;
+          99) break ;;
+        esac
+    done
+}
+
 menuMain(){
 # Define the options for the main menu
 OPTIONS=(
   1 "Generate new validator keys"
   2 "Import validator keys from offline key generation or backup"
   3 "Add new or regenerate existing validator keys from Secret Recovery Phrase"
+  - ""
+  10 "List Keys (Keymanager API)"
+  11 "Import Keystores (Keymanager API)"
+  12 "Delete Keystores (Keymanager API)"
+  13 "Enable Keymanager API"
   - ""
   99 "Exit"
 )
@@ -601,7 +1188,7 @@ while true; do
       --backtitle "Public Goods by Coincashew.eth" \
       --title "EthPillar - Validator Key Management" \
       --menu "Choose a category:" \
-      0 42 0 \
+      0 52 0 \
       "${OPTIONS[@]}" \
       3>&1 1>&2 2>&3)
     if [ $? -gt 0 ]; then # user pressed <Cancel> button
@@ -619,6 +1206,18 @@ while true; do
       3)
         addRestoreValidatorKeys
         ;;
+      10)
+        keymanagerListKeys
+        ;;
+      11)
+        keymanagerImportKeystores
+        ;;
+      12)
+        keymanagerDeleteKeys
+        ;;
+      13)
+        keymanagerEnableApi
+        ;;
       99)
         break
         ;;
@@ -626,9 +1225,25 @@ while true; do
 done
 }
 
-[[ $# -eq 1 ]] && skip="$1" || skip=""
+# Args:
+#   (none)              → full key management menu
+#   true | plugin_*     → skip menu (CSM plugin source mode)
+#   helpers-only        → define functions only (no download/menu; for unit tests)
+#   keymanager          → open Keymanager API submenu only
+_skip_or_mode="${1:-}"
 setMessage
-downloadEthstakerDepositCli
-checkLido
-# Only run if no args
-[[ -z $skip ]] && menuMain
+if [[ "$_skip_or_mode" == "keymanager" ]]; then
+    checkLido
+    menuKeymanager
+elif [[ "$_skip_or_mode" == "helpers-only" ]]; then
+    # Unit tests / pure source — do not download deposit-cli or open menus.
+    :
+elif [[ -n "$_skip_or_mode" ]]; then
+    # Sourced/invoked by CSM plugin with a skip flag — load helpers only.
+    downloadEthstakerDepositCli
+    checkLido
+else
+    downloadEthstakerDepositCli
+    checkLido
+    menuMain
+fi

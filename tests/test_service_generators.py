@@ -845,4 +845,22 @@ class TestPrysmService:
         assert "--enable-builder" in result
         assert f"--datadir={BASE_DATA_DIR}/prysm_validator" in result
         assert f"--beacon-rest-api-provider=http://{CL_IP_ADDRESS}:{CL_REST_PORT}" in result
+        assert f"--wallet-dir={BASE_DATA_DIR}/prysm_validator/validator_keys" in result
+        assert f"--wallet-password-file={BASE_DATA_DIR}/prysm_validator/password.txt" in result
+        assert "--enable-beacon-rest-api" in result
+        assert "--beacon-rpc-provider=127.0.0.1:4000" in result
+        assert "--rpc" in result
+        assert "--rpc-host=127.0.0.1" in result
+        assert "--rpc-port=7500" in result
+        assert "Environment=\"HOME=/home/validator\"" in result or "HOME=/home/validator" in result
         check_constant_substitutions(result)
+
+    def test_vc_omits_beacon_rpc_when_not_prysm_bn(self):
+        from deploy.prysm import generate_prysm_vc_service
+        bn_addr = f'--beacon-rest-api-provider=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
+        result = generate_prysm_vc_service(
+            "mainnet", GRAFFITI, bn_addr, beacon_rpc_provider=None
+        )
+        assert "--enable-beacon-rest-api" in result
+        assert "--rpc-port=7500" in result
+        assert "--beacon-rpc-provider" not in result

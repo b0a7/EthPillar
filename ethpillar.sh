@@ -542,6 +542,7 @@ while true; do
       10 "Generate / Import Validator Keys"
       11 "View validator pubkeys and indices"
       12 "🆕 Validator Actions: Compound/consolidate, partial withdrawals, top up, force exit"
+      13 "Keymanager API: List / Import / Delete / Enable"
       - ""
       20 "Generate Voluntary Exit Messages (VEM)"
       21 "Broadcast Voluntary Exit Messages (VEM)"
@@ -602,6 +603,9 @@ while true; do
         ;;
       12)
         showValidatorActions
+        ;;
+      13)
+        runScript manage_validator_keys.sh keymanager
         ;;
       20)
         installEthdo
