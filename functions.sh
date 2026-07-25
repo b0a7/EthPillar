@@ -1672,20 +1672,29 @@ journalctl_run() {
     sudo journalctl "$@"
 }
 
-# Follow/colorize journal logs; falls back to sudo when journal access is unavailable.
 view_journal_logs() {
+    # Parent ignores SIGINT so EthPillar survives Ctrl-C.
+    # Child restores default so journalctl still stops.
+    export -f _journal_log_colorizer 2>/dev/null || true
+    trap '' INT
+
     if can_read_journal; then
-        journalctl "$@" | _journal_log_colorizer
-        return $?
+        bash -c 'trap - INT; journalctl "$@" | _journal_log_colorizer' _ "$@" || true
+    else
+        ensure_journal_access || true
+        if can_read_journal; then
+            bash -c 'trap - INT; journalctl "$@" | _journal_log_colorizer' _ "$@" || true
+        else
+            if command -v ccze >/dev/null 2>&1; then
+                sudo bash -c 'trap - INT; journalctl "$@" | ccze -A' _ "$@" || true
+            else
+                sudo bash -c 'trap - INT; journalctl "$@"' _ "$@" || true
+            fi
+        fi
     fi
 
-    ensure_journal_access || true
-    if can_read_journal; then
-        journalctl "$@" | _journal_log_colorizer
-        return $?
-    fi
-
-    sudo journalctl "$@" | _journal_log_colorizer
+    trap - INT
+    return 0
 }
 
 # Function to display log dialog and return the selected option
