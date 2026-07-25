@@ -11,7 +11,7 @@
 # 🙌 Ask questions on Discord:
 #    * https://discord.gg/Kjrnkv8dgs
 
-EP_VERSION="5.4.10"
+EP_VERSION="5.4.11"
 
 # Default text editor
 export EDITOR="nano"
