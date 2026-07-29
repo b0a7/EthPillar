@@ -38,6 +38,15 @@ def _make_github_release(tag_name, asset_names):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestGetClientReleaseInfo:
+    @pytest.fixture(autouse=True)
+    def _mock_github_tag_commit(self):
+        """Avoid live GitHub tag peels; attach a stable fake commit when present."""
+        with patch(
+            "deploy.common.get_github_tag_commit",
+            return_value="abcdef0123456789abcdef0123456789abcdef01",
+        ):
+            yield
+
     @patch("deploy.common.get_github_release")
     def test_besu_returns_expected_structure(self, mock_gh):
         mock_gh.return_value = _make_github_release("26.5.0", ["besu-26.5.0.tar.gz"])
@@ -47,6 +56,7 @@ class TestGetClientReleaseInfo:
         assert info["download_urls"][0].endswith("besu-26.5.0.tar.gz")
         assert len(info["filenames"]) == 1
         assert info["filenames"][0] == "besu-26.5.0.tar.gz"
+        assert info["commit"] == "abcdef0123456789abcdef0123456789abcdef01"
 
     @patch("deploy.common.get_github_release")
     def test_reth_returns_expected_structure(self, mock_gh):
@@ -55,6 +65,7 @@ class TestGetClientReleaseInfo:
         assert info["version"] == "v2.2.0"
         assert len(info["download_urls"]) == 1
         assert info["download_urls"][0].endswith("reth-v2.2.0-x86_64-unknown-linux-gnu.tar.gz")
+        assert info["commit"].startswith("abcdef")
 
     @patch("deploy.common.get_github_release")
     def test_erigon_finds_amd64_asset(self, mock_gh):
@@ -107,6 +118,7 @@ class TestGetClientReleaseInfo:
         info = get_client_release_info("lodestar", "LATEST")
         assert info["version"] == "v1.42.0"
         assert "lodestar" in info["filenames"][0]
+        assert info["commit"] == "abcdef0123456789abcdef0123456789abcdef01"
 
     @patch("deploy.common.get_github_release")
     def test_teku_returns_expected_structure(self, mock_gh):
@@ -202,6 +214,7 @@ class TestGetClientReleaseInfo:
         assert info["version"] == "v1.14.0"
         assert "geth-linux-amd64" in info["download_urls"][0]
         assert info["filenames"][0].endswith(".tar.gz")
+        assert info["commit"] == "abcdef"
 
     @patch("requests.get")
     def test_geth_specific_version_tag(self, mock_req):
@@ -217,6 +230,7 @@ class TestGetClientReleaseInfo:
         info = get_client_release_info("geth", "v1.17.1")
         assert info["version"] == "v1.17.1"
         assert "1.17.1-16783c16" in info["download_urls"][0]
+        assert info["commit"] == "16783c16"
 
     @patch("requests.get")
     def test_geth_raises_when_no_match(self, mock_req):

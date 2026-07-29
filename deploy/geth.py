@@ -72,7 +72,8 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
         arch_amd64: True if the architecture is amd64/x86_64, False for arm64.
 
     Returns:
-        A dictionary with keys 'version', 'download_urls', and 'filenames'.
+        A dictionary with keys 'version', 'download_urls', 'filenames', and
+        optionally 'commit' (hash embedded in the Azure blob filename).
     """
     import requests
     import re
@@ -82,23 +83,28 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     base = rf"https://gethstore\.blob\.core\.windows\.net/builds/geth-linux-{arch}-"
 
     if version_tag.upper() == "LATEST":
-        pattern = rf"({base}([0-9.]+)-[a-f0-9]+\.tar\.gz)"
+        pattern = rf"({base}([0-9.]+)-([a-f0-9]+)\.tar\.gz)"
         matches = re.findall(pattern, res.text)
         if not matches:
             raise ValueError(f"Could not find Geth download URL for linux-{arch} and version {version_tag}")
-        download_url, version_num = matches[0]
+        download_url, version_num, commit = matches[0]
         version = f"v{version_num}"
     else:
         ver = version_tag.removeprefix("v")
-        pattern = base + re.escape(ver) + r"-[a-f0-9]+\.tar\.gz"
+        pattern = rf"({base}{re.escape(ver)}-([a-f0-9]+)\.tar\.gz)"
         matches = re.findall(pattern, res.text)
         if not matches:
             raise ValueError(f"Could not find Geth download URL for linux-{arch} and version {version_tag}")
-        download_url = matches[0]
+        download_url, commit = matches[0]
         version = f"v{ver}"
 
     filename = download_url.split("/")[-1]
-    return {"version": version, "download_urls": [download_url], "filenames": [filename]}
+    return {
+        "version": version,
+        "download_urls": [download_url],
+        "filenames": [filename],
+        "commit": commit,
+    }
 
 
 

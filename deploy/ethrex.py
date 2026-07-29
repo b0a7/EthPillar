@@ -72,8 +72,9 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     Returns:
         A dictionary with keys 'version', 'download_urls', and 'filenames'.
     """
-    from deploy.common import get_github_release
-    data = get_github_release("lambdaclass/ethrex", version_tag)
+    from deploy.common import attach_github_tag_commit, get_github_release
+    repo = "lambdaclass/ethrex"
+    data = get_github_release(repo, version_tag)
     tag = data["tag_name"]
     
     arch_str = "x86_64" if arch_amd64 else "aarch64"
@@ -90,7 +91,10 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     if not filename:
         raise ValueError(f"Could not find Ethrex download URL for linux-{arch_str} and version {version_tag}")
         
-    return {"version": tag, "download_urls": [download_url], "filenames": [filename]}
+    return attach_github_tag_commit(
+        repo,
+        {"version": tag, "download_urls": [download_url], "filenames": [filename]},
+    )
 
 def download_and_install_ethrex(eth_network: str, el_p2p_port: str, el_rpc_port: str,
                                 el_max_peer_count: str, jwtsecret_path: str,

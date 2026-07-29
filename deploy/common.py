@@ -839,6 +839,58 @@ def get_github_release(repo: str, version_tag: str) -> dict:
     return res.json()
 
 
+def get_github_tag_commit(repo: str, tag_name: str) -> Optional[str]:
+    """Resolve a git tag to its peeled commit SHA via the GitHub API.
+
+    Annotated tags are peeled to the underlying commit. Lightweight tags that
+    already point at a commit return that SHA. Returns ``None`` on any failure
+    so callers can fall back to semver-only comparison.
+    """
+    tag = (tag_name or "").strip()
+    if not tag:
+        return None
+    try:
+        ref_url = f"https://api.github.com/repos/{repo}/git/refs/tags/{tag}"
+        res = requests.get(ref_url, headers=_github_api_headers(), timeout=30)
+        if res.status_code == 404:
+            return None
+        res.raise_for_status()
+        ref = res.json()
+        # GitHub may return a list when the path is a prefix of multiple refs.
+        if isinstance(ref, list):
+            exact = f"refs/tags/{tag}"
+            ref = next((item for item in ref if item.get("ref") == exact), None)
+            if ref is None:
+                return None
+        obj = ref.get("object") or {}
+        obj_type = obj.get("type")
+        obj_sha = obj.get("sha")
+        if not obj_sha:
+            return None
+        if obj_type == "commit":
+            return obj_sha
+        if obj_type == "tag":
+            tag_url = obj.get("url") or f"https://api.github.com/repos/{repo}/git/tags/{obj_sha}"
+            tag_res = requests.get(tag_url, headers=_github_api_headers(), timeout=30)
+            tag_res.raise_for_status()
+            peeled = (tag_res.json().get("object") or {}).get("sha")
+            return peeled or None
+        return None
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        return None
+
+
+def attach_github_tag_commit(repo: str, info: dict) -> dict:
+    """Add optional ``commit`` (peeled tag SHA) to a release-info dict when resolvable."""
+    tag = info.get("version")
+    if not tag:
+        return info
+    commit = get_github_tag_commit(repo, str(tag))
+    if commit:
+        info["commit"] = commit
+    return info
+
+
 def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
     """Get the correct release version, download URL(s), and filename(s) for a given client.
 
@@ -847,7 +899,8 @@ def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
         version_tag: 'LATEST' or a specific tag name.
 
     Returns:
-        A dictionary with keys 'version', 'download_urls', and 'filenames'.
+        A dictionary with keys ``version``, ``download_urls``, ``filenames``, and
+        optionally ``commit`` (git SHA of the release tag when resolvable).
     """
     client = client.lower()
     

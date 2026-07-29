@@ -13,7 +13,9 @@ from deploy.common import (
     _find_github_release_by_normalized_tag,
     _github_release_tag_candidates,
     _normalize_release_version_key,
+    attach_github_tag_commit,
     get_github_release,
+    get_github_tag_commit,
 )
 
 
@@ -92,3 +94,62 @@ class TestFindGithubReleaseByNormalizedTag:
         )
         release = _find_github_release_by_normalized_tag("flashbots/mev-boost", "v1.11.0")
         assert release["tag_name"] == "v1.11"
+
+
+class TestGetGithubTagCommit:
+    @patch("deploy.common.requests.get")
+    def test_lightweight_tag_returns_commit_sha(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "ref": "refs/tags/v1.0.0",
+                "object": {"type": "commit", "sha": "abc123lightweight"},
+            },
+        )
+        assert get_github_tag_commit("org/repo", "v1.0.0") == "abc123lightweight"
+
+    @patch("deploy.common.requests.get")
+    def test_annotated_tag_peels_to_commit(self, mock_get):
+        ref_resp = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "ref": "refs/tags/v1.0.0",
+                "object": {
+                    "type": "tag",
+                    "sha": "tagobjsha",
+                    "url": "https://api.github.com/repos/org/repo/git/tags/tagobjsha",
+                },
+            },
+        )
+        tag_resp = MagicMock(
+            status_code=200,
+            json=lambda: {"object": {"type": "commit", "sha": "peeledcommitsha"}},
+        )
+        mock_get.side_effect = [ref_resp, tag_resp]
+        assert get_github_tag_commit("org/repo", "v1.0.0") == "peeledcommitsha"
+        assert mock_get.call_count == 2
+
+    @patch("deploy.common.requests.get")
+    def test_missing_tag_returns_none(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=404)
+        assert get_github_tag_commit("org/repo", "v9.9.9") is None
+
+    def test_empty_tag_returns_none(self):
+        assert get_github_tag_commit("org/repo", "") is None
+        assert get_github_tag_commit("org/repo", "   ") is None
+
+    def test_attach_github_tag_commit_adds_commit(self):
+        with patch("deploy.common.get_github_tag_commit", return_value="deadbeef"):
+            info = attach_github_tag_commit(
+                "org/repo",
+                {"version": "v1.0.0", "download_urls": ["u"], "filenames": ["f"]},
+            )
+        assert info["commit"] == "deadbeef"
+
+    def test_attach_github_tag_commit_skips_when_unresolved(self):
+        with patch("deploy.common.get_github_tag_commit", return_value=None):
+            info = attach_github_tag_commit(
+                "org/repo",
+                {"version": "v1.0.0", "download_urls": ["u"], "filenames": ["f"]},
+            )
+        assert "commit" not in info

@@ -50,10 +50,22 @@ EOF
   [ "$output" = "1.14.12" ]
 }
 
+@test "parse_execution_client_commit parses geth commit from channel suffix" {
+  run parse_execution_client_commit Geth $'Geth\nVersion: 1.14.12-stable-abc1234'
+  [ "$status" -eq 0 ]
+  [ "$output" = "abc1234" ]
+}
+
 @test "parse_execution_client_version parses reth version output" {
   run parse_execution_client_version Reth 'reth-ethereum-client 1.9.0 (abcdef)'
   [ "$status" -eq 0 ]
   [ "$output" = "1.9.0" ]
+}
+
+@test "parse_execution_client_commit parses reth commit in parentheses" {
+  run parse_execution_client_commit Reth 'reth-ethereum-client 1.9.0 (abcdef1)'
+  [ "$status" -eq 0 ]
+  [ "$output" = "abcdef1" ]
 }
 
 @test "parse_execution_client_version parses nethermind version output" {
@@ -62,16 +74,22 @@ EOF
   [ "$output" = "1.38.0" ]
 }
 
+@test "parse_execution_client_commit prefers Nethermind Commit line" {
+  run parse_execution_client_commit Nethermind $'Version:     1.38.0+deadbeef\nCommit:      c07a4d65'
+  [ "$status" -eq 0 ]
+  [ "$output" = "c07a4d65" ]
+}
+
 @test "parse_execution_client_version parses nethermind version on one line" {
   run parse_execution_client_version Nethermind 'Nethermind v1.32.0+abc'
   [ "$status" -eq 0 ]
   [ "$output" = "1.32.0" ]
 }
 
-@test "parse_execution_client_version parses erigon version output" {
+@test "parse_execution_client_version preserves erigon prerelease suffix" {
   run parse_execution_client_version Erigon 'erigon version 3.0.12-alpha1'
   [ "$status" -eq 0 ]
-  [ "$output" = "3.0.12" ]
+  [ "$output" = "3.0.12-alpha1" ]
 }
 
 @test "parse_execution_client_version parses ethrex binary version output" {
@@ -98,13 +116,14 @@ EOF
 
 @test "getExecutionCurrentVersion reads geth from execution service stub" {
   local stub="$TEST_BIN_DIR/geth"
-  write_stub_binary "$stub" '[[ "$1" == "version" ]] && printf "%s\n%s\n" "Geth" "Version: 1.17.3-stable"'
+  write_stub_binary "$stub" '[[ "$1" == "version" ]] && printf "%s\n%s\n" "Geth" "Version: 1.17.3-stable-aabbccd"'
   cat <<EOF > "$EXEC_SERVICE_FILE"
 ExecStart=$stub
 EOF
   EL=Geth
   getExecutionCurrentVersion
   [ "$VERSION" = "1.17.3" ]
+  [ "$INSTALLED_COMMIT" = "aabbccd" ]
 }
 
 @test "get_execution_version_output uses --version for other clients" {
@@ -143,19 +162,20 @@ EOF
 
 @test "getClVcCurrentVersion reads lighthouse from consensus service stub" {
   local stub="$TEST_BIN_DIR/lighthouse"
-  write_stub_binary "$stub" 'echo "Lighthouse v5.2.1-abc"'
+  write_stub_binary "$stub" 'echo "Lighthouse v5.2.1-abc1234"'
   cat <<EOF > "$CONSENSUS_SERVICE_FILE"
 ExecStart=$stub
 EOF
   getClVcCurrentVersion Lighthouse cl
   [ "$VERSION" = "v5.2.1" ]
+  [ "$INSTALLED_COMMIT" = "abc1234" ]
 }
 
 @test "getClVcCurrentVersion reads lighthouse vc from validator when consensus is grandine" {
   local grandine="$TEST_BIN_DIR/grandine"
   local lighthouse="$TEST_BIN_DIR/lighthouse"
   write_stub_binary "$grandine" 'echo "grandine 2.0.4"'
-  write_stub_binary "$lighthouse" 'echo "Lighthouse v8.1.3-abc"'
+  write_stub_binary "$lighthouse" 'echo "Lighthouse v8.1.3-def5678"'
   cat <<EOF > "$CONSENSUS_SERVICE_FILE"
 ExecStart=$grandine
 EOF
@@ -164,13 +184,14 @@ ExecStart=$lighthouse vc --network=sepolia
 EOF
   getClVcCurrentVersion Lighthouse vc
   [ "$VERSION" = "v8.1.3" ]
+  [ "$INSTALLED_COMMIT" = "def5678" ]
 }
 
 @test "getClVcCurrentVersion cl role ignores validator service for lighthouse" {
   local cl_stub="$TEST_BIN_DIR/lighthouse-bn"
   local vc_stub="$TEST_BIN_DIR/lighthouse-vc"
-  write_stub_binary "$cl_stub" 'echo "Lighthouse v5.0.0-bn"'
-  write_stub_binary "$vc_stub" 'echo "Lighthouse v9.9.9-vc"'
+  write_stub_binary "$cl_stub" 'echo "Lighthouse v5.0.0-aaa1111"'
+  write_stub_binary "$vc_stub" 'echo "Lighthouse v9.9.9-bbb2222"'
   cat <<EOF > "$CONSENSUS_SERVICE_FILE"
 ExecStart=$cl_stub
 EOF
@@ -179,6 +200,29 @@ ExecStart=$vc_stub vc --network=mainnet
 EOF
   getClVcCurrentVersion Lighthouse cl
   [ "$VERSION" = "v5.0.0" ]
+  [ "$INSTALLED_COMMIT" = "aaa1111" ]
+}
+
+@test "getClVcCurrentVersion reads lodestar version and commit hash" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'echo "* Version: v1.45.0/668ea9d"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.45.0" ]
+  [ "$INSTALLED_COMMIT" = "668ea9d" ]
+}
+
+@test "getClVcCurrentVersion preserves lodestar prerelease when present" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'echo "* Version: v1.45.0-rc.0/668ea9d"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.45.0-rc.0" ]
+  [ "$INSTALLED_COMMIT" = "668ea9d" ]
 }
 
 @test "getClVcCurrentVersion reads vc-only nimbus from validator service stub" {
@@ -189,6 +233,7 @@ ExecStart=$stub
 EOF
   getClVcCurrentVersion Nimbus vc
   [ "$VERSION" = "v24.11.0" ]
+  [ -z "$INSTALLED_COMMIT" ]
 }
 
 @test "getClVcCurrentVersion accepts explicit client override" {
@@ -210,4 +255,32 @@ ExecStart=$stub
 EOF
   getClVcCurrentVersion Grandine cl
   [ "$VERSION" = "v2.0.4" ]
+}
+
+# ── version_matches_latest ───────────────────────────────────────────────────
+
+@test "version_matches_latest matches equal semver without commits" {
+  VERSION=v1.45.0
+  TAG=v1.45.0
+  INSTALLED_COMMIT=
+  TAG_COMMIT=
+  version_matches_latest
+}
+
+@test "version_matches_latest mismatches different semver" {
+  ! version_matches_latest "v1.45.0-rc.0" "v1.45.0" "" ""
+}
+
+@test "version_matches_latest matches commit prefix either way" {
+  version_matches_latest "v1.45.0" "v1.45.0" "668ea9d" "668ea9dea24189d9be99940acd923e8920e75bf6"
+  version_matches_latest "1.45.0" "v1.45.0" "668ea9dea24189d9be99940acd923e8920e75bf6" "668ea9d"
+}
+
+@test "version_matches_latest mismatches same semver different commits" {
+  ! version_matches_latest "v1.45.0" "v1.45.0" "668ea9d" "6051fa3335c3dadf3f99292a8fe345ccd69121f7"
+}
+
+@test "version_matches_latest falls back to semver when either commit missing" {
+  version_matches_latest "v1.45.0" "v1.45.0" "668ea9d" ""
+  version_matches_latest "v1.45.0" "v1.45.0" "" "6051fa3"
 }

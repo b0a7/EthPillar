@@ -80,6 +80,7 @@ function promptViewLogs(){
 function getLatestVersion(){
 	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "$EL" "LATEST")
 	TAG=$(echo "$RELEASE_DATA" | jq -r .version)
+	TAG_COMMIT=$(echo "$RELEASE_DATA" | jq -r '.commit // empty')
 	# Exit in case of null tag
 	if [[ -z $TAG ]] || [[ $TAG == "null" ]]; then
 		error "❌ Couldn't find the latest version tag"

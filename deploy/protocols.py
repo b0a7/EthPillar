@@ -14,11 +14,16 @@ from typing import Any, Dict, List, Protocol, runtime_checkable
 
 
 class ReleaseInfo(Protocol):
-    """Return shape of ``get_release_info``."""
+    """Return shape of ``get_release_info``.
+
+    ``commit`` is optional: peeled git tag SHA (or Geth blob filename hash) when
+    resolvable. Update menus use it to distinguish same-semver builds (e.g. RC vs GA).
+    """
 
     version: str
     download_urls: List[str]
     filenames: List[str]
+    commit: str  # optional at runtime; present when tag/blob commit is known
 
 
 @runtime_checkable
