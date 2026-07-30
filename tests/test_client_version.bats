@@ -74,6 +74,24 @@ EOF
   [ "$output" = "abcdef1" ]
 }
 
+@test "parse_execution_client_commit parses reth Commit SHA line" {
+  run parse_execution_client_commit Reth $'reth Version: 1.0.0-rc.2\nCommit SHA: d786b45'
+  [ "$status" -eq 0 ]
+  [ "$output" = "d786b45" ]
+}
+
+@test "parse_execution_client_commit parses erigon trailing hash" {
+  run parse_execution_client_commit Erigon 'erigon version 3.4.0-rc.5-ac5e71d8'
+  [ "$status" -eq 0 ]
+  [ "$output" = "ac5e71d8" ]
+}
+
+@test "parse_execution_client_commit parses ethrex HEAD hash" {
+  run parse_execution_client_commit Ethrex 'ethrex ethrex/v19.0.0-HEAD-f88b98eccf3de017bc2b91bd69d177f0e31a3e40/x86_64-unknown-linux-gnu/rustc-v1.91.0'
+  [ "$status" -eq 0 ]
+  [ "$output" = "f88b98eccf3de017bc2b91bd69d177f0e31a3e40" ]
+}
+
 @test "parse_execution_client_version parses nethermind version output" {
   run parse_execution_client_version Nethermind $'Version:     1.38.0+c07a4d65\nCommit:      c07a4d65'
   [ "$status" -eq 0 ]
@@ -243,6 +261,17 @@ EOF
   [ "$VERSION" = "v22.9.1-RC1" ]
 }
 
+@test "getClVcCurrentVersion parses lighthouse commit after prerelease suffix" {
+  local stub="$TEST_BIN_DIR/lighthouse"
+  write_stub_binary "$stub" 'echo "Lighthouse v8.0.0-rc.2-b59feb0"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lighthouse cl
+  [ "$VERSION" = "v8.0.0-rc.2" ]
+  [ "$INSTALLED_COMMIT" = "b59feb0" ]
+}
+
 @test "getClVcCurrentVersion reads vc-only nimbus from validator service stub" {
   local stub="$TEST_BIN_DIR/nimbus_validator_client"
   write_stub_binary "$stub" 'echo "Nimbus v24.11.0"'
@@ -252,6 +281,28 @@ EOF
   getClVcCurrentVersion Nimbus vc
   [ "$VERSION" = "v24.11.0" ]
   [ -z "$INSTALLED_COMMIT" ]
+}
+
+@test "getClVcCurrentVersion parses nimbus trailing commit hash" {
+  local stub="$TEST_BIN_DIR/nimbus_beacon_node"
+  write_stub_binary "$stub" 'echo "Nimbus beacon node v0.6.6-00aedddf"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Nimbus cl
+  [ "$VERSION" = "v0.6.6" ]
+  [ "$INSTALLED_COMMIT" = "00aedddf" ]
+}
+
+@test "getClVcCurrentVersion parses prysm commit after slash" {
+  local stub="$TEST_BIN_DIR/prysm-beacon-chain"
+  write_stub_binary "$stub" 'echo "beacon-chain version Prysm/v7.1.2-rc.0/7950a249266a692551e5a910adb9a82a02c92040. Built at: 2025-12-22"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Prysm cl
+  [ "$VERSION" = "v7.1.2-rc.0" ]
+  [ "$INSTALLED_COMMIT" = "7950a249266a692551e5a910adb9a82a02c92040" ]
 }
 
 @test "getClVcCurrentVersion accepts explicit client override" {

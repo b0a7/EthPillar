@@ -126,7 +126,18 @@ parse_execution_client_commit() {
       fi
       ;;
     Reth)
-      commit=$(grep -oE '\([a-fA-F0-9]{6,40}\)' <<< "$output" | head -1 | tr -d '()')
+      commit=$(sed -nE 's/.*[Cc]ommit SHA:[[:space:]]*([a-fA-F0-9]{6,40}).*/\1/p' <<< "$output" | head -1)
+      if [[ -z "$commit" ]]; then
+        commit=$(grep -oE '\([a-fA-F0-9]{6,40}\)' <<< "$output" | head -1 | tr -d '()')
+      fi
+      ;;
+    Erigon)
+      # erigon version 3.4.0-rc.5-ac5e71d8  → trailing -<hash>
+      commit=$(sed -nE 's/.*-([a-fA-F0-9]{7,40})[^a-fA-F0-9]*$/\1/p' <<< "$output" | head -1)
+      ;;
+    Ethrex)
+      # ethrex/v19.0.0-HEAD-<40hex>/...  → hex after the -HEAD-/-tag- segment
+      commit=$(sed -nE 's#.*[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z]+-([a-fA-F0-9]{7,40}).*#\1#p' <<< "$output" | head -1)
       ;;
     *)
       commit=""
@@ -451,8 +462,8 @@ getClVcCurrentVersion(){
         LH_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lighthouse")
         raw_version=$("$LH_BIN" --version 2>&1 | head -1 || true)
         VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
-        # Short hex after semver (not a prerelease token): v5.2.1-abc1234
-        if [[ "$raw_version" =~ v[0-9]+\.[0-9]+\.[0-9]+-([a-fA-F0-9]{6,40})([^a-zA-Z0-9]|$) ]]; then
+        # Trailing short hex commit: v5.2.1-abc1234 or v8.0.0-rc.2-b59feb0
+        if [[ "$raw_version" =~ -([a-fA-F0-9]{7,40})[[:space:]]*$ ]]; then
           INSTALLED_COMMIT="${BASH_REMATCH[1]}"
         fi
         ;;
@@ -475,6 +486,10 @@ getClVcCurrentVersion(){
         fi
         raw_version=$("$NIMBUS_BIN" --version 2>&1 | head -1 || true)
         VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        # Nimbus beacon node v0.6.6-00aedddf  → trailing -<hash>
+        if [[ "$raw_version" =~ -([a-fA-F0-9]{7,40})[[:space:]]*$ ]]; then
+          INSTALLED_COMMIT="${BASH_REMATCH[1]}"
+        fi
         ;;
       Grandine)
         GRANDINE_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/grandine")
@@ -490,6 +505,8 @@ getClVcCurrentVersion(){
         fi
         raw_version=$("$PRYSM_BIN" --version 2>&1 | head -1 || true)
         VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        # Prysm/v7.1.2-rc.0/<40hex>. Built at: ...  → hex after last slash
+        INSTALLED_COMMIT=$(grep -oE '/[a-fA-F0-9]{7,40}' <<< "$raw_version" | tail -1 | tr -d '/' || true)
         ;;
       *)
         echo "ERROR: Unable to determine client."
