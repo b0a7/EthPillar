@@ -84,7 +84,7 @@ parse_execution_client_version() {
   local el="$1"
   local output="$2"
   local prefixes=() prefix parsed=""
-  local ver_re='([0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?)'
+  local ver_re='([0-9]+\.[0-9]+\.[0-9]+(-([rR][cC]|[aA][lL][pP][hH][aA]|[bB][eE][tT][aA]|[dD][eE][vV])[0-9A-Za-z.]*)?)'
   case "$el" in
     Geth)       prefixes=('[Gg]eth[[:space:]]*[^0-9]*') ;;
     Besu)       prefixes=('[Bb]esu[^0-9]*') ;;
@@ -102,7 +102,7 @@ parse_execution_client_version() {
     fi
   done
   # Last resort: first x.y.z(+prerelease) in output when no client prefix matched.
-  parsed=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$output" | head -1)
+  parsed=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-([rR][cC]|[aA][lL][pP][hH][aA]|[bB][eE][tT][aA]|[dD][eE][vV])[0-9A-Za-z.]*)?' <<< "$output" | head -1)
   if [[ -n "$parsed" ]]; then
     echo "$parsed"
     return 0
@@ -450,7 +450,7 @@ getClVcCurrentVersion(){
       Lighthouse)
         LH_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lighthouse")
         raw_version=$("$LH_BIN" --version 2>&1 | head -1 || true)
-        VERSION=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
         # Short hex after semver (not a prerelease token): v5.2.1-abc1234
         if [[ "$raw_version" =~ v[0-9]+\.[0-9]+\.[0-9]+-([a-fA-F0-9]{6,40})([^a-zA-Z0-9]|$) ]]; then
           INSTALLED_COMMIT="${BASH_REMATCH[1]}"
@@ -459,13 +459,13 @@ getClVcCurrentVersion(){
       Lodestar)
         LODESTAR_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lodestar")
         raw_version=$("$LODESTAR_BIN" --version 2>&1 || true)
-        VERSION=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
         INSTALLED_COMMIT=$(grep -oE '/[a-fA-F0-9]{6,40}' <<< "$raw_version" | tail -1 | tr -d '/' || true)
         ;;
       Teku)
         TEKU_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/teku/bin/teku")
         raw_version=$("$TEKU_BIN" --version 2>&1 | head -1 || true)
-        VERSION=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
         ;;
       Nimbus)
         if [[ "$role" == "vc" ]]; then
@@ -474,12 +474,12 @@ getClVcCurrentVersion(){
           NIMBUS_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/nimbus_beacon_node")
         fi
         raw_version=$("$NIMBUS_BIN" --version 2>&1 | head -1 || true)
-        VERSION=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
         ;;
       Grandine)
         GRANDINE_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/grandine")
         raw_version=$("$GRANDINE_BIN" --version 2>&1 | head -1 || true)
-        VERSION=$(grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        VERSION=$(grep -oiE 'v?[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
         if [[ -n "$VERSION" && $VERSION != v* ]]; then VERSION="v$VERSION"; fi
         ;;
       Prysm)
@@ -489,7 +489,7 @@ getClVcCurrentVersion(){
           PRYSM_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/prysm-beacon-chain")
         fi
         raw_version=$("$PRYSM_BIN" --version 2>&1 | head -1 || true)
-        VERSION=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
         ;;
       *)
         echo "ERROR: Unable to determine client."

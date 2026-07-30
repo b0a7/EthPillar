@@ -38,6 +38,12 @@ EOF
   [ "$output" = "25.3.0" ]
 }
 
+@test "parse_execution_client_version preserves uppercase Besu RC suffix" {
+  run parse_execution_client_version Besu 'besu/v25.10.0-RC2/linux-x86_64/openjdk-java-25'
+  [ "$status" -eq 0 ]
+  [ "$output" = "25.10.0-RC2" ]
+}
+
 @test "parse_execution_client_version parses geth version output" {
   run parse_execution_client_version Geth $'Geth\nVersion: 1.14.12-stable-abc123'
   [ "$status" -eq 0 ]
@@ -223,6 +229,18 @@ EOF
   getClVcCurrentVersion Lodestar cl
   [ "$VERSION" = "v1.45.0-rc.0" ]
   [ "$INSTALLED_COMMIT" = "668ea9d" ]
+}
+
+@test "getClVcCurrentVersion preserves uppercase Teku RC suffix" {
+  local stub="$TEST_BIN_DIR/teku"
+  write_stub_binary "$stub" 'echo "teku/v22.9.1-RC1/linux-x86_64/openjdk-java-25"'
+  mkdir -p "$TEST_BIN_DIR/teku-home/bin"
+  mv "$stub" "$TEST_BIN_DIR/teku-home/bin/teku"
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$TEST_BIN_DIR/teku-home/bin/teku
+EOF
+  getClVcCurrentVersion Teku cl
+  [ "$VERSION" = "v22.9.1-RC1" ]
 }
 
 @test "getClVcCurrentVersion reads vc-only nimbus from validator service stub" {

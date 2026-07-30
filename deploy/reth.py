@@ -80,6 +80,7 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
         data.get("assets", []),
         arch_amd64,
         name_contains=("reth",),
+        name_excludes=("op-reth",),
         client_label="Reth",
     )
     return attach_github_tag_commit(

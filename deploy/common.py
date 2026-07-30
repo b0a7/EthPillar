@@ -692,6 +692,7 @@ def pick_github_release_asset(
     *,
     role_contains: str = "",
     name_contains: tuple[str, ...] = (),
+    name_excludes: tuple[str, ...] = (),
     prefer_extensions: tuple[str, ...] = (".tar.gz", ".zip", ""),
     client_label: str = "release",
 ) -> tuple[str, str]:
@@ -711,6 +712,9 @@ def pick_github_release_asset(
             (``beacon-chain`` vs ``validator``).
         name_contains: When non-empty, every substring must appear in the asset
             name (case-insensitive).
+        name_excludes: When non-empty, reject assets whose name contains any of
+            these substrings (case-insensitive). Used to skip related binaries
+            such as ``op-reth`` when selecting ``reth``.
         prefer_extensions: Filename endings to prefer, highest priority first.
             Use ``\"\"`` to allow extensionless bare binaries.
         client_label: Client name included in :class:`ValueError` messages.
@@ -730,6 +734,8 @@ def pick_github_release_asset(
         if role_contains and role_contains.lower() not in name.lower():
             continue
         if name_contains and not all(part.lower() in name.lower() for part in name_contains):
+            continue
+        if name_excludes and any(part.lower() in name.lower() for part in name_excludes):
             continue
         if arch_amd64 is None:
             if _asset_name_excluded(name):
