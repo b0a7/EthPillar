@@ -7,11 +7,11 @@
 # Made for home and solo stakers 🏠🥩
 
 # 🫶 Make improvements and suggestions on GitHub:
-#    * https://github.com/coincashew/ethpillar
+#    * https://github.com/mjkeating/EthPillar
 # 🙌 Ask questions on Discord:
-#    * https://discord.gg/dEpAVWgFNB
+#    * https://discord.gg/Kjrnkv8dgs
 
-EP_VERSION="5.4.10"
+EP_VERSION="5.4.11"
 
 # Default text editor
 export EDITOR="nano"
@@ -542,6 +542,7 @@ while true; do
       10 "Generate / Import Validator Keys"
       11 "View validator pubkeys and indices"
       12 "🆕 Validator Actions: Compound/consolidate, partial withdrawals, top up, force exit"
+      13 "Keymanager API: List / Import / Delete / Enable"
       - ""
       20 "Generate Voluntary Exit Messages (VEM)"
       21 "Broadcast Voluntary Exit Messages (VEM)"
@@ -602,6 +603,9 @@ while true; do
         ;;
       12)
         showValidatorActions
+        ;;
+      13)
+        runScript manage_validator_keys.sh keymanager
         ;;
       20)
         installEthdo
@@ -803,8 +807,8 @@ while true; do
         ;;
       ℹ️)
         MSG_ABOUT="🏡🥩 Since Pre-Merge 2020,\n- EthPillar is a free, open source, public good.\n- Made for Ethereum. Built on-chain. Powered by community.
-        \n🚀 Get Involved: Make improvements & suggestions on GitHub\n- https://github.com/coincashew/ethpillar
-        \n📣 Join community & ask questions on Discord:\n- https://discord.gg/dEpAVWgFNB
+        \n🚀 Get Involved: Make improvements & suggestions on GitHub\n- https://github.com/mjkeating/EthPillar
+        \n📣 Join community & ask questions on Discord:\n- https://discord.gg/Kjrnkv8dgs
         \n✨ Support EthPillar on the next Gitcoin Grants round
         \n🙏 Donations:\n[ 0xCF83d0c22dd54475cC0C52721B0ef07d9756E8C0 ] || [ coincashew.eth ]"
         whiptail --title "About EthPillar" --msgbox "$MSG_ABOUT" 21 78
@@ -812,14 +816,14 @@ while true; do
       ❓)
       local MSG="
   official 🌐:
-    https://docs.coincashew.com/ethpillar
-    https://docs.coincashew.com/guides/mainnet
+    https://ethpillar.coincashew.io/EthPillar
+    https://ethpillar.coincashew.io/EthPillar/QuickStart
 
   FAQs ✨:
-    https://docs.coincashew.com/ethpillar/faq
+    https://ethpillar.coincashew.io/EthPillar/FAQ
 
   discord 📣:
-    https://discord.gg/WS8E3PMzrb
+    https://discord.gg/Kjrnkv8dgs
 
   ethstaker community 🚨:
     knowledge base - https://docs.ethstaker.org
@@ -827,7 +831,7 @@ while true; do
     reddit - https://www.reddit.com/r/ethstaker
 
   github 👀:
-    https://github.com/coincashew/EthPillar
+    https://github.com/mjkeating/EthPillar
 
   lido csm 💧:
     https://docs.lido.fi/run-on-lido/csm/node-setup/intermediate/ethpillar

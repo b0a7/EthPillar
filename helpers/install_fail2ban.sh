@@ -7,9 +7,9 @@
 # Made for home and solo stakers 🏠🥩
 
 # 🫶 Make improvements and suggestions on GitHub:
-#    * https://github.com/coincashew/ethpillar
+#    * https://github.com/mjkeating/EthPillar
 # 🙌 Ask questions on Discord:
-#    * https://discord.gg/dEpAVWgFNB
+#    * https://discord.gg/Kjrnkv8dgs
 
 # Check if the user is root
 if [[ $EUID -ne 0 ]]; then

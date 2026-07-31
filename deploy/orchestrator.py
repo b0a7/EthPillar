@@ -265,7 +265,18 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             mev_params = '--enable-builder' if flags['mevboost'] else ''
             bn_arg = f'--beacon-rest-api-provider={addr}'
-            val_path = prysm.install_prysm_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, mev_params)
+            # gRPC beacon endpoint only when the local BN is also Prysm.
+            beacon_rpc = "127.0.0.1:4000" if cc_name == "Prysm" else None
+            val_path = prysm.install_prysm_vc(
+                v_ver,
+                network,
+                str(cl_rest_port),
+                graffiti,
+                bn_arg,
+                fee_params,
+                mev_params,
+                beacon_rpc_provider=beacon_rpc,
+            )
 
     combo_name = role
     if ec_name and cc_name:

@@ -29,13 +29,10 @@ After switching, use **System Administration → Update EthPillar** inside the T
 New users can skip this step — the installer below already points to this fork.
 
 ---
-## ✨ v5.4.8 — Python Dependencies & Java Support Improvements
 
-### Highlights
-- **Fixed Python dependency issues** — EthPillar now automatically manages its own virtual environment (`.venv`) and installs required packages
-- **Improved Java support for Besu & Teku** — Added proper JDK version detection and safety checks before upgrading
+## v5.4.11
 
-Thanks to **@b0a7** and **@rggjan** for these improvements!
+Adds Phase 1 [Keymanager API](https://ethereum.github.io/keymanager-APIs/) support so you can manage local validator keystores from the TUI without hand-editing client tools, plus a fix so Ctrl-C while viewing logs returns to the menu.
 
 ---
 
