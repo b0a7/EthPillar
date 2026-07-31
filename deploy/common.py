@@ -692,6 +692,7 @@ def pick_github_release_asset(
     *,
     role_contains: str = "",
     name_contains: tuple[str, ...] = (),
+    name_excludes: tuple[str, ...] = (),
     prefer_extensions: tuple[str, ...] = (".tar.gz", ".zip", ""),
     client_label: str = "release",
 ) -> tuple[str, str]:
@@ -711,6 +712,9 @@ def pick_github_release_asset(
             (``beacon-chain`` vs ``validator``).
         name_contains: When non-empty, every substring must appear in the asset
             name (case-insensitive).
+        name_excludes: When non-empty, reject assets whose name contains any of
+            these substrings (case-insensitive). Used to skip related binaries
+            such as ``op-reth`` when selecting ``reth``.
         prefer_extensions: Filename endings to prefer, highest priority first.
             Use ``\"\"`` to allow extensionless bare binaries.
         client_label: Client name included in :class:`ValueError` messages.
@@ -730,6 +734,8 @@ def pick_github_release_asset(
         if role_contains and role_contains.lower() not in name.lower():
             continue
         if name_contains and not all(part.lower() in name.lower() for part in name_contains):
+            continue
+        if name_excludes and any(part.lower() in name.lower() for part in name_excludes):
             continue
         if arch_amd64 is None:
             if _asset_name_excluded(name):
@@ -817,26 +823,94 @@ def get_github_release(repo: str, version_tag: str) -> dict:
     Some repos publish releases under shortened tags (for example ``v1.11``) while
     git also has patch tags such as ``v1.11.0`` with no release assets. When the
     exact tag is missing, this tries common aliases and scans published releases.
+
+    When the release tag can be peeled to a commit, the returned dict includes an
+    extra ``commit`` key (not part of the raw GitHub payload).
     """
     if version_tag.upper() == "LATEST":
         url = f"https://api.github.com/repos/{repo}/releases/latest"
         res = requests.get(url, headers=_github_api_headers(), timeout=30)
         res.raise_for_status()
-        return res.json()
+        release = res.json()
+    else:
+        release = None
+        for candidate in _github_release_tag_candidates(version_tag):
+            release = _fetch_github_release_by_tag(repo, candidate)
+            if release is not None:
+                break
 
-    for candidate in _github_release_tag_candidates(version_tag):
-        release = _fetch_github_release_by_tag(repo, candidate)
-        if release is not None:
-            return release
+        if release is None:
+            release = _find_github_release_by_normalized_tag(repo, version_tag)
 
-    release = _find_github_release_by_normalized_tag(repo, version_tag)
-    if release is not None:
-        return release
+        if release is None:
+            url = f"https://api.github.com/repos/{repo}/releases/tags/{version_tag}"
+            res = requests.get(url, headers=_github_api_headers(), timeout=30)
+            res.raise_for_status()
+            release = res.json()
 
-    url = f"https://api.github.com/repos/{repo}/releases/tags/{version_tag}"
-    res = requests.get(url, headers=_github_api_headers(), timeout=30)
-    res.raise_for_status()
-    return res.json()
+    tag = release.get("tag_name")
+    if tag:
+        commit = get_github_tag_commit(repo, str(tag))
+        if commit:
+            release["commit"] = commit
+    return release
+
+
+def get_github_tag_commit(repo: str, tag_name: str) -> Optional[str]:
+    """Resolve a git tag to its peeled commit SHA via the GitHub API.
+
+    Annotated tags are peeled to the underlying commit. Lightweight tags that
+    already point at a commit return that SHA. Returns ``None`` on any failure
+    so callers can fall back to semver-only comparison.
+    """
+    tag = (tag_name or "").strip()
+    if not tag:
+        return None
+    try:
+        ref_url = f"https://api.github.com/repos/{repo}/git/refs/tags/{tag}"
+        res = requests.get(ref_url, headers=_github_api_headers(), timeout=30)
+        if res.status_code == 404:
+            return None
+        res.raise_for_status()
+        ref = res.json()
+        # GitHub may return a list when the path is a prefix of multiple refs.
+        if isinstance(ref, list):
+            exact = f"refs/tags/{tag}"
+            ref = next((item for item in ref if item.get("ref") == exact), None)
+            if ref is None:
+                return None
+        obj = ref.get("object") or {}
+        obj_type = obj.get("type")
+        obj_sha = obj.get("sha")
+        if not obj_sha:
+            return None
+        if obj_type == "commit":
+            return obj_sha
+        if obj_type == "tag":
+            tag_url = obj.get("url") or f"https://api.github.com/repos/{repo}/git/tags/{obj_sha}"
+            tag_res = requests.get(tag_url, headers=_github_api_headers(), timeout=30)
+            tag_res.raise_for_status()
+            peeled = (tag_res.json().get("object") or {}).get("sha")
+            return peeled or None
+        return None
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        return None
+
+
+def release_info_from_github(
+    github_release: dict,
+    download_urls: list[str],
+    filenames: list[str],
+) -> dict:
+    """Build EthPillar release-info from a :func:`get_github_release` payload."""
+    info = {
+        "version": github_release["tag_name"],
+        "download_urls": download_urls,
+        "filenames": filenames,
+    }
+    if github_release.get("commit"):
+        info["commit"] = github_release["commit"]
+    return info
 
 
 def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
@@ -847,7 +921,8 @@ def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
         version_tag: 'LATEST' or a specific tag name.
 
     Returns:
-        A dictionary with keys 'version', 'download_urls', and 'filenames'.
+        A dictionary with keys ``version``, ``download_urls``, ``filenames``, and
+        optionally ``commit`` (git SHA of the release tag when resolvable).
     """
     client = client.lower()
     

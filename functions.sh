@@ -77,11 +77,14 @@ get_execution_version_output() {
   esac
 }
 
-# Extract x.y.z only when it follows the client name (avoids rustc/JDK semver noise).
+# Extract x.y.z with optional prerelease (-rc.N / -alpha… / -beta… / -dev…) when it
+# follows the client name (avoids rustc/JDK semver noise). Does not treat bare
+# hex commit suffixes (e.g. Lighthouse v5.2.1-abc1234) as prereleases.
 parse_execution_client_version() {
   local el="$1"
   local output="$2"
   local prefixes=() prefix parsed=""
+  local ver_re='([0-9]+\.[0-9]+\.[0-9]+(-([rR][cC]|[aA][lL][pP][hH][aA]|[bB][eE][tT][aA]|[dD][eE][vV])[0-9A-Za-z.]*)?)'
   case "$el" in
     Geth)       prefixes=('[Gg]eth[[:space:]]*[^0-9]*') ;;
     Besu)       prefixes=('[Bb]esu[^0-9]*') ;;
@@ -92,14 +95,14 @@ parse_execution_client_version() {
     *)          echo ""; return 1 ;;
   esac
   for prefix in "${prefixes[@]}"; do
-    parsed=$(printf '%s' "$output" | sed -z -nE "s/.*${prefix}v?([0-9]+\\.[0-9]+\\.[0-9]+).*/\\1/p" | head -1)
+    parsed=$(printf '%s' "$output" | sed -z -nE "s/.*${prefix}v?${ver_re}.*/\\1/p" | head -1)
     if [[ -n "$parsed" ]]; then
       echo "$parsed"
       return 0
     fi
   done
-  # Last resort: first x.y.z in output when no client prefix matched.
-  parsed=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' <<< "$output" | head -1)
+  # Last resort: first x.y.z(+prerelease) in output when no client prefix matched.
+  parsed=$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+(-([rR][cC]|[aA][lL][pP][hH][aA]|[bB][eE][tT][aA]|[dD][eE][vV])[0-9A-Za-z.]*)?' <<< "$output" | head -1)
   if [[ -n "$parsed" ]]; then
     echo "$parsed"
     return 0
@@ -107,11 +110,48 @@ parse_execution_client_version() {
   echo ""
 }
 
-# Sets VERSION from the installed execution client binary (not RPC).
+# Extract a git commit/hash from execution-client version output when present.
+parse_execution_client_commit() {
+  local el="$1"
+  local output="$2"
+  local commit=""
+  case "$el" in
+    Geth)
+      commit=$(sed -nE 's/.*[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z]+-([a-fA-F0-9]{6,40}).*/\1/p' <<< "$output" | head -1)
+      ;;
+    Nethermind)
+      commit=$(sed -nE 's/.*[Cc]ommit:[[:space:]]*([a-fA-F0-9]{6,40}).*/\1/p' <<< "$output" | head -1)
+      if [[ -z "$commit" ]]; then
+        commit=$(grep -oE '\+[a-fA-F0-9]{6,40}' <<< "$output" | head -1 | tr -d '+')
+      fi
+      ;;
+    Reth)
+      commit=$(sed -nE 's/.*[Cc]ommit SHA:[[:space:]]*([a-fA-F0-9]{6,40}).*/\1/p' <<< "$output" | head -1)
+      if [[ -z "$commit" ]]; then
+        commit=$(grep -oE '\([a-fA-F0-9]{6,40}\)' <<< "$output" | head -1 | tr -d '()')
+      fi
+      ;;
+    Erigon)
+      # erigon version 3.4.0-rc.5-ac5e71d8  → trailing -<hash>
+      commit=$(sed -nE 's/.*-([a-fA-F0-9]{7,40})[^a-fA-F0-9]*$/\1/p' <<< "$output" | head -1)
+      ;;
+    Ethrex)
+      # ethrex/v19.0.0-HEAD-<40hex>/...  → hex after the -HEAD-/-tag- segment
+      commit=$(sed -nE 's#.*[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z]+-([a-fA-F0-9]{7,40}).*#\1#p' <<< "$output" | head -1)
+      ;;
+    *)
+      commit=""
+      ;;
+  esac
+  echo "$commit"
+}
+
+# Sets VERSION (and INSTALLED_COMMIT when known) from the installed execution client binary.
 getExecutionCurrentVersion() {
   local el="${1:-$EL}"
   local bin output
   VERSION=""
+  INSTALLED_COMMIT=""
   bin=$(get_execution_binary_path "$el")
   if [[ -z "$bin" || ! -x "$bin" ]]; then
     VERSION="Unable to query ${el:-execution client} version from binary."
@@ -119,6 +159,7 @@ getExecutionCurrentVersion() {
   fi
   output=$(get_execution_version_output "$bin" "$el")
   VERSION=$(parse_execution_client_version "$el" "$output")
+  INSTALLED_COMMIT=$(parse_execution_client_commit "$el" "$output")
   if [[ -z "$VERSION" ]]; then
     VERSION="Unable to query ${el} version from binary."
     return 1
@@ -401,30 +442,41 @@ PY
 # Gets installed CL or VC version from binary.
 # Args: client (optional, defaults to CLIENT from getClient), role cl|vc (optional, defaults to cl).
 # Use role=cl for consensus/beacon (consensus.service); role=vc for validator (validator.service).
+# Sets VERSION and INSTALLED_COMMIT (empty when unknown).
 getClVcCurrentVersion(){
     local client="${1:-$CLIENT}"
     local role="${2:-cl}"
     local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
     local svc_file
+    local raw_version=""
     if [[ "$role" == "vc" ]]; then
         svc_file="$validator_svc"
     else
         svc_file="$consensus_svc"
     fi
     VERSION="NotInstalled"
+    INSTALLED_COMMIT=""
     case "$client" in
       Lighthouse)
         LH_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lighthouse")
-        VERSION=$("$LH_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
+        raw_version=$("$LH_BIN" --version 2>&1 | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        # Trailing short hex commit: v5.2.1-abc1234 or v8.0.0-rc.2-b59feb0
+        if [[ "$raw_version" =~ -([a-fA-F0-9]{7,40})[[:space:]]*$ ]]; then
+          INSTALLED_COMMIT="${BASH_REMATCH[1]}"
+        fi
         ;;
       Lodestar)
         LODESTAR_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lodestar")
-        VERSION=$("$LODESTAR_BIN" --version 2>&1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
+        raw_version=$("$LODESTAR_BIN" --version 2>&1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        INSTALLED_COMMIT=$(grep -oE '/[a-fA-F0-9]{6,40}' <<< "$raw_version" | tail -1 | tr -d '/' || true)
         ;;
       Teku)
         TEKU_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/teku/bin/teku")
-        VERSION=$("$TEKU_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
+        raw_version=$("$TEKU_BIN" --version 2>&1 | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
         ;;
       Nimbus)
         if [[ "$role" == "vc" ]]; then
@@ -432,12 +484,18 @@ getClVcCurrentVersion(){
         else
           NIMBUS_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/nimbus_beacon_node")
         fi
-        VERSION=$("$NIMBUS_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+.[0-9]+.[0-9]+" || true)
+        raw_version=$("$NIMBUS_BIN" --version 2>&1 | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        # Nimbus beacon node v0.6.6-00aedddf  → trailing -<hash>
+        if [[ "$raw_version" =~ -([a-fA-F0-9]{7,40})[[:space:]]*$ ]]; then
+          INSTALLED_COMMIT="${BASH_REMATCH[1]}"
+        fi
         ;;
       Grandine)
         GRANDINE_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/grandine")
-        VERSION=$("$GRANDINE_BIN" --version 2>&1 | head -1 | grep -oE "v?[0-9]+\.[0-9]+\.[0-9]+" || true)
-        if [[ $VERSION != v* ]]; then VERSION="v$VERSION"; fi
+        raw_version=$("$GRANDINE_BIN" --version 2>&1 | head -1 || true)
+        VERSION=$(grep -oiE 'v?[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        if [[ -n "$VERSION" && $VERSION != v* ]]; then VERSION="v$VERSION"; fi
         ;;
       Prysm)
         if [[ "$role" == "vc" ]]; then
@@ -445,13 +503,36 @@ getClVcCurrentVersion(){
         else
           PRYSM_BIN=$(get_systemd_exec_path "$consensus_svc" "/usr/local/bin/prysm-beacon-chain")
         fi
-        VERSION=$("$PRYSM_BIN" --version 2>&1 | head -1 | grep -oE "v[0-9]+\.[0-9]+\.[0-9]+" || true)
+        raw_version=$("$PRYSM_BIN" --version 2>&1 | head -1 || true)
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
+        # Prysm/v7.1.2-rc.0/<40hex>. Built at: ...  → hex after last slash
+        INSTALLED_COMMIT=$(grep -oE '/[a-fA-F0-9]{7,40}' <<< "$raw_version" | tail -1 | tr -d '/' || true)
         ;;
       *)
         echo "ERROR: Unable to determine client."
         exit 1
         ;;
       esac
+}
+
+# True when installed VERSION matches TAG (after stripping leading v).
+# When both INSTALLED_COMMIT and TAG_COMMIT are set, also require a case-insensitive
+# prefix match either way (short hash vs full SHA). Missing commits → semver-only.
+version_matches_latest() {
+  local installed="${1:-$VERSION}"
+  local latest="${2:-$TAG}"
+  local inst_commit="${3:-${INSTALLED_COMMIT:-}}"
+  local tag_commit="${4:-${TAG_COMMIT:-}}"
+  local inst_lc tag_lc
+
+  [[ "${installed#v}" == "${latest#v}" ]] || return 1
+
+  if [[ -n "$inst_commit" && -n "$tag_commit" ]]; then
+    inst_lc="${inst_commit,,}"
+    tag_lc="${tag_commit,,}"
+    [[ "$tag_lc" == "$inst_lc"* || "$inst_lc" == "$tag_lc"* ]] || return 1
+  fi
+  return 0
 }
 
 # Read clients from systemd config files
@@ -1793,8 +1874,9 @@ ensure_host_runtime_packages() {
 promptYesNo() {
     local client_name="${1:-${CLIENT:-${EL:-Client}}}"
     local title_client="${2:-${title_client:-$client_name}}"
+    local installed_label latest_label
 
-    if [[ "${VERSION#v}" == "${TAG#v}" ]]; then
+    if version_matches_latest; then
         whiptail --title "Already updated" --msgbox "You are already on the latest version: ${VERSION#v}" 10 78
         if whiptail --title "Different Version of ${title_client}" --defaultno --yesno "Would you like to install a different version?" 8 78; then
             selectCustomTag
@@ -1804,7 +1886,16 @@ promptYesNo() {
         return
     fi
 
-    __MSG="Installed Version is: ${VERSION#v}\nLatest Version is:    ${TAG#v}\n\nReminder: Always read the release notes for breaking changes: $CHANGES_URL\n\nDo you want to update ${client_name} to ${TAG#v}?"
+    installed_label="${VERSION#v}"
+    latest_label="${TAG#v}"
+    if [[ -n "${INSTALLED_COMMIT:-}" ]]; then
+        installed_label="${installed_label} (${INSTALLED_COMMIT:0:7})"
+    fi
+    if [[ -n "${TAG_COMMIT:-}" ]]; then
+        latest_label="${latest_label} (${TAG_COMMIT:0:7})"
+    fi
+
+    __MSG="Installed Version is: ${installed_label}\nLatest Version is:    ${latest_label}\n\nReminder: Always read the release notes for breaking changes: $CHANGES_URL\n\nDo you want to update ${client_name} to ${TAG#v}?"
 
     __SELECTTAG=$(whiptail --title "🔧 Update ${title_client}" --menu \
           "$__MSG" 18 78 2 \

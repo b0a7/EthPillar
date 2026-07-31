@@ -67,9 +67,9 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     Returns:
         A dictionary with keys 'version', 'download_urls', and 'filenames'.
     """
-    from deploy.common import get_github_release, pick_github_release_asset
-    data = get_github_release("NethermindEth/nethermind", version_tag)
-    tag = data["tag_name"]
+    from deploy.common import get_github_release, pick_github_release_asset, release_info_from_github
+    repo = "NethermindEth/nethermind"
+    data = get_github_release(repo, version_tag)
     filename, download_url = pick_github_release_asset(
         data.get("assets", []),
         arch_amd64,
@@ -77,7 +77,7 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
         prefer_extensions=(".zip", ".tar.gz"),
         client_label="Nethermind",
     )
-    return {"version": tag, "download_urls": [download_url], "filenames": [filename]}
+    return release_info_from_github(data, [download_url], [filename])
 
 
 

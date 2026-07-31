@@ -135,11 +135,11 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     Returns:
         A dictionary with keys 'version', 'download_urls', and 'filenames'.
     """
-    from deploy.common import get_github_release
-    data = get_github_release("ConsenSys/teku", version_tag)
-    tag = data["tag_name"]
+    from deploy.common import get_github_release, release_info_from_github
+    repo = "ConsenSys/teku"
+    data = get_github_release(repo, version_tag)
     filename, download_url = _teku_download_from_release(data)
-    return {"version": tag, "download_urls": [download_url], "filenames": [filename]}
+    return release_info_from_github(data, [download_url], [filename])
 
 
 

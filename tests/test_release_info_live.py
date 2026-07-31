@@ -24,8 +24,9 @@ three scenarios that mirror the update menus:
 
 For each scenario we assert:
 
-* ``get_client_release_info()`` returns ``version``, ``download_urls``, and
-  ``filenames`` with consistent lengths
+* ``get_client_release_info()`` returns ``version``, ``download_urls``,
+  ``filenames``, and ``commit`` (git SHA) with consistent URL/filename lengths
+* ``commit`` is a non-empty hex string (7–40 chars) suitable for prefix matching
 * Every download URL responds (HEAD, or ranged GET fallback)
 
 Geth is special: binaries are scraped from geth.ethereum.org, not GitHub
@@ -163,6 +164,11 @@ def _assert_release_info_shape(info: dict, client: str) -> None:
     assert len(info["download_urls"]) == len(info["filenames"]), client
     for url in info["download_urls"]:
         assert url.startswith("http"), f"{client}: invalid URL {url!r}"
+    commit = info.get("commit")
+    assert commit, f"{client}: missing commit"
+    assert re.fullmatch(r"[0-9a-fA-F]{6,40}", str(commit)), (
+        f"{client}: commit is not a hex SHA: {commit!r}"
+    )
 
 
 def _download_check_headers() -> dict:
@@ -220,6 +226,7 @@ def _mock_nethermind_release_info(client: str, tag: str) -> dict:
         "version": tag,
         "download_urls": [f"https://example.com/{tag}.zip"],
         "filenames": [f"nethermind-{tag}.zip"],
+        "commit": "c07a4d65abcdef",
     }
 
 

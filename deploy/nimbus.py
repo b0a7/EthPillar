@@ -118,16 +118,16 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     Returns:
         A dictionary with keys 'version', 'download_urls', and 'filenames'.
     """
-    from deploy.common import get_github_release, pick_github_release_asset
-    data = get_github_release("status-im/nimbus-eth2", version_tag)
-    tag = data["tag_name"]
+    from deploy.common import get_github_release, pick_github_release_asset, release_info_from_github
+    repo = "status-im/nimbus-eth2"
+    data = get_github_release(repo, version_tag)
     filename, download_url = pick_github_release_asset(
         data.get("assets", []),
         arch_amd64,
         name_contains=("nimbus", "_linux_"),
         client_label="Nimbus",
     )
-    return {"version": tag, "download_urls": [download_url], "filenames": [filename]}
+    return release_info_from_github(data, [download_url], [filename])
 
 
 

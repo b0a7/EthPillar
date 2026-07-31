@@ -168,9 +168,9 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     Returns:
         A dictionary with keys 'version', 'download_urls', and 'filenames'.
     """
-    from deploy.common import get_github_release, pick_github_release_asset
-    data = get_github_release("prysmaticlabs/prysm", version_tag)
-    tag = data["tag_name"]
+    from deploy.common import get_github_release, pick_github_release_asset, release_info_from_github
+    repo = "prysmaticlabs/prysm"
+    data = get_github_release(repo, version_tag)
     assets = data.get("assets", [])
     bn_filename, bn_url = pick_github_release_asset(
         assets,
@@ -184,11 +184,7 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
         role_contains="validator",
         client_label="Prysm validator",
     )
-    return {
-        "version": tag,
-        "download_urls": [bn_url, vc_url],
-        "filenames": [bn_filename, vc_filename],
-    }
+    return release_info_from_github(data, [bn_url, vc_url], [bn_filename, vc_filename])
 
 
 

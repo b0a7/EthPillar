@@ -12,15 +12,17 @@ source ./functions.sh
 
 fail=0
 
-# Same normalization as update_execution.sh / update_consensus.sh promptYesNo.
+# Same comparison as update_*.sh promptYesNo (semver + optional commit prefix).
 installed_matches_latest_tag() {
-  [[ "${1#v}" == "${2#v}" ]]
+  version_matches_latest "$1" "$2" "${INSTALLED_COMMIT:-}" "${3:-}"
 }
 
 get_latest_release_tag() {
   local client="$1"
-  local tag
-  tag=$(PYTHONPATH="/ethpillar" python3 -m deploy.common release_info "$client" "LATEST" | jq -r .version)
+  local data tag
+  data=$(PYTHONPATH="/ethpillar" python3 -m deploy.common release_info "$client" "LATEST")
+  tag=$(echo "$data" | jq -r .version)
+  TAG_COMMIT=$(echo "$data" | jq -r '.commit // empty')
   if [[ -z "$tag" || "$tag" == "null" ]]; then
     return 1
   fi
@@ -34,9 +36,12 @@ get_expected_release_tag() {
   local key="${client,,}"
   local tag
 
+  TAG_COMMIT=""
   if [[ -n "$snapshot" && -f "$snapshot" ]]; then
     tag=$(jq -r --arg k "$key" '.[$k] // empty' "$snapshot")
     if [[ -n "$tag" && "$tag" != "null" ]]; then
+      # Prefer live commit for the snapshotted tag when resolvable; otherwise semver-only.
+      TAG_COMMIT=$(PYTHONPATH="/ethpillar" python3 -m deploy.common release_info "$client" "$tag" 2>/dev/null | jq -r '.commit // empty' || true)
       echo "$tag"
       return 0
     fi
@@ -60,11 +65,11 @@ assert_matches_latest() {
     fail=1
     return 0
   fi
-  if installed_matches_latest_tag "$installed" "$expected"; then
+  if installed_matches_latest_tag "$installed" "$expected" "${TAG_COMMIT:-}"; then
     echo "✅ ${label} matches ${expected_label} (${installed#v}) — update menu would show already on latest"
     return 0
   fi
-  echo "❌ ${label} mismatch: installed ${installed#v}, ${expected_label} ${expected#v}"
+  echo "❌ ${label} mismatch: installed ${installed#v}${INSTALLED_COMMIT:+ (${INSTALLED_COMMIT:0:7})}, ${expected_label} ${expected#v}${TAG_COMMIT:+ (${TAG_COMMIT:0:7})}"
   fail=1
 }
 
