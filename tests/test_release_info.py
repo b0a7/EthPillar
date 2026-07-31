@@ -22,15 +22,18 @@ from deploy.common import get_client_release_info
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _make_github_release(tag_name, asset_names):
-    """Build a realistic GitHub release JSON structure."""
-    return {
+def _make_github_release(tag_name, asset_names, commit="abcdef0123456789abcdef0123456789abcdef01"):
+    """Build a realistic GitHub release JSON structure (plus optional peel commit)."""
+    data = {
         "tag_name": tag_name,
         "assets": [
             {"name": name, "browser_download_url": f"https://github.com/fake/repo/releases/download/{tag_name}/{name}"}
             for name in asset_names
         ]
     }
+    if commit:
+        data["commit"] = commit
+    return data
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -38,15 +41,6 @@ def _make_github_release(tag_name, asset_names):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestGetClientReleaseInfo:
-    @pytest.fixture(autouse=True)
-    def _mock_github_tag_commit(self):
-        """Avoid live GitHub tag peels; attach a stable fake commit when present."""
-        with patch(
-            "deploy.common.get_github_tag_commit",
-            return_value="abcdef0123456789abcdef0123456789abcdef01",
-        ):
-            yield
-
     @patch("deploy.common.get_github_release")
     def test_besu_returns_expected_structure(self, mock_gh):
         mock_gh.return_value = _make_github_release("26.5.0", ["besu-26.5.0.tar.gz"])

@@ -13,9 +13,9 @@ from deploy.common import (
     _find_github_release_by_normalized_tag,
     _github_release_tag_candidates,
     _normalize_release_version_key,
-    attach_github_tag_commit,
     get_github_release,
     get_github_tag_commit,
+    release_info_from_github,
 )
 
 
@@ -48,11 +48,17 @@ class TestGithubReleaseTagCandidates:
 
 
 class TestGetGithubRelease:
+    @pytest.fixture(autouse=True)
+    def _mock_tag_commit(self):
+        with patch("deploy.common.get_github_tag_commit", return_value="abc123commit"):
+            yield
+
     @patch("deploy.common._fetch_github_release_by_tag")
     def test_returns_exact_tag_match(self, mock_fetch):
         mock_fetch.return_value = {"tag_name": "v1.12", "assets": []}
         release = get_github_release("flashbots/mev-boost", "v1.12")
         assert release["tag_name"] == "v1.12"
+        assert release["commit"] == "abc123commit"
         mock_fetch.assert_called_once_with("flashbots/mev-boost", "v1.12")
 
     @patch("deploy.common._find_github_release_by_normalized_tag")
@@ -61,6 +67,7 @@ class TestGetGithubRelease:
         mock_fetch.side_effect = [None, None, {"tag_name": "v1.11", "assets": []}, None]
         release = get_github_release("flashbots/mev-boost", "v1.11.0")
         assert release["tag_name"] == "v1.11"
+        assert release["commit"] == "abc123commit"
         mock_find.assert_not_called()
 
     @patch("deploy.common._find_github_release_by_normalized_tag")
@@ -77,6 +84,7 @@ class TestGetGithubRelease:
         mock_get.return_value = MagicMock(status_code=200, json=lambda: {"tag_name": "v1.12"})
         release = get_github_release("flashbots/mev-boost", "LATEST")
         assert release["tag_name"] == "v1.12"
+        assert release["commit"] == "abc123commit"
         mock_get.assert_called_once()
         assert mock_get.call_args.args[0].endswith("/releases/latest")
 
@@ -138,18 +146,34 @@ class TestGetGithubTagCommit:
         assert get_github_tag_commit("org/repo", "") is None
         assert get_github_tag_commit("org/repo", "   ") is None
 
-    def test_attach_github_tag_commit_adds_commit(self):
-        with patch("deploy.common.get_github_tag_commit", return_value="deadbeef"):
-            info = attach_github_tag_commit(
-                "org/repo",
-                {"version": "v1.0.0", "download_urls": ["u"], "filenames": ["f"]},
-            )
-        assert info["commit"] == "deadbeef"
+    def test_release_info_from_github_copies_commit(self):
+        info = release_info_from_github(
+            {"tag_name": "v1.0.0", "commit": "deadbeef"},
+            ["u"],
+            ["f"],
+        )
+        assert info == {
+            "version": "v1.0.0",
+            "download_urls": ["u"],
+            "filenames": ["f"],
+            "commit": "deadbeef",
+        }
 
-    def test_attach_github_tag_commit_skips_when_unresolved(self):
-        with patch("deploy.common.get_github_tag_commit", return_value=None):
-            info = attach_github_tag_commit(
-                "org/repo",
-                {"version": "v1.0.0", "download_urls": ["u"], "filenames": ["f"]},
-            )
+    def test_release_info_from_github_omits_missing_commit(self):
+        info = release_info_from_github(
+            {"tag_name": "v1.0.0"},
+            ["u"],
+            ["f"],
+        )
         assert "commit" not in info
+
+    @patch("deploy.common.get_github_tag_commit", return_value="peeledsha")
+    @patch("deploy.common.requests.get")
+    def test_get_github_release_attaches_commit(self, mock_get, _mock_commit):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"tag_name": "v1.0.0", "assets": []},
+        )
+        release = get_github_release("org/repo", "LATEST")
+        assert release["tag_name"] == "v1.0.0"
+        assert release["commit"] == "peeledsha"

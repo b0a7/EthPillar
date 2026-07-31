@@ -823,26 +823,37 @@ def get_github_release(repo: str, version_tag: str) -> dict:
     Some repos publish releases under shortened tags (for example ``v1.11``) while
     git also has patch tags such as ``v1.11.0`` with no release assets. When the
     exact tag is missing, this tries common aliases and scans published releases.
+
+    When the release tag can be peeled to a commit, the returned dict includes an
+    extra ``commit`` key (not part of the raw GitHub payload).
     """
     if version_tag.upper() == "LATEST":
         url = f"https://api.github.com/repos/{repo}/releases/latest"
         res = requests.get(url, headers=_github_api_headers(), timeout=30)
         res.raise_for_status()
-        return res.json()
+        release = res.json()
+    else:
+        release = None
+        for candidate in _github_release_tag_candidates(version_tag):
+            release = _fetch_github_release_by_tag(repo, candidate)
+            if release is not None:
+                break
 
-    for candidate in _github_release_tag_candidates(version_tag):
-        release = _fetch_github_release_by_tag(repo, candidate)
-        if release is not None:
-            return release
+        if release is None:
+            release = _find_github_release_by_normalized_tag(repo, version_tag)
 
-    release = _find_github_release_by_normalized_tag(repo, version_tag)
-    if release is not None:
-        return release
+        if release is None:
+            url = f"https://api.github.com/repos/{repo}/releases/tags/{version_tag}"
+            res = requests.get(url, headers=_github_api_headers(), timeout=30)
+            res.raise_for_status()
+            release = res.json()
 
-    url = f"https://api.github.com/repos/{repo}/releases/tags/{version_tag}"
-    res = requests.get(url, headers=_github_api_headers(), timeout=30)
-    res.raise_for_status()
-    return res.json()
+    tag = release.get("tag_name")
+    if tag:
+        commit = get_github_tag_commit(repo, str(tag))
+        if commit:
+            release["commit"] = commit
+    return release
 
 
 def get_github_tag_commit(repo: str, tag_name: str) -> Optional[str]:
@@ -886,14 +897,19 @@ def get_github_tag_commit(repo: str, tag_name: str) -> Optional[str]:
         return None
 
 
-def attach_github_tag_commit(repo: str, info: dict) -> dict:
-    """Add optional ``commit`` (peeled tag SHA) to a release-info dict when resolvable."""
-    tag = info.get("version")
-    if not tag:
-        return info
-    commit = get_github_tag_commit(repo, str(tag))
-    if commit:
-        info["commit"] = commit
+def release_info_from_github(
+    github_release: dict,
+    download_urls: list[str],
+    filenames: list[str],
+) -> dict:
+    """Build EthPillar release-info from a :func:`get_github_release` payload."""
+    info = {
+        "version": github_release["tag_name"],
+        "download_urls": download_urls,
+        "filenames": filenames,
+    }
+    if github_release.get("commit"):
+        info["commit"] = github_release["commit"]
     return info
 
 
