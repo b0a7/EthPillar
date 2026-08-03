@@ -135,6 +135,51 @@ def assign_rpc_exposure_flags(tasks: List["TestTask"]) -> None:
             flush=True,
         )
 
+_FAIL_LINE_RE = re.compile(
+    r"^(?:❌\s*|FAIL[:\s]\s*)(.+)$",
+    re.IGNORECASE,
+)
+
+
+def extract_failure_reason(log_file: Optional[str], max_reasons: int = 3) -> str:
+    """Pull concise failure lines from a test log for CI-friendly summaries.
+
+    Prefers explicit markers used by the integration scripts (``❌ …``, ``FAIL: …``).
+    Falls back to the last non-empty log line when no marker is present.
+    """
+    if not log_file or not os.path.exists(log_file):
+        return "no log available"
+
+    reasons: List[str] = []
+    seen: set[str] = set()
+    last_line = ""
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line:
+                    continue
+                last_line = line
+                if line.startswith("Failed to start container"):
+                    candidate = line
+                else:
+                    match = _FAIL_LINE_RE.match(line)
+                    if not match:
+                        continue
+                    candidate = match.group(1).strip()
+                if candidate and candidate not in seen:
+                    seen.add(candidate)
+                    reasons.append(candidate)
+    except OSError:
+        return "could not read log"
+
+    if reasons:
+        return "; ".join(reasons[-max_reasons:])
+    if last_line:
+        return last_line[:200]
+    return "see log for details"
+
+
 class TestTask:
     """Mutable state for one integration case (container, log path, status, timing)."""
 
@@ -157,6 +202,7 @@ class TestTask:
         self.status = "PENDING"
         self.duration = 0
         self.start_time = 0
+        self.failure_reason: Optional[str] = None
 
 def generate_tests():
     """Build the full integration matrix as :class:`TestTask` instances."""
@@ -233,6 +279,7 @@ async def run_test(task: TestTask, results_dir: str, semaphore: asyncio.Semaphor
                 task.duration = int(time.time() - task.start_time)
                 with open(task.log_file, "a") as f:
                     f.write(f"\nFailed to start container. Exit code {proc.returncode}\n")
+                task.failure_reason = extract_failure_reason(task.log_file)
                 return
                 
             await asyncio.sleep(3) # Wait for systemd to initialize
@@ -247,6 +294,8 @@ async def run_test(task: TestTask, results_dir: str, semaphore: asyncio.Semaphor
             
             task.status = "PASS" if proc.returncode == 0 else "FAIL"
             task.duration = int(time.time() - task.start_time)
+            if task.status == "FAIL":
+                task.failure_reason = extract_failure_reason(task.log_file)
         finally:
             subprocess.run(f"docker rm -f {task.container_name}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -259,6 +308,8 @@ async def headless_monitor(tasks: list[TestTask], exec_coros):
             for task in tasks:
                 if task.status in ("PASS", "FAIL") and task.log_name not in completed:
                     print(f"[{task.status}] {task.log_name} ({task.duration}s)", flush=True)
+                    if task.status == "FAIL" and task.failure_reason:
+                        print(f"       {task.failure_reason}", flush=True)
                     completed.add(task.log_name)
             if all(task.status in ("PASS", "FAIL") for task in tasks):
                 break
@@ -418,6 +469,7 @@ def generate_html_report(tasks, results_dir, total_duration, timestamp, commit):
                     <th>Variation</th>
                     <th>Status</th>
                     <th>Duration</th>
+                    <th>Error</th>
                     <th>Log</th>
                 </tr>
             </thead>
@@ -426,7 +478,20 @@ def generate_html_report(tasks, results_dir, total_duration, timestamp, commit):
     for t in tasks:
         status_class = f"status-{t.status.lower()}"
         log_link = f"<a href='{os.path.basename(t.log_file)}' target='_blank'>View Log</a>" if t.log_file else "-"
-        html += f"                <tr><td>{t.label}</td><td>{t.display_var}</td><td class='{status_class}'>{t.status}</td><td>{t.duration}s</td><td>{log_link}</td></tr>\n"
+        error_cell = ""
+        if t.status == "FAIL":
+            error_cell = t.failure_reason or extract_failure_reason(t.log_file)
+            # Escape minimal HTML entities for the report table.
+            error_cell = (
+                error_cell.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+        html += (
+            f"                <tr><td>{t.label}</td><td>{t.display_var}</td>"
+            f"<td class='{status_class}'>{t.status}</td><td>{t.duration}s</td>"
+            f"<td>{error_cell or '—'}</td><td>{log_link}</td></tr>\n"
+        )
         
     html += """            </tbody>
         </table>
@@ -578,9 +643,12 @@ async def main():
     print(f"\n✅ Report generated: {html_path}")
     print(f"⏱️ Total runtime: {total_duration}s")
     
-    failed_count = len([t for t in tasks if t.status == "FAIL"])
-    if failed_count > 0:
-        print(f"❌ {failed_count} tests failed.")
+    failed = [t for t in tasks if t.status == "FAIL"]
+    if failed:
+        print(f"❌ {len(failed)} tests failed.")
+        for task in failed:
+            reason = task.failure_reason or extract_failure_reason(task.log_file)
+            print(f"  • {task.log_name}: {reason}")
         sys.exit(1)
     else:
         print("✅ All integration tests passed!")
