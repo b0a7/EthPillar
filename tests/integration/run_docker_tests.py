@@ -574,6 +574,12 @@ async def main():
     """Entry point: build image, warm caches, run matrix, emit report, set exit code."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--parallel", type=int, default=1, help="Max concurrent tests (must be 1)")
+    parser.add_argument(
+        "--filter",
+        action="append",
+        default=[],
+        help="Only run tests whose label/log name contains this substring (repeatable)",
+    )
     args = parser.parse_args()
     if args.parallel != 1:
         print("Concurrency > 1 is not yet supported with the Rich UI. Defaulting to 1.")
@@ -621,6 +627,16 @@ async def main():
         print("WARNING: Checkpoint cache warm failed; tests will use upstream checkpoint URLs.")
 
     tasks = generate_tests()
+    if args.filter:
+        needles = [f.lower() for f in args.filter]
+        tasks = [
+            t for t in tasks
+            if any(n in t.label.lower() or n in t.log_name.lower() for n in needles)
+        ]
+        if not tasks:
+            print(f"No tests matched --filter {args.filter!r}")
+            sys.exit(1)
+        print(f"Filtered to {len(tasks)} test(s): {[t.log_name for t in tasks]}")
     assign_rpc_exposure_flags(tasks)
     semaphore = asyncio.Semaphore(args.parallel)
     

@@ -9,6 +9,8 @@ set -euo pipefail
 cd /ethpillar
 # shellcheck source=../../functions.sh
 source ./functions.sh
+# shellcheck source=known_version_mismatches.sh
+source "$(dirname "${BASH_SOURCE[0]}")/known_version_mismatches.sh"
 
 fail=0
 
@@ -67,6 +69,10 @@ assert_matches_latest() {
   fi
   if installed_matches_latest_tag "$installed" "$expected" "${TAG_COMMIT:-}"; then
     echo "✅ ${label} matches ${expected_label} (${installed#v}) — update menu would show already on latest"
+    return 0
+  fi
+  if known_upstream_version_mismatch "$release_client" "$installed" "$expected"; then
+    echo "⚠️  ${label} mismatch accepted: installed ${installed#v} vs ${expected_label} ${expected#v} (known upstream version-report bug)"
     return 0
   fi
   echo "❌ ${label} mismatch: installed ${installed#v}${INSTALLED_COMMIT:+ (${INSTALLED_COMMIT:0:7})}, ${expected_label} ${expected#v}${TAG_COMMIT:+ (${TAG_COMMIT:0:7})}"
