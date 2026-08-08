@@ -1524,6 +1524,7 @@ while true; do
     getBackTitle
     # Define the options for the submenu
     SUBOPTIONS=(
+      📋 "Compare systemd configs vs EthPillar defaults (tmeld)"
       ⚙️ "eth-duties: Show upcoming block proposals, attestations, sync duties"
       💎 "ethdo: Conduct common validator tasks"
       💾 "NCDU: Find large files. Analyze disk usage."
@@ -1554,6 +1555,9 @@ while true; do
 
     # Handle the user's choice from the submenu
     case $SUBCHOICE in
+      📋)
+        compareSystemdDefaults
+        ;;
       ⚙️)
         # Skip if no validators installed
         if [[ ! -f /etc/systemd/system/validator.service ]]; then echo "No validator(s) installed. Press ENTER to continue."; read; break; fi

@@ -19,6 +19,7 @@ EthPillar is a Linux Bash TUI (`ethpillar.sh`) plus a Python deploy layer (`depl
 | `env` / `.env.overrides` | Runtime config (overrides gitignored) |
 | `config.py` | Checkpoint-sync URLs, MEV relays |
 | `deploy/` | Install orchestration + systemd generation |
+| `manage/` | Runtime systemd helpers (parse, config compare) |
 | `plugins/` | Optional add-ons (CSM, Aztec, monitoring, etc.) |
 | `tests/` | pytest, bats, Docker integration |
 
