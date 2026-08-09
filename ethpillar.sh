@@ -418,10 +418,10 @@ while true; do
         sudo service execution restart
         ;;
       5)
-        sudo "${EDITOR}" /etc/systemd/system/execution.service
-        if whiptail --title "Reload daemon and restart services" --yesno "Do you want to restart execution client?" 8 78; then
-          sudo systemctl daemon-reload && sudo service execution restart
-        fi
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/execution.service \
+          "Do you want to restart execution client?" \
+          execution
         ;;
       6)
         runScript update_execution.sh
@@ -488,10 +488,10 @@ while true; do
         sudo service consensus restart
         ;;
       5)
-        sudo "${EDITOR}" /etc/systemd/system/consensus.service
-        if whiptail --title "Reload daemon and restart services" --yesno "Do you want to restart consensus client?" 8 78; then
-          sudo systemctl daemon-reload && sudo service consensus restart
-        fi
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/consensus.service \
+          "Do you want to restart consensus client?" \
+          consensus
         ;;
       6)
         runScript update_consensus.sh
@@ -586,10 +586,10 @@ while true; do
         sudo service validator restart
         ;;
       5)
-        sudo "${EDITOR}" /etc/systemd/system/validator.service
-        if whiptail --title "Reload daemon and restart services" --yesno "Do you want to restart validator?" 8 78; then
-          sudo systemctl daemon-reload && sudo service validator restart
-        fi
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/validator.service \
+          "Do you want to restart validator?" \
+          validator
         ;;
       6)
         runScript update_validator.sh
@@ -682,10 +682,10 @@ while true; do
         sudo service mevboost restart
         ;;
       5)
-        sudo "${EDITOR}" /etc/systemd/system/mevboost.service
-        if whiptail --title "Reload daemon and restart services" --yesno "Do you want to restart MEV-Boost" 8 78; then
-          sudo systemctl daemon-reload && sudo service mevboost restart
-        fi
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/mevboost.service \
+          "Do you want to restart MEV-Boost?" \
+          mevboost
         ;;
       6)
         runScript update_mevboost.sh
@@ -914,10 +914,10 @@ while true; do
         sudo systemctl restart grafana-server prometheus ethereum-metrics-exporter prometheus-node-exporter
         ;;
       5)
-        sudo "${EDITOR}" /etc/systemd/system/ethereum-metrics-exporter.service
-        if whiptail --title "Reload daemon and restart services" --yesno "Do you want to restart ethereum metrics exporter?" 8 78; then
-          sudo systemctl daemon-reload && sudo service ethereum-metrics-exporter restart
-        fi
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/ethereum-metrics-exporter.service \
+          "Do you want to restart ethereum metrics exporter?" \
+          ethereum-metrics-exporter
         ;;
       6)
         sudo "${EDITOR}" /etc/prometheus/prometheus.yml
@@ -1373,10 +1373,10 @@ while true; do
         sudo service csm_nimbusvalidator restart
         ;;
       5)
-        sudo "${EDITOR}" /etc/systemd/system/csm_nimbusvalidator.service
-        if whiptail --title "Reload daemon and restart services" --yesno "Do you want to restart validator?" 8 78; then
-          sudo systemctl daemon-reload && sudo service csm_nimbusvalidator restart
-        fi
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/csm_nimbusvalidator.service \
+          "Do you want to restart validator?" \
+          csm_nimbusvalidator
         ;;
       6)
         sudo "${EDITOR}" /opt/ethpillar/plugin-csm/csm_env_vars

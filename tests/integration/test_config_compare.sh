@@ -163,5 +163,29 @@ if [[ $rc -ne 2 ]]; then
 fi
 echo "✅ Post-apply units match defaults again"
 
+ohai "7) list-changed empty after prepare-only (no left-pane edits)"
+# Fresh drift + prepare, then list-changed without touching left pane → empty
+PYTHONPATH=/ethpillar "$py" <<'PY'
+from pathlib import Path
+from manage.service_parse import parse_exec_start, rebuild_service_content
+
+path = Path("/etc/systemd/system/validator.service")
+content = path.read_text(encoding="utf-8")
+start, end, args = parse_exec_start(content)
+if "--another-stale=1" not in args:
+    args = list(args) + ["--another-stale=1"]
+path.write_text(rebuild_service_content(content, start, end, args), encoding="utf-8")
+print("Injected drift into validator.service")
+PY
+rm -rf "$workdir"
+workdir=$(mktemp -d /tmp/ethpillar-compare-test-XXXXXX)
+PYTHONPATH=/ethpillar "$py" -m manage.config_compare prepare --workdir "$workdir"
+changed=$(PYTHONPATH=/ethpillar "$py" -m manage.config_compare list-changed --workdir "$workdir" | tr -d '\r')
+if [[ -n "${changed// }" ]]; then
+  echo "❌ list-changed should be empty before left-pane edits (got: '$changed')"
+  exit 1
+fi
+echo "✅ list-changed empty until left pane is saved (TUI skips apply/restart prompts)"
+
 rm -rf "$workdir"
 ohai "All config_compare integration checks passed"
