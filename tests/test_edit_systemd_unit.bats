@@ -123,3 +123,14 @@ teardown() {
   grep -q 'No changes were saved in the left pane' functions.sh
   grep -q 'list-changed' functions.sh
 }
+
+@test "compareSystemdDefaults is under System Administration, not Toolbox" {
+  awk '
+    /^submenuAdminstrative\(\)/ { in_admin=1; in_tools=0 }
+    /^submenuTools\(\)/ { in_tools=1; in_admin=0 }
+    /^}/ { if (in_admin || in_tools) { in_admin=0; in_tools=0 } }
+    in_admin && /compareSystemdDefaults/ { admin=1 }
+    in_tools && /compareSystemdDefaults/ { tools=1 }
+    END { exit (admin && !tools) ? 0 : 1 }
+  ' ethpillar.sh
+}
