@@ -1916,6 +1916,139 @@ promptYesNo() {
 }
 
 
+# Edit a systemd unit with $EDITOR. Prompt to restart only when content changed.
+# If the unit changed but restart is declined, still run daemon-reload so a later
+# restart/reboot picks up the new definition.
+editSystemdUnitAndMaybeRestart() {
+    local unit_path="$1"
+    local yesno_prompt="$2"
+    local service_name="$3"
+    local before after
+
+    if [[ ! -f "$unit_path" ]] && ! sudo test -f "$unit_path"; then
+        whiptail --title "Edit configuration" --msgbox "Unit file not found:\n${unit_path}" 8 70
+        return 1
+    fi
+
+    before=$(sudo sha256sum "$unit_path" | awk 'NR==1 {print $1}')
+    sudo "${EDITOR}" "$unit_path"
+    after=$(sudo sha256sum "$unit_path" | awk 'NR==1 {print $1}')
+
+    if [[ -z "$before" || "$before" == "$after" ]]; then
+        return 0
+    fi
+
+    if whiptail --title "Reload daemon and restart services" --yesno "$yesno_prompt" 8 78; then
+        sudo systemctl daemon-reload && sudo service "$service_name" restart
+    else
+        sudo systemctl daemon-reload
+    fi
+}
+
+
+# Compare installed systemd units to what EthPillar would generate today.
+# Opens tmeld (Meld-in-terminal): left=installed (editable), right=default.
+# On exit, offers backup (.bak), apply, and restart — same shape as Edit configuration.
+compareSystemdDefaults() {
+    local workdir py rc changed svc restart_list
+    ensure_python_deps
+
+    if [[ ! -f /etc/systemd/system/execution.service \
+       && ! -f /etc/systemd/system/consensus.service \
+       && ! -f /etc/systemd/system/validator.service \
+       && ! -f /etc/systemd/system/mevboost.service ]]; then
+        whiptail --title "Compare systemd configs" --msgbox \
+            "No EthPillar systemd units found.\n\nInstall a node first." 10 70
+        return 0
+    fi
+
+    workdir=$(mktemp -d /tmp/ethpillar-compare-XXXXXX)
+    py="${ETHPILLAR_PYTHON:-python3}"
+
+    set +e
+    PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare prepare --workdir "$workdir"
+    rc=$?
+    set -e
+
+    if [[ $rc -eq 2 ]]; then
+        whiptail --title "Compare systemd configs" --msgbox \
+            "All installed systemd units match EthPillar defaults\n(after normalizing flag order)." 10 70
+        rm -rf "$workdir"
+        return 0
+    fi
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Compare systemd configs" --msgbox \
+            "Failed to prepare comparison.\n\nSee terminal output for details." 10 70
+        rm -rf "$workdir"
+        return 1
+    fi
+
+    whiptail --title "Compare systemd configs" --msgbox \
+"Opening tmeld (side-by-side compare/merge).
+
+Left  = installed unit (editable)
+Right = EthPillar default (read-only)
+
+Tips:
+ • Enter a file from the folder view to open a tab
+ • Alt+Left / Alt+Right copy chunks between panes
+ • Ctrl+S saves the left pane
+ • Esc / Ctrl+Q quits
+
+After you quit, EthPillar will offer to apply any
+saved left-pane changes (with optional .bak backup)." 20 72
+
+    set +e
+    PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare launch --workdir "$workdir"
+    set -e
+
+    changed=$(PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare list-changed --workdir "$workdir" | tr -d '\r')
+    if [[ -z "${changed// }" ]]; then
+        whiptail --title "Compare systemd configs" --msgbox \
+            "No changes were saved in the left pane.\nNothing to apply." 9 60
+        rm -rf "$workdir"
+        return 0
+    fi
+
+    if ! whiptail --title "Apply systemd changes" --yesno \
+        "Apply saved changes to:\n\n${changed}\n\nA .bak backup will be created for each unit (same as client switch)." 14 70; then
+        rm -rf "$workdir"
+        return 0
+    fi
+
+    set +e
+    PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare apply --workdir "$workdir"
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Apply systemd changes" --msgbox \
+            "Apply failed. Original units should still be intact\n(or restorable from .bak)." 10 70
+        rm -rf "$workdir"
+        return 1
+    fi
+
+    restart_list=""
+    for svc in $changed; do
+        restart_list+=" • ${svc}\n"
+    done
+    if whiptail --title "Reload daemon and restart services" --yesno \
+        "Do you want to daemon-reload and restart:\n\n${restart_list}" 14 70; then
+        sudo systemctl daemon-reload
+        for svc in $changed; do
+            sudo systemctl restart "$svc" || true
+        done
+        ohai "Restarted: ${changed}"
+    else
+        # Unit files already updated on disk; reload so a later restart uses them.
+        sudo systemctl daemon-reload
+    fi
+
+    rm -rf "$workdir"
+    ohai "Done. Press ENTER to continue."
+    read
+}
+
+
 # Host tools first (whiptail, curl, …), then Python venv deps.
 ensure_host_runtime_packages
 ensure_python_deps

@@ -932,7 +932,9 @@ def enable_flags_for_client(
 
 def _flag_name(flag: str) -> str:
     """Return the flag name without a value (``--http-port`` from ``--http-port=5062``)."""
-    return flag.split("=", 1)[0]
+    from manage.service_parse import flag_name
+
+    return flag_name(flag)
 
 
 def _args_include_flag(args: list[str], desired: str) -> bool:
@@ -955,42 +957,12 @@ def _parse_exec_start(content: str) -> tuple[int, int, list[str]]:
     Raises:
         KeymanagerError: If ``ExecStart=`` is missing or empty.
     """
-    lines = content.splitlines()
-    start: Optional[int] = None
-    for i, line in enumerate(lines):
-        if line.startswith("ExecStart="):
-            start = i
-            break
-    if start is None:
-        raise KeymanagerError("Service file has no ExecStart= line")
+    from manage.service_parse import ServiceParseError, parse_exec_start
 
-    args: list[str] = []
-    end = start
-    i = start
-    while i < len(lines):
-        line = lines[i]
-        if i == start:
-            payload = line[len("ExecStart=") :]
-        else:
-            if not lines[i - 1].rstrip().endswith("\\"):
-                break
-            payload = line
-
-        stripped = payload.rstrip()
-        continued = stripped.endswith("\\")
-        if continued:
-            stripped = stripped[:-1].rstrip()
-        token = stripped.strip()
-        if token:
-            args.append(token)
-        end = i
-        if not continued:
-            break
-        i += 1
-
-    if not args:
-        raise KeymanagerError("Service file ExecStart= is empty")
-    return start, end, args
+    try:
+        return parse_exec_start(content)
+    except ServiceParseError as exc:
+        raise KeymanagerError(str(exc)) from exc
 
 
 def _rebuild_service_content(
@@ -1000,13 +972,9 @@ def _rebuild_service_content(
     args: list[str],
 ) -> str:
     """Rebuild unit file content with a new ExecStart argument list."""
-    lines = content.splitlines()
-    exec_block = "ExecStart=" + " \\\n    ".join(args)
-    new_lines = lines[:start] + exec_block.splitlines() + lines[end + 1 :]
-    new_content = "\n".join(new_lines)
-    if content.endswith("\n"):
-        new_content += "\n"
-    return new_content
+    from manage.service_parse import rebuild_service_content
+
+    return rebuild_service_content(content, start, end, args)
 
 
 def plan_keymanager_flags(content: str, client: str) -> tuple[list[str], list[str], list[str]]:

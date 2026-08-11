@@ -4,4 +4,6 @@ requests
 tqdm
 console-menu
 python-dotenv
-rich   # plotExecutionTimes
+rich
+# systemd config compare (Meld-in-terminal)
+tmeld
