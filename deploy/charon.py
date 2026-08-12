@@ -626,6 +626,146 @@ def import_cdvn_env_to_service(
     return plan
 
 
+def copy_charon_cluster(
+    src_charon_dir: str,
+    dest_charon_dir: str = CHARON_CLUSTER_DIR,
+    *,
+    force: bool = False,
+) -> Dict[str, str]:
+    """Copy a CDVN/DKG ``.charon`` tree into EthPillar's Charon datadir.
+
+    Returns:
+        Dict with ``src``, ``dest``, and ``status`` (``copied`` / ``skipped``).
+    """
+    import shutil
+
+    src = os.path.abspath(os.path.expanduser(src_charon_dir))
+    dest = os.path.abspath(dest_charon_dir)
+    if not os.path.isdir(src):
+        raise FileNotFoundError(f".charon directory not found: {src}")
+    lock_src = os.path.join(src, "cluster-lock.json")
+    if not os.path.isfile(lock_src):
+        raise ValueError(f"Missing cluster-lock.json in {src}")
+
+    dest_lock = os.path.join(dest, "cluster-lock.json")
+    if os.path.isfile(dest_lock) and not force:
+        return {
+            "src": src,
+            "dest": dest,
+            "status": "skipped",
+            "reason": f"Destination already has cluster-lock.json ({dest_lock}); pass force=True to overwrite",
+        }
+
+    try:
+        os.makedirs(dest, mode=0o700, exist_ok=True)
+        # Copy tree contents into dest
+        for name in os.listdir(src):
+            s_item = os.path.join(src, name)
+            d_item = os.path.join(dest, name)
+            if os.path.isdir(s_item):
+                if os.path.isdir(d_item):
+                    shutil.rmtree(d_item)
+                shutil.copytree(s_item, d_item)
+            else:
+                shutil.copy2(s_item, d_item)
+        os.chmod(dest, 0o700)
+    except PermissionError:
+        subprocess.run(["sudo", "mkdir", "-p", dest], check=True)
+        subprocess.run(["sudo", "cp", "-a", f"{src}/.", f"{dest}/"], check=True)
+        subprocess.run(
+            ["sudo", "chown", "-R", f"{CHARON_USER}:{CHARON_USER}", CHARON_DATA_DIR],
+            check=True,
+        )
+        subprocess.run(["sudo", "chmod", "700", CHARON_DATA_DIR], check=True)
+        subprocess.run(["sudo", "chmod", "700", dest], check=True)
+    else:
+        # Best-effort ownership when running as root/install path
+        if dest.startswith(BASE_DATA_DIR) or dest.startswith("/var/lib/"):
+            subprocess.run(
+                ["sudo", "chown", "-R", f"{CHARON_USER}:{CHARON_USER}", CHARON_DATA_DIR],
+                check=False,
+            )
+
+    return {"src": src, "dest": dest, "status": "copied"}
+
+
+def resolve_cdvn_checkout(path: str) -> Dict[str, object]:
+    """Resolve a CDVN checkout path (directory or ``.env`` file) to migrate assets.
+
+    Returns:
+        Dict with ``root``, ``env_path``, ``charon_dir``, ``has_lock``,
+        ``has_keyshares``, ``compose_file``.
+    """
+    raw = os.path.abspath(os.path.expanduser(path.strip()))
+    if not os.path.exists(raw):
+        raise FileNotFoundError(f"CDVN path not found: {raw}")
+
+    if os.path.isfile(raw):
+        root = os.path.dirname(raw)
+        env_path: Optional[str] = raw if os.path.basename(raw) == ".env" or raw.endswith(".env") else None
+        if env_path is None and os.path.isfile(os.path.join(root, ".env")):
+            env_path = os.path.join(root, ".env")
+    else:
+        root = raw
+        env_candidate = os.path.join(root, ".env")
+        env_path = env_candidate if os.path.isfile(env_candidate) else None
+
+    charon_dir = os.path.join(root, ".charon")
+    if not os.path.isdir(charon_dir):
+        charon_dir_opt: Optional[str] = None
+        has_lock = False
+        has_keyshares = False
+    else:
+        charon_dir_opt = charon_dir
+        has_lock = os.path.isfile(os.path.join(charon_dir, "cluster-lock.json"))
+        keys = os.path.join(charon_dir, "validator_keys")
+        has_keyshares = os.path.isdir(keys) and any(
+            name.startswith("keystore-") and name.endswith(".json")
+            for name in os.listdir(keys)
+        )
+
+    compose = None
+    for name in ("docker-compose.yml", "compose.yml"):
+        candidate = os.path.join(root, name)
+        if os.path.isfile(candidate):
+            compose = candidate
+            break
+
+    return {
+        "root": root,
+        "env_path": env_path,
+        "charon_dir": charon_dir_opt,
+        "has_lock": has_lock,
+        "has_keyshares": has_keyshares,
+        "compose_file": compose,
+    }
+
+
+def _cmd_resolve_cdvn(args: argparse.Namespace) -> int:
+    try:
+        info = resolve_cdvn_checkout(args.path)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    import json
+
+    print(json.dumps(info, indent=2))
+    return 0
+
+
+def _cmd_copy_charon(args: argparse.Namespace) -> int:
+    try:
+        result = copy_charon_cluster(args.src, args.dest, force=args.force)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    print(result["status"])
+    for key, value in result.items():
+        if key != "status":
+            print(f"{key}={value}")
+    return 0 if result["status"] == "copied" else (0 if result["status"] == "skipped" else 1)
+
+
 def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     """Get Charon release version, download URL, and filename.
 
@@ -858,6 +998,30 @@ def main(argv: Optional[list] = None) -> int:
         help="Keep 0.0.0.0 validator-api/monitoring binds from .env",
     )
     import_parser.set_defaults(func=_cmd_import_env)
+
+    resolve_parser = subparsers.add_parser(
+        "resolve_cdvn",
+        help="Inspect a CDVN checkout for .env / .charon assets (JSON)",
+    )
+    resolve_parser.add_argument("--path", required=True, help="CDVN directory or .env path")
+    resolve_parser.set_defaults(func=_cmd_resolve_cdvn)
+
+    copy_parser = subparsers.add_parser(
+        "copy_charon",
+        help="Copy a .charon cluster folder into /var/lib/charon/.charon",
+    )
+    copy_parser.add_argument("--src", required=True, help="Source .charon directory")
+    copy_parser.add_argument(
+        "--dest",
+        default=CHARON_CLUSTER_DIR,
+        help="Destination .charon directory",
+    )
+    copy_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite destination even if cluster-lock.json exists",
+    )
+    copy_parser.set_defaults(func=_cmd_copy_charon)
 
     parsed = parser.parse_args(argv)
     return parsed.func(parsed)

@@ -1265,11 +1265,16 @@ done
 #   true | plugin_*     → skip menu (CSM plugin source mode)
 #   helpers-only        → define functions only (no download/menu; for unit tests)
 #   keymanager          → open Keymanager API submenu only
+#   charon-import       → import Obol Charon key shares only
 _skip_or_mode="${1:-}"
 setMessage
 if [[ "$_skip_or_mode" == "keymanager" ]]; then
     checkLido
     menuKeymanager
+elif [[ "$_skip_or_mode" == "charon-import" ]]; then
+    downloadEthstakerDepositCli
+    checkLido
+    importCharonKeyShares
 elif [[ "$_skip_or_mode" == "helpers-only" ]]; then
     # Unit tests / pure source — do not download deposit-cli or open menus.
     :

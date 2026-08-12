@@ -164,7 +164,14 @@ Artifacts:
 Stop Docker Compose first — never run CDVN Charon/VC and EthPillar Charon/VC at the same time (slashing risk).
 
 1. Complete **Install** above so the `charon` user and `/var/lib/charon` exist.
-2. Copy your existing `.charon` tree:
+2. In EthPillar: **Obol Charon DV → Migrate from CDVN (.charon + .env)**
+   - Point at your CDVN checkout (directory or `.env` path)
+   - Copies `.charon` → `/var/lib/charon/.charon` (lock + key-share backup)
+   - Maps `.env` `CHARON_*` / `BUILDER_API_ENABLED` → `charon.service` (tmeld side-by-side preview)
+   - Offers key-share import into the VC and Charon start when the lock is present
+3. Open **TCP 3610** on your firewall if peers need direct P2P. Optionally set `CHARON_P2P_EXTERNAL_IP` in `env` / `.env.overrides`.
+
+Manual copy (if you prefer not to use the assistant):
 
 ```bash
 # From your CDVN checkout
@@ -174,14 +181,15 @@ sudo chown -R charon:charon /var/lib/charon/.charon
 sudo chmod 700 /var/lib/charon /var/lib/charon/.charon
 ```
 
-3. In EthPillar: **Obol Charon DV → Start Charon** (or `sudo systemctl start charon`)
-4. **Validator → Generate / Import Validator Keys → Import Obol Charon key shares**
-5. Start the validator client
-6. Open **TCP 3610** on your firewall. Optionally set `CHARON_P2P_EXTERNAL_IP` in `env` / `.env.overrides` and edit `charon.service` if peers cannot reach you via Obol relays.
+CLI helpers:
 
-To reuse Charon settings from your CDVN `.env` (beacon endpoints, relays, builder API, log level, etc.): **Obol Charon DV → Import CDVN .env → systemd**. EthPillar prompts for the `.env` path, then opens a **tmeld** side-by-side preview (left = active `.env` settings, right = matching systemd flags). Docker beacon hostnames (`lighthouse`, `host.docker.internal`, …) are rewritten to `127.0.0.1`, and VC/metrics binds of `0.0.0.0` become `127.0.0.1`. Confirm to apply and optionally restart Charon.
+```bash
+PYTHONPATH=. python3 -m deploy.charon resolve_cdvn --path ~/charon-distributed-validator-node
+PYTHONPATH=. python3 -m deploy.charon copy_charon --src ~/charon-distributed-validator-node/.charon
+PYTHONPATH=. python3 -m deploy.charon import_env --env ~/charon-distributed-validator-node/.env --tmeld --apply
+```
 
-CLI: `PYTHONPATH=. python3 -m deploy.charon import_env --env /path/to/.env --tmeld` (add `--apply` to write).
+Docker beacon hostnames (`lighthouse`, `host.docker.internal`, …) are rewritten to `127.0.0.1`, and VC/metrics binds of `0.0.0.0` become `127.0.0.1`.
 
 Charon does not auto-start until the lock file is in place. MEV-Boost still talks to the beacon node; Charon gets `--builder-api` when MEV is enabled. Behind Charon, Lighthouse/Nimbus/Lodestar/Prysm VCs get `--distributed`; Teku gets `--Xobol-dvt-integration-enabled=true`. Grandine (integrated) is not supported behind Charon.
 

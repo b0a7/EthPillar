@@ -711,82 +711,207 @@ patchValidatorBeaconEndpoint(){
         --service-path "$validator_svc"
 }
 
-# Convert a CDVN .env into charon.service ExecStart flags (preview + apply).
-importCharonCdvnEnv(){
+# Full CDVN → EthPillar migration: .charon copy + .env→systemd + next steps.
+migrateCharonFromCdvn(){
     local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
-    local default_env preview_file env_path workdir
+    local default_root path_in info_json root env_path charon_dir has_lock has_keyshares
+    local compose_file preview_file workdir force_flag="" dest_lock
 
     if [[ ! -f "$charon_svc" ]]; then
-        whiptail --title "Import CDVN .env" --msgbox \
-            "charon.service not found.\nInstall Obol Charon DV first." 9 70
+        whiptail --title "Migrate from CDVN" --msgbox \
+            "charon.service not found.\nInstall Obol Charon DV first, then re-run this assistant." 10 70
         return 1
     fi
 
-    default_env="${HOME}/charon-distributed-validator-node/.env"
-    [[ -f "$default_env" ]] || default_env="${HOME}/git/charon-distributed-validator-node/.env"
-    [[ -f "$default_env" ]] || default_env="${HOME}/.env"
+    default_root="${HOME}/charon-distributed-validator-node"
+    [[ -d "$default_root" ]] || default_root="${HOME}/git/charon-distributed-validator-node"
+    [[ -d "$default_root" ]] || default_root="${HOME}"
 
-    env_path=$(whiptail --title "Import CDVN .env" --inputbox \
-        "Path to your CDVN .env file:\n\nMaps CHARON_* / BUILDER_API_ENABLED into charon.service.\nDocker beacon hostnames are rewritten to 127.0.0.1." \
-        14 78 "$default_env" 3>&1 1>&2 2>&3) || return 0
+    if ! whiptail --title "Migrate from CDVN" --yesno \
+"This assistant migrates a charon-distributed-validator-node checkout into EthPillar:
 
-    if [[ ! -f "$env_path" ]]; then
-        whiptail --title "Import CDVN .env" --msgbox "File not found:\n${env_path}" 9 70
-        return 1
-    fi
+  1) Copy .charon → /var/lib/charon/.charon
+  2) Map .env CHARON_* flags → charon.service
+  3) Optionally import key shares + start Charon
 
-    ensure_python_deps
-    workdir=$(mktemp -d /tmp/ethpillar-charon-env-XXXXXX)
-    preview_file=$(mktemp)
+WARNING: Stop CDVN Docker Compose first.
+Never run CDVN Charon/VC and EthPillar Charon/VC at the same time (slashing risk).
 
-    set +e
-    PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon import_env \
-        --env "$env_path" \
-        --service-path "$charon_svc" \
-        --preview-dir "$workdir" \
-        --tmeld \
-        >"$preview_file" 2>&1
-    local rc=$?
-    set -e
-
-    if [[ $rc -ne 0 ]]; then
-        whiptail --title "Import CDVN .env — error" --textbox "$preview_file" 20 78
-        rm -f "$preview_file"
-        rm -rf "$workdir"
-        return 1
-    fi
-
-    # If tmeld was unavailable, show the aligned text preview instead
-    if [[ ! -f "${workdir}/01_cdvn.env" ]]; then
-        whiptail --title "Import CDVN .env — preview" --textbox "$preview_file" 22 78
-    elif ! grep -q "Launching:" "$preview_file" 2>/dev/null; then
-        # tmeld missing — panes were written; show text summary from stdout
-        whiptail --title "Import CDVN .env — preview (text)" --textbox "$preview_file" 22 78
-    fi
-    rm -f "$preview_file"
-
-    if ! whiptail --title "Import CDVN .env" --yesno \
-        "Overwrite ${charon_svc} with flags from:\n${env_path}?\n\nLeft pane was CDVN .env → right pane systemd flags." \
-        12 78; then
-        rm -rf "$workdir"
+Continue?" 18 78; then
         return 0
     fi
 
-    if ! PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon import_env \
-        --env "$env_path" \
-        --service-path "$charon_svc" \
-        --apply; then
-        whiptail --title "Import CDVN .env" --msgbox "Failed to write charon.service." 8 60
-        rm -rf "$workdir"
+    path_in=$(whiptail --title "Migrate from CDVN" --inputbox \
+        "Path to your CDVN checkout directory (or .env file):" \
+        10 78 "$default_root" 3>&1 1>&2 2>&3) || return 0
+
+    ensure_python_deps
+    set +e
+    info_json=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon resolve_cdvn --path "$path_in" 2>/tmp/ethpillar-cdvn-err)
+    local rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Migrate from CDVN" --msgbox \
+            "Could not resolve CDVN path:\n$(cat /tmp/ethpillar-cdvn-err 2>/dev/null || echo unknown error)" 12 70
         return 1
     fi
-    rm -rf "$workdir"
 
-    if whiptail --title "Import CDVN .env" --yesno \
-        "Imported successfully.\nRestart Charon now?" 9 60; then
-        sudo systemctl restart charon
+    root=$(printf '%s' "$info_json" | PYTHONPATH="${BASE_DIR}" python3 -c "import sys,json; print(json.load(sys.stdin).get('root') or '')")
+    env_path=$(printf '%s' "$info_json" | PYTHONPATH="${BASE_DIR}" python3 -c "import sys,json; print(json.load(sys.stdin).get('env_path') or '')")
+    charon_dir=$(printf '%s' "$info_json" | PYTHONPATH="${BASE_DIR}" python3 -c "import sys,json; print(json.load(sys.stdin).get('charon_dir') or '')")
+    has_lock=$(printf '%s' "$info_json" | PYTHONPATH="${BASE_DIR}" python3 -c "import sys,json; print('yes' if json.load(sys.stdin).get('has_lock') else 'no')")
+    has_keyshares=$(printf '%s' "$info_json" | PYTHONPATH="${BASE_DIR}" python3 -c "import sys,json; print('yes' if json.load(sys.stdin).get('has_keyshares') else 'no')")
+    compose_file=$(printf '%s' "$info_json" | PYTHONPATH="${BASE_DIR}" python3 -c "import sys,json; print(json.load(sys.stdin).get('compose_file') or '')")
+
+    # Warn if compose stack still looks running
+    if [[ -n "$compose_file" ]] && command -v docker >/dev/null 2>&1; then
+        if docker compose -f "$compose_file" ps --status running -q 2>/dev/null | grep -q .; then
+            if ! whiptail --title "CDVN Docker still running" --yesno \
+"Docker Compose still has running services in:
+${root}
+
+Stop them before starting EthPillar Charon/VC.
+
+Continue migration anyway?" 12 70; then
+                return 0
+            fi
+        fi
     fi
+
+    whiptail --title "Migrate from CDVN — found" --msgbox \
+"Checkout: ${root}
+
+.env:            ${env_path:-not found}
+.charon:         ${charon_dir:-not found}
+cluster-lock:    ${has_lock}
+key shares:      ${has_keyshares}
+compose file:    ${compose_file:-not found}" 16 70
+
+    # --- Step 1: .charon ---
+    if [[ -n "$charon_dir" && "$has_lock" == "yes" ]]; then
+        dest_lock="/var/lib/charon/.charon/cluster-lock.json"
+        if [[ -f "$dest_lock" ]]; then
+            if whiptail --title "Migrate .charon" --yesno \
+"Destination already has a cluster lock:
+${dest_lock}
+
+Overwrite with:
+${charon_dir} ?" 12 70; then
+                force_flag="--force"
+            else
+                charon_dir=""  # skip copy
+            fi
+        fi
+        if [[ -n "$charon_dir" ]]; then
+            if whiptail --title "Migrate .charon" --yesno \
+"Copy cluster folder?
+
+  ${charon_dir}
+    → /var/lib/charon/.charon
+
+(chown charon:charon, mode 700)" 14 70; then
+                if ! PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon copy_charon \
+                    --src "$charon_dir" $force_flag; then
+                    whiptail --title "Migrate .charon" --msgbox "Copy failed. See terminal output." 8 60
+                    return 1
+                fi
+            fi
+        fi
+    elif [[ -n "$charon_dir" ]]; then
+        whiptail --title "Migrate .charon" --msgbox \
+"Found ${charon_dir} but no cluster-lock.json — skipping copy.\nAdd the lock file from your DKG/ceremony and re-run." 11 70
+    else
+        whiptail --title "Migrate .charon" --msgbox \
+"No .charon folder next to this checkout.\nYou can copy one later to /var/lib/charon/.charon" 10 70
+    fi
+
+    # --- Step 2: .env → systemd ---
+    if [[ -n "$env_path" && -f "$env_path" ]]; then
+        if whiptail --title "Migrate .env → systemd" --yesno \
+"Map CDVN .env Charon settings into charon.service?
+
+  ${env_path}
+
+Opens a side-by-side preview (left=.env, right=systemd flags)." 13 70; then
+            workdir=$(mktemp -d /tmp/ethpillar-charon-env-XXXXXX)
+            preview_file=$(mktemp)
+            set +e
+            PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon import_env \
+                --env "$env_path" \
+                --service-path "$charon_svc" \
+                --preview-dir "$workdir" \
+                --tmeld \
+                >"$preview_file" 2>&1
+            rc=$?
+            set -e
+            if [[ $rc -ne 0 ]]; then
+                whiptail --title "Migrate .env — error" --textbox "$preview_file" 20 78
+                rm -f "$preview_file"
+                rm -rf "$workdir"
+                return 1
+            fi
+            if [[ ! -f "${workdir}/01_cdvn.env" ]] || ! grep -q "Launching:" "$preview_file" 2>/dev/null; then
+                whiptail --title "Migrate .env — preview" --textbox "$preview_file" 22 78
+            fi
+            rm -f "$preview_file"
+            if whiptail --title "Migrate .env → systemd" --yesno \
+"Apply mapped flags to ${charon_svc}?" 9 70; then
+                PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon import_env \
+                    --env "$env_path" \
+                    --service-path "$charon_svc" \
+                    --apply || {
+                    whiptail --title "Migrate .env" --msgbox "Failed to write charon.service." 8 60
+                    rm -rf "$workdir"
+                    return 1
+                }
+            fi
+            rm -rf "$workdir"
+        fi
+    else
+        whiptail --title "Migrate .env" --msgbox \
+"No .env found in ${root}.\nSkipping systemd flag import (you can Edit configuration later)." 10 70
+    fi
+
+    # --- Step 3: monitoring ---
+    if [[ -f /etc/prometheus/prometheus.yml ]] || [[ -d /etc/grafana ]]; then
+        PYTHONPATH="${BASE_DIR}" python3 -m manage.charon_monitoring provision --restart >/dev/null 2>&1 || true
+    fi
+
+    # --- Step 4: key shares ---
+    if [[ -d /var/lib/charon/.charon/validator_keys ]] \
+        && compgen -G "/var/lib/charon/.charon/validator_keys/keystore-*.json" >/dev/null; then
+        if whiptail --title "Import key shares" --yesno \
+"Key shares are present under /var/lib/charon/.charon/validator_keys.
+
+Import them into the validator client now?" 11 70; then
+            runScript manage_validator_keys.sh charon-import
+        fi
+    fi
+
+    # --- Step 5: start ---
+    if [[ -f /var/lib/charon/.charon/cluster-lock.json ]]; then
+        if whiptail --title "Start Charon" --yesno \
+"cluster-lock.json is in place.\nStart (or restart) Charon now?" 9 70; then
+            sudo systemctl restart charon
+        fi
+    else
+        whiptail --title "Migrate from CDVN" --msgbox \
+"No cluster-lock.json at /var/lib/charon/.charon yet — Charon will not start until it exists." 10 70
+    fi
+
+    whiptail --title "Migrate from CDVN — done" --msgbox \
+"Next reminders:
+• Open TCP 3610 if peers need direct P2P
+• Start the validator client after Charon is healthy
+• Keep CDVN Docker Charon/VC stopped
+• Grafana: http://127.0.0.1:3000/d/charon_overview/ (if monitoring installed)" 14 70
 }
+
+# Backwards-compatible name used by earlier menu wiring
+importCharonCdvnEnv(){
+    migrateCharonFromCdvn
+}
+
 
 # Get execution client datadir from systemd config (for reth)
 getExecutionDatadir(){

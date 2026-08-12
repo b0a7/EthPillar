@@ -151,3 +151,63 @@ def test_plan_derives_bn_from_cl_when_unset():
     plan = plan_cdvn_env_import({"CL": "cl-lighthouse", "NETWORK": "mainnet"})
     assert plan.beacon_node_endpoints == "http://127.0.0.1:5052"
     assert any("derived from CL" in w for w in plan.warnings)
+
+
+def test_resolve_cdvn_checkout_directory(tmp_path):
+    from deploy.charon import resolve_cdvn_checkout
+
+    root = tmp_path / "cdvn"
+    root.mkdir()
+    (root / ".env").write_text("NETWORK=mainnet\n", encoding="utf-8")
+    charon = root / ".charon"
+    charon.mkdir()
+    (charon / "cluster-lock.json").write_text("{}", encoding="utf-8")
+    keys = charon / "validator_keys"
+    keys.mkdir()
+    (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
+    (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+    info = resolve_cdvn_checkout(str(root))
+    assert info["root"] == str(root)
+    assert info["env_path"] == str(root / ".env")
+    assert info["charon_dir"] == str(charon)
+    assert info["has_lock"] is True
+    assert info["has_keyshares"] is True
+    assert info["compose_file"] == str(root / "docker-compose.yml")
+
+
+def test_resolve_cdvn_checkout_from_env_file(tmp_path):
+    from deploy.charon import resolve_cdvn_checkout
+
+    root = tmp_path / "cdvn"
+    root.mkdir()
+    env = root / ".env"
+    env.write_text("NETWORK=hoodi\n", encoding="utf-8")
+    info = resolve_cdvn_checkout(str(env))
+    assert info["root"] == str(root)
+    assert info["env_path"] == str(env)
+    assert info["charon_dir"] is None
+
+
+def test_copy_charon_cluster_and_skip(tmp_path):
+    from deploy.charon import copy_charon_cluster
+
+    src = tmp_path / "src" / ".charon"
+    src.mkdir(parents=True)
+    (src / "cluster-lock.json").write_text('{"cluster":1}', encoding="utf-8")
+    (src / "validator_keys").mkdir()
+    (src / "validator_keys" / "keystore-0.json").write_text("{}", encoding="utf-8")
+
+    dest = tmp_path / "dest" / ".charon"
+    result = copy_charon_cluster(str(src), str(dest))
+    assert result["status"] == "copied"
+    assert (dest / "cluster-lock.json").is_file()
+    assert (dest / "validator_keys" / "keystore-0.json").is_file()
+
+    skipped = copy_charon_cluster(str(src), str(dest), force=False)
+    assert skipped["status"] == "skipped"
+
+    (src / "cluster-lock.json").write_text('{"cluster":2}', encoding="utf-8")
+    forced = copy_charon_cluster(str(src), str(dest), force=True)
+    assert forced["status"] == "copied"
+    assert (dest / "cluster-lock.json").read_text(encoding="utf-8") == '{"cluster":2}'
