@@ -372,6 +372,23 @@ class TestRunInstallRouting:
         assert "--distributed" in extra_params
         assert mocks['charon'].call_args.kwargs.get("builder_api") is True
 
+    def test_charon_nimbus_bn_enables_json_requests(self):
+        mocks = self._run(
+            "Custom Setup", "Geth", "Nimbus", "Nimbus",
+            flags_override={"validator": True, "charon": True},
+        )
+        assert mocks['charon'].call_args.kwargs.get("feature_set_enable") == "json_requests"
+
+    def test_charon_teku_bn_disables_graffiti_append(self):
+        mocks = self._run(
+            "Custom Setup", "Geth", "Teku", "Teku",
+            flags_override={"validator": True, "charon": True},
+        )
+        fee_params = mocks['tk_bn'].call_args.kwargs.get('fee_parameters', '')
+        assert "--validators-graffiti-client-append-format=DISABLED" in fee_params
+        extra_params = mocks['tk_vc'].call_args.args[6]
+        assert "--Xobol-dvt-integration-enabled=true" in extra_params
+
     def test_charon_rejects_grandine_integrated(self):
         with pytest.raises(ValueError, match="incompatible with Grandine"):
             self._run(

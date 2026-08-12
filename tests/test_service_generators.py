@@ -94,6 +94,14 @@ class TestCharonService:
         assert "--builder-api" not in result
         assert "--p2p-external-ip" not in result
 
+    def test_nimbus_feature_set_enable(self):
+        result = generate_charon_service(
+            "mainnet",
+            "http://127.0.0.1:5052",
+            feature_set_enable="json_requests",
+        )
+        assert "--feature-set-enable=json_requests" in result
+
 
 # ═══════════════════════════════════════════════
 # MEV-Boost service tests

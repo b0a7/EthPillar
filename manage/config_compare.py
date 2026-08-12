@@ -360,6 +360,10 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
                 fee_parameters=fee_params, mev_parameters=mev_params,
             )
         if cl == "Teku":
+            if Path("/etc/systemd/system/charon.service").is_file():
+                fee_params = (
+                    f"{fee_params} --validators-graffiti-client-append-format=DISABLED".strip()
+                )
             return teku.generate_teku_bn_service(
                 network, sync_url, jwt, cl_rest, cl_p2p, cl_peers,
                 fee_parameters=fee_params, mev_parameters=mev_params,

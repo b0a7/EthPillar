@@ -58,6 +58,7 @@ def generate_charon_service(
     validator_api_address: str = DEFAULT_VALIDATOR_API_ADDRESS,
     monitoring_address: str = DEFAULT_MONITORING_ADDRESS,
     p2p_tcp_address: str = DEFAULT_P2P_TCP_ADDRESS,
+    feature_set_enable: str = "",
 ) -> str:
     """Generate Charon systemd service file content.
 
@@ -69,6 +70,8 @@ def generate_charon_service(
         validator_api_address: Listen address for the VC-facing BN API proxy.
         monitoring_address: Listen address for ``/metrics`` / ``/readyz``.
         p2p_tcp_address: Listen address for Charon libp2p (must be public).
+        feature_set_enable: Optional Charon feature set (e.g. ``json_requests``
+            when the upstream beacon node is Nimbus).
 
     Returns:
         Service file content as a string.
@@ -86,6 +89,8 @@ def generate_charon_service(
         _args.append("--builder-api")
     if p2p_external_ip:
         _args.append(f"--p2p-external-ip={p2p_external_ip.strip()}")
+    if feature_set_enable:
+        _args.append(f"--feature-set-enable={feature_set_enable.strip()}")
 
     _exec_start = form_exec_start(_args)
 
@@ -133,6 +138,7 @@ def install_charon(
     validator_api_address: str = DEFAULT_VALIDATOR_API_ADDRESS,
     monitoring_address: str = DEFAULT_MONITORING_ADDRESS,
     p2p_tcp_address: str = DEFAULT_P2P_TCP_ADDRESS,
+    feature_set_enable: str = "",
 ) -> Tuple[str, str]:
     """Install Charon binary, datadir, and systemd unit.
 
@@ -174,6 +180,7 @@ def install_charon(
         validator_api_address=validator_api_address,
         monitoring_address=monitoring_address,
         p2p_tcp_address=p2p_tcp_address,
+        feature_set_enable=feature_set_enable,
     )
     write_service_file(service_content, CHARON_SERVICE_PATH, "charon_temp.service")
     return charon_version, CHARON_SERVICE_PATH

@@ -68,6 +68,7 @@ class CharonClientModule(Protocol):
         validator_api_address: str = "127.0.0.1:3600",
         monitoring_address: str = "127.0.0.1:3620",
         p2p_tcp_address: str = "0.0.0.0:3610",
+        feature_set_enable: str = "",
     ) -> str: ...
 
 

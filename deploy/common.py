@@ -569,7 +569,12 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         print('     EthPillar → Validator → Generate / Import Validator Keys → Import Obol Charon key shares')
         print('  4. sudo systemctl start validator')
         print('  5. Open TCP 3610 on your firewall; set CHARON_P2P_EXTERNAL_IP if peers cannot use relays')
-        print('     See README.md (Obol Charon DV) for CDVN migration details.\n')
+        if validator_only:
+            print('  6. Remote beacon node requirements (configure on the BN host):')
+            print('     • Nimbus BN: Charon needs --feature-set-enable=json_requests')
+            print('       (add to charon.service on this machine if upstream BN is Nimbus)')
+            print('     • Teku BN: --validators-graffiti-client-append-format=DISABLED')
+        print('     See README.md (Obol Charon DV) for CDVN migration and BN notes.\n')
 
     if skip_prompts:
         print(f'\nNon-interactive install successful! Skipped prompts.')

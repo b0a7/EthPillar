@@ -255,6 +255,10 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             cl_path = nimbus.install_nimbus_bn(network, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params)
         elif cc_name == 'Teku':
             fee_params = f'--validators-proposer-default-fee-recipient={fee_recipient}'
+            if flags.get('charon'):
+                fee_params = (
+                    f'{fee_params} --validators-graffiti-client-append-format=DISABLED'
+                )
             mev_params = '--validators-builder-registration-default-enabled=true --builder-endpoint=http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = teku.download_teku(network)
             cl_path = teku.install_teku_bn(network, sync_url, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params)
@@ -303,6 +307,8 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             validator_api_address=f"127.0.0.1:{charon_api_port}",
             monitoring_address=f"127.0.0.1:{charon_mon_port}",
             p2p_tcp_address=f"0.0.0.0:{charon_p2p_port}",
+            # Obol: Charon needs JSON beacon APIs when talking to Nimbus BN.
+            feature_set_enable="json_requests" if cc_name == "Nimbus" else "",
         )
 
     val_path = ""
