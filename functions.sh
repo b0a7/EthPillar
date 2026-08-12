@@ -711,6 +711,83 @@ patchValidatorBeaconEndpoint(){
         --service-path "$validator_svc"
 }
 
+# Convert a CDVN .env into charon.service ExecStart flags (preview + apply).
+importCharonCdvnEnv(){
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+    local default_env preview_file env_path workdir
+
+    if [[ ! -f "$charon_svc" ]]; then
+        whiptail --title "Import CDVN .env" --msgbox \
+            "charon.service not found.\nInstall Obol Charon DV first." 9 70
+        return 1
+    fi
+
+    default_env="${HOME}/charon-distributed-validator-node/.env"
+    [[ -f "$default_env" ]] || default_env="${HOME}/git/charon-distributed-validator-node/.env"
+    [[ -f "$default_env" ]] || default_env="${HOME}/.env"
+
+    env_path=$(whiptail --title "Import CDVN .env" --inputbox \
+        "Path to your CDVN .env file:\n\nMaps CHARON_* / BUILDER_API_ENABLED into charon.service.\nDocker beacon hostnames are rewritten to 127.0.0.1." \
+        14 78 "$default_env" 3>&1 1>&2 2>&3) || return 0
+
+    if [[ ! -f "$env_path" ]]; then
+        whiptail --title "Import CDVN .env" --msgbox "File not found:\n${env_path}" 9 70
+        return 1
+    fi
+
+    ensure_python_deps
+    workdir=$(mktemp -d /tmp/ethpillar-charon-env-XXXXXX)
+    preview_file=$(mktemp)
+
+    set +e
+    PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon import_env \
+        --env "$env_path" \
+        --service-path "$charon_svc" \
+        --preview-dir "$workdir" \
+        --tmeld \
+        >"$preview_file" 2>&1
+    local rc=$?
+    set -e
+
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Import CDVN .env — error" --textbox "$preview_file" 20 78
+        rm -f "$preview_file"
+        rm -rf "$workdir"
+        return 1
+    fi
+
+    # If tmeld was unavailable, show the aligned text preview instead
+    if [[ ! -f "${workdir}/01_cdvn.env" ]]; then
+        whiptail --title "Import CDVN .env — preview" --textbox "$preview_file" 22 78
+    elif ! grep -q "Launching:" "$preview_file" 2>/dev/null; then
+        # tmeld missing — panes were written; show text summary from stdout
+        whiptail --title "Import CDVN .env — preview (text)" --textbox "$preview_file" 22 78
+    fi
+    rm -f "$preview_file"
+
+    if ! whiptail --title "Import CDVN .env" --yesno \
+        "Overwrite ${charon_svc} with flags from:\n${env_path}?\n\nLeft pane was CDVN .env → right pane systemd flags." \
+        12 78; then
+        rm -rf "$workdir"
+        return 0
+    fi
+
+    if ! PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon import_env \
+        --env "$env_path" \
+        --service-path "$charon_svc" \
+        --apply; then
+        whiptail --title "Import CDVN .env" --msgbox "Failed to write charon.service." 8 60
+        rm -rf "$workdir"
+        return 1
+    fi
+    rm -rf "$workdir"
+
+    if whiptail --title "Import CDVN .env" --yesno \
+        "Imported successfully.\nRestart Charon now?" 9 60; then
+        sudo systemctl restart charon
+    fi
+}
+
 # Get execution client datadir from systemd config (for reth)
 getExecutionDatadir(){
     local svc_file=${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}

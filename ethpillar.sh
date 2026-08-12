@@ -661,6 +661,7 @@ while true; do
       4 "Restart Charon"
       5 "Edit configuration"
       6 "Update to latest release"
+      7 "Import CDVN .env → systemd"
       - ""
       9 "Back to main menu"
     )
@@ -698,6 +699,9 @@ while true; do
         ;;
       6)
         runScript update_charon.sh
+        ;;
+      7)
+        importCharonCdvnEnv
         ;;
       9)
         break
