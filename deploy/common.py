@@ -575,6 +575,17 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
             print('       (add to charon.service on this machine if upstream BN is Nimbus)')
             print('     • Teku BN: --validators-graffiti-client-append-format=DISABLED')
         print('     See README.md (Obol Charon DV) for CDVN migration and BN notes.\n')
+        # Wire Charon into existing Grafana/Prometheus when monitoring is already installed
+        try:
+            from manage.charon_monitoring import provision_charon_monitoring
+            mon = provision_charon_monitoring(restart=True)
+            if mon.get('scrape') or mon.get('dashboard') or mon.get('datasource'):
+                print('Charon monitoring: Prometheus scrape and/or Charon Overview dashboard updated.')
+                print('  Grafana: http://127.0.0.1:3000/d/charon_overview/')
+            elif not os.path.isfile('/etc/prometheus/prometheus.yml'):
+                print('Tip: Install Monitoring (Logging & Monitoring) to auto-provision Charon Overview.')
+        except Exception as exc:  # noqa: BLE001 — install must not fail on optional monitoring
+            print(f'Note: Charon Grafana/Prometheus provisioning skipped ({exc}).')
 
     if skip_prompts:
         print(f'\nNon-interactive install successful! Skipped prompts.')

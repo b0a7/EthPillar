@@ -94,7 +94,7 @@ function installGrafanaPrometheus(){
 	sudo systemctl enable grafana-server prometheus prometheus-node-exporter
 	sudo systemctl restart grafana-server prometheus prometheus-node-exporter
 
-# Setup prometheus.yml config file
+# Setup prometheus.yml config file (Charon scrape added later if charon.service exists)
 sudo bash -c "cat << 'EOF' > ${PROMETHEUS_DIR}/prometheus.yml
 rule_files:
   - alert.rules.yml
@@ -112,6 +112,21 @@ scrape_configs:
      static_configs:
        - targets: ['localhost:9100']
 EOF"
+}
+
+# Ensure Prometheus scrapes Charon :3620 and Grafana has Charon Overview.
+# Safe no-op when monitoring or Charon paths are absent.
+function provisionCharonMonitoring(){
+	local _root
+	_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	if [[ ! -f "${PROMETHEUS_DIR}/prometheus.yml" ]] && [[ ! -d "${GRAFANA_DIR}" ]]; then
+		return 0
+	fi
+	# shellcheck disable=SC1091
+	PYTHONPATH="${_root}${PYTHONPATH:+:$PYTHONPATH}" python3 -m manage.charon_monitoring provision \
+		--prometheus-yml "${PROMETHEUS_DIR}/prometheus.yml" \
+		--grafana-dashboards "${GRAFANA_DIR}/provisioning/dashboards" \
+		--restart || true
 }
 
 # Upgrade Grafana, Prometheus, Node-Exporter
@@ -166,11 +181,13 @@ function allowLocalAccessToGrafana(){
 
 # Sets the default Prometheus datasource to http://localhost:9090
 function configureDataSource(){
+	# uid: prometheus matches Obol CDVN Charon Overview dashboard datasources
 	sudo bash -c "cat << 'EOF' > $GRAFANA_DIR/provisioning/datasources/datasources.yml
 apiVersion: 1
 datasources:
   - name: Prometheus
     type: prometheus
+    uid: prometheus
     url: http://localhost:9090
     access: proxy
     isDefault: true
@@ -194,8 +211,14 @@ Password: admin
 
 To view dashboards,
 1) Click Dashboards in the primary menu.
-
 EOF
+	if isCharonEnabled; then
+		cat << EOF
+
+Charon Overview is provisioned when Obol Charon is installed.
+Open: http://127.0.0.1:3000/d/charon_overview/
+EOF
+	fi
 echo "Press ENTER to continue"
 read
 }
@@ -242,12 +265,17 @@ find $GRAFANA_DIR/provisioning/dashboards -type f -size 0 -delete
 # Install default alert rules and restart prometheus
 sudo cp "$(dirname "$(realpath "${BASH_SOURCE[0]}")")"/alert.rules.yml $PROMETHEUS_DIR
 sudo systemctl restart prometheus
+
+# If Charon is already installed, scrape :3620 and provision Overview dashboard
+if isCharonEnabled; then
+	provisionCharonMonitoring
+fi
 }
 
 # Displays usage info
 function usage() {
 cat << EOF
-Usage: $(basename "$0") [-i] [-u] [-r]
+Usage: $(basename "$0") [-i] [-u] [-r] [-c]
 
 Ethereum-Metrics-Exporter Monitoring Helper Script
 
@@ -255,6 +283,7 @@ Options)
 -i    Install ethereum-metrics-exporter, grafana, prometheus, node-exporter as a systemd service
 -u    Upgrade ethereum-metrics-exporter, grafana, prometheus, node-exporter
 -r    Remove all monitoring tools
+-c    Provision Charon scrape job + Charon Overview dashboard (no-op if monitoring absent)
 -h    Display help
 EOF
 }
@@ -282,11 +311,12 @@ MSG_ABOUT="🚨 Monitoring with Ethereum Metrics Exporter & Grafana & Prometheus
 }
 
 # Process command line options
-while getopts :iurh opt; do
+while getopts :iurch opt; do
   case ${opt} in
     i ) installMonitoring ;;
     u ) upgradeBinaries ;;
     r ) removeAll ;;
+    c ) provisionCharonMonitoring ;;
     h)
       usage
       exit 0

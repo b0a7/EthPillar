@@ -52,6 +52,6 @@ graph TD
     *   MEV-Boost installation.
     *   Charon installation (`deploy/charon.py`) when `flags['charon']`: upstream BN REST → Charon; VC beacon flag → `http://127.0.0.1:3600`. Nimbus BN → Charon `--feature-set-enable=json_requests`. Teku BN → `--validators-graffiti-client-append-format=DISABLED`.
     *   Validator Client installation when Charon is on: `--distributed` for Lighthouse/Nimbus/Lodestar/Prysm; `--Xobol-dvt-integration-enabled=true` for Teku.
-    *   `common.finish_install()`: Service reload and completion report. Charon is enabled on boot but not started until `/var/lib/charon/.charon/cluster-lock.json` exists.
+    *   `common.finish_install()`: Service reload and completion report. Charon is enabled on boot but not started until `/var/lib/charon/.charon/cluster-lock.json` exists. When monitoring is already present, `manage.charon_monitoring` adds a Prometheus scrape for `:3620` and provisions the Charon Overview Grafana dashboard (also run when monitoring is installed later if `charon.service` exists).
 
 Runtime: `getValidatorMode()` stays `none | separate | integrated_grandine`. Detect Charon via `isCharonEnabled()` (`charon.service`). After a CC switch, `patchValidatorBeaconEndpoint` updates Charon’s `--beacon-node-endpoints` (VC stays on `:3600`), then Charon is `try-restart`ed.

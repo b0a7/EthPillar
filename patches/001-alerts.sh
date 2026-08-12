@@ -37,6 +37,11 @@ EOF"
 sudo cp "$BASE_DIR/alert.rules.yml" /etc/prometheus
 sudo systemctl restart prometheus
 
+# Preserve/restore Charon scrape + Overview if Charon is installed
+if [[ -f /etc/systemd/system/charon.service ]]; then
+  bash "$BASE_DIR/ethereum-metrics-exporter.sh" -c || true
+fi
+
 # Step 3: Show instructions
 whiptail --title "Configure Alerting with Grafana" --msgbox "Grafana enables users to create custom alert systems that notify them via multiple channels, including email, messaging apps like Telegram and Discord.
 \nWith the default install, basic alerts for CPU/DISK/RAM are configured.

@@ -190,6 +190,16 @@ On a full EthPillar stack these are applied automatically:
 
 For **VC-only + Charon**, configure the remote BN yourself (or add the Charon feature flag locally if the upstream BN is Nimbus).
 
+### Monitoring
+
+If EthPillar **Monitoring** (Grafana/Prometheus) is installed, Charon is wired in automatically:
+
+- Prometheus scrapes `localhost:3620`
+- Grafana provisions Obol’s **Charon Overview** dashboard (`/d/charon_overview/`)
+- Prometheus datasource UID is set to `prometheus` so the CDVN dashboard binds correctly
+
+Order does not matter: installing Charon after monitoring, or monitoring after Charon, both call the same provisioner (`ethereum-metrics-exporter.sh -c` / `manage.charon_monitoring`).
+
 See `deploy/DEPLOY_FLOW.md` for orchestrator wiring.
 
 ---
