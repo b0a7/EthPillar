@@ -179,7 +179,7 @@ sudo chmod 700 /var/lib/charon /var/lib/charon/.charon
 5. Start the validator client
 6. Open **TCP 3610** on your firewall. Optionally set `CHARON_P2P_EXTERNAL_IP` in `env` / `.env.overrides` and edit `charon.service` if peers cannot reach you via Obol relays.
 
-Charon does not auto-start until the lock file is in place. MEV-Boost still talks to the beacon node; Charon gets `--builder-api` when MEV is enabled. Lodestar/Lighthouse/Nimbus VCs also get `--distributed`. Grandine (integrated) is not supported behind Charon.
+Charon does not auto-start until the lock file is in place. MEV-Boost still talks to the beacon node; Charon gets `--builder-api` when MEV is enabled. Behind Charon, Lighthouse/Nimbus/Lodestar/Prysm VCs get `--distributed`; Teku gets `--Xobol-dvt-integration-enabled=true`. Grandine (integrated) is not supported behind Charon.
 
 See `deploy/DEPLOY_FLOW.md` for orchestrator wiring.
 

@@ -139,11 +139,17 @@ class TestCustomClientMenuLogic:
         assert is_charon_vc_choice(CHARON_VC_LABEL)
         assert not is_charon_vc_choice("Lodestar")
 
-    def test_with_dvt_params_appends_distributed(self):
+    def test_with_dvt_params_appends_client_specific_flags(self):
         assert _with_dvt_params("--builder", "Lodestar", True) == "--builder --distributed"
         assert _with_dvt_params("", "Lighthouse", True) == "--distributed"
-        assert _with_dvt_params("--enable-builder", "Prysm", True) == "--enable-builder"
+        assert _with_dvt_params("", "Nimbus", True) == "--distributed"
+        assert _with_dvt_params("--enable-builder", "Prysm", True) == "--enable-builder --distributed"
+        assert (
+            _with_dvt_params("--validators-builder-registration-default-enabled=true", "Teku", True)
+            == "--validators-builder-registration-default-enabled=true --Xobol-dvt-integration-enabled=true"
+        )
         assert _with_dvt_params("--builder", "Lodestar", False) == "--builder"
+        assert _with_dvt_params("", "Grandine (integrated)", True) == ""
 
 class TestPredefinedCombos:
     def test_lighthouse_reth_maps_to_correct_ec_cc(self):

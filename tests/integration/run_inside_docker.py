@@ -815,11 +815,18 @@ def verify(args: Any):
             else:
                 print("✅ validator.service points at Charon :3600")
             vc_name = (args.vc or "").lower()
-            if vc_name in ("lodestar", "lighthouse", "nimbus") and "--distributed" not in vc_content:
-                print(f"❌ {args.vc} validator.service missing --distributed")
+            dvt_flag = {
+                "lodestar": "--distributed",
+                "lighthouse": "--distributed",
+                "nimbus": "--distributed",
+                "prysm": "--distributed",
+                "teku": "--Xobol-dvt-integration-enabled=true",
+            }.get(vc_name)
+            if dvt_flag and dvt_flag not in vc_content:
+                print(f"❌ {args.vc} validator.service missing {dvt_flag}")
                 success = False
-            elif vc_name in ("lodestar", "lighthouse", "nimbus"):
-                print(f"✅ {args.vc} validator.service includes --distributed")
+            elif dvt_flag:
+                print(f"✅ {args.vc} validator.service includes {dvt_flag}")
         if os.path.isfile(ch_unit):
             with open(ch_unit, encoding="utf-8") as fh:
                 ch_content = fh.read()

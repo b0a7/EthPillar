@@ -386,7 +386,7 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
         vc = str(ctx["vc_client"])
         fee_params = _fee_params_for_client(vc, fee, "vc")
         extra_params = _mev_params_for_client(vc, "vc", mev)
-        # Match install: Charon adds --distributed for supported VCs.
+        # Match install: Charon adds per-VC DVT flags.
         charon_enabled = Path("/etc/systemd/system/charon.service").is_file()
         extra_params = _with_dvt_params(extra_params, vc, charon_enabled)
         bn_arg = _beacon_flag_arg(vc, str(ctx["bn_endpoint"]))

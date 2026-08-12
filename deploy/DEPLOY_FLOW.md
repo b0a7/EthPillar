@@ -51,7 +51,7 @@ graph TD
     *   Consensus Client installation.
     *   MEV-Boost installation.
     *   Charon installation (`deploy/charon.py`) when `flags['charon']`: upstream BN REST → Charon; VC beacon flag → `http://127.0.0.1:3600`.
-    *   Validator Client installation (with `--distributed` for Lighthouse/Nimbus/Lodestar when Charon is on).
+    *   Validator Client installation when Charon is on: `--distributed` for Lighthouse/Nimbus/Lodestar/Prysm; `--Xobol-dvt-integration-enabled=true` for Teku.
     *   `common.finish_install()`: Service reload and completion report. Charon is enabled on boot but not started until `/var/lib/charon/.charon/cluster-lock.json` exists.
 
 Runtime: `getValidatorMode()` stays `none | separate | integrated_grandine`. Detect Charon via `isCharonEnabled()` (`charon.service`). After a CC switch, `patchValidatorBeaconEndpoint` updates Charon’s `--beacon-node-endpoints` (VC stays on `:3600`), then Charon is `try-restart`ed.

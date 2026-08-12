@@ -142,13 +142,26 @@ def resolve_vc_name(cc_name: str, vc_choice: str) -> str:
     return vc_choice
 
 def _with_dvt_params(extra_params: str, vc_name: Optional[str], charon_enabled: bool) -> str:
-    """Append ``--distributed`` for VCs that support it when Charon is enabled.
+    """Append Charon/DVT VC flags when Charon is enabled.
+
+    Per Obol client configuration + CDVN:
+      - Lighthouse / Lodestar / Nimbus / Prysm: ``--distributed``
+      - Teku: ``--Xobol-dvt-integration-enabled=true``
 
     ``extra_params`` holds optional VC ExecStart flags (builder/MEV and/or DVT).
     """
-    if not charon_enabled or vc_name not in ("Lighthouse", "Nimbus", "Lodestar"):
+    if not charon_enabled or not vc_name:
         return extra_params
-    dvt = "--distributed"
+    dvt_by_vc = {
+        "Lighthouse": "--distributed",
+        "Lodestar": "--distributed",
+        "Nimbus": "--distributed",
+        "Prysm": "--distributed",
+        "Teku": "--Xobol-dvt-integration-enabled=true",
+    }
+    dvt = dvt_by_vc.get(vc_name)
+    if not dvt:
+        return extra_params
     return f"{extra_params} {dvt}".strip() if extra_params else dvt
 
 
@@ -329,7 +342,11 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else teku.download_teku(network)
             val_ver = v_ver
             fee_params = f'--validators-proposer-default-fee-recipient={fee_recipient}'
-            extra_params = '--validators-builder-registration-default-enabled=true' if flags['mevboost'] else ''
+            extra_params = _with_dvt_params(
+                '--validators-builder-registration-default-enabled=true' if flags['mevboost'] else '',
+                vc_name,
+                charon_enabled,
+            )
             bn_arg = f'--beacon-node-api-endpoint={addr}'
             val_path = teku.install_teku_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
         elif vc_name == 'Lodestar':
@@ -347,7 +364,11 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else prysm.download_prysm(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            extra_params = '--enable-builder' if flags['mevboost'] else ''
+            extra_params = _with_dvt_params(
+                '--enable-builder' if flags['mevboost'] else '',
+                vc_name,
+                charon_enabled,
+            )
             bn_arg = f'--beacon-rest-api-provider={addr}'
             # gRPC beacon endpoint only when the local BN is also Prysm and Charon is off.
             beacon_rpc = "127.0.0.1:4000" if cc_name == "Prysm" and not charon_enabled else None
