@@ -53,6 +53,12 @@ setup() {
   ! grep -q 'tar -xzvf' update_mevboost.sh
 }
 
+@test "update_charon.sh uses extract_and_install" {
+  grep -Fq 'extract_and_install "$FILENAME" "charon"' update_charon.sh
+  grep -Fq 'binary-name "charon"' update_charon.sh
+  ! grep -q 'tar -xzvf' update_charon.sh
+}
+
 @test "bare-binary update paths remain on install_system_binary" {
   grep -Fq 'install_system_binary' update_execution.sh
   grep -Fq 'Ethrex)' update_execution.sh

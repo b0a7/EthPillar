@@ -32,6 +32,7 @@ CLIENT_REPOS: dict[str, str | None] = {
     "grandine": "grandinetech/grandine",
     "prysm": "prysmaticlabs/prysm",
     "mevboost": "flashbots/mev-boost",
+    "charon": "ObolNetwork/charon",
 }
 
 _SKIP_TAG = re.compile(r"(?i)(nightly|zisk|devnet|altair|snapshot)")

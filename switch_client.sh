@@ -52,6 +52,7 @@ function switchClient(){
     # Allow validator helpers to respect test overrides (see tests/test_switch_client.bats).
     export CONSENSUS_SERVICE_FILE="${SYSTEMD_DIR}/consensus.service"
     export VALIDATOR_SERVICE_FILE="${SYSTEMD_DIR}/validator.service"
+    export CHARON_SERVICE_FILE="${SYSTEMD_DIR}/charon.service"
     local VALIDATOR_MODE="none"
 
     # Safety check: if switching away from Grandine while using the integrated VC,
@@ -71,9 +72,15 @@ function switchClient(){
         VALIDATOR_MODE=$(getValidatorMode)
         if [ "$VALIDATOR_MODE" == "separate" ]; then
             if [ "$AUTO" != true ]; then
-                whiptail --title "Separate Validator Client" --msgbox \
-                    "A separate validator client is installed on this node.\n\nDuring the consensus client switch:\n• Your validator will be stopped temporarily\n• Validator keys will not be changed\n• The beacon endpoint in validator.service will be updated automatically\n• The validator will be restarted when the switch completes" \
-                    14 78
+                if isCharonEnabled; then
+                    whiptail --title "Separate Validator Client (Obol Charon)" --msgbox \
+                        "A separate validator client is installed behind Obol Charon on this node.\n\nDuring the consensus client switch:\n• Your validator will be stopped temporarily\n• Validator keys will not be changed\n• Charon's upstream beacon endpoint will be updated automatically\n• The validator stays pointed at Charon (:3600)\n• Charon and the validator will be restarted when the switch completes" \
+                        16 78
+                else
+                    whiptail --title "Separate Validator Client" --msgbox \
+                        "A separate validator client is installed on this node.\n\nDuring the consensus client switch:\n• Your validator will be stopped temporarily\n• Validator keys will not be changed\n• The beacon endpoint in validator.service will be updated automatically\n• The validator will be restarted when the switch completes" \
+                        14 78
+                fi
             fi
             stopValidatorService
         fi
@@ -179,6 +186,10 @@ function switchClient(){
                 # Non-interactive install skips finish_install service start prompts.
                 sudo systemctl daemon-reload
                 sudo systemctl start consensus
+            fi
+            if isCharonEnabled; then
+                sudo systemctl daemon-reload
+                sudo systemctl try-restart charon
             fi
             startValidatorService
         fi

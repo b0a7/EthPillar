@@ -146,6 +146,18 @@ parse_execution_client_commit() {
   echo "$commit"
 }
 
+# Parse ``charon version`` stdout (e.g. ``v1.10.3 [git_commit_hash=abc,...]``).
+# Requires a leading ``v`` so greedy ``1.10.3`` cannot collapse to ``0.3``.
+parse_charon_version() {
+  local output="$1"
+  grep -oiE 'v[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$output" | head -1 || true
+}
+
+parse_charon_commit() {
+  local output="$1"
+  sed -nE 's/.*git_commit_hash=([a-fA-F0-9]+).*/\1/p' <<< "$output" | head -1 || true
+}
+
 # Sets VERSION (and INSTALLED_COMMIT when known) from the installed execution client binary.
 getExecutionCurrentVersion() {
   local el="${1:-$EL}"
@@ -559,6 +571,12 @@ getClient(){
 
 # ── Validator mode helpers (used by CC switch, update_validator.sh, TUI) ──
 
+# True when Obol Charon middleware is installed.
+isCharonEnabled(){
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+    [[ -f "$charon_svc" ]]
+}
+
 # Classify how this node runs validator duties.
 # Returns: none | separate | integrated_grandine
 getValidatorMode(){
@@ -658,10 +676,12 @@ startValidatorService(){
     esac
 }
 
-# Update the beacon-node flag in validator.service after a consensus client switch.
+# Update the beacon-node flag after a consensus client switch.
+# When Charon is installed, patch Charon's upstream BN URL (VC stays on :3600).
 # No-op unless validator mode is separate.
 patchValidatorBeaconEndpoint(){
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
     local mode
     mode=$(getValidatorMode)
 
@@ -669,8 +689,16 @@ patchValidatorBeaconEndpoint(){
         return 0
     fi
 
-    getValidatorClient
     getBeaconNodeEndpoint
+
+    if isCharonEnabled; then
+        PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon patch_beacon \
+            --endpoint "$BEACON_NODE_ENDPOINT" \
+            --service-path "$charon_svc"
+        return $?
+    fi
+
+    getValidatorClient
 
     if [[ -z "$VALIDATOR_CLIENT" ]]; then
         echo "WARNING: Could not determine validator client for beacon endpoint patch." >&2

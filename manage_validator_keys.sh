@@ -163,6 +163,37 @@ function _getAmount(){
     done
 }
 
+function importCharonKeyShares(){
+    local CHARON_KEYS="/var/lib/charon/.charon/validator_keys"
+    if [[ ! -d "$CHARON_KEYS" ]] || ! compgen -G "$CHARON_KEYS/keystore-*.json" > /dev/null; then
+        whiptail --title "Obol Charon key shares" --msgbox \
+"No Charon key shares found at:
+${CHARON_KEYS}
+
+Copy your CDVN (or DKG) .charon folder first:
+  sudo cp -a /path/to/.charon/. /var/lib/charon/.charon/
+  sudo chown -R charon:charon /var/lib/charon/.charon
+
+Then import the key shares into the validator client." 18 78
+        return
+    fi
+    if ! whiptail --title "Import Obol Charon key shares" --yesno \
+"Import EIP-2335 key shares from:
+${CHARON_KEYS}
+
+These are cluster key shares (not full solo keys). After import, start Charon then the validator client.
+
+Continue?" 16 78; then
+        return
+    fi
+    KEYFOLDER="$CHARON_KEYS"
+    _getNetwork
+    if [ -z "$NETWORK" ]; then return; fi
+    setConfig
+    _KEYSTOREPASSWORD=""
+    loadKeys "default"
+}
+
 function importValidatorKeys(){
     [[ $# -eq 1 ]] && local ARGUMENT=$1 && checkLido "$1" || ARGUMENT="default"
     KEYFOLDER=$(whiptail --title "Import Validator Keys from Offline Generation or Backup" --inputbox "$MSG_PATH" 16 78 --ok-button "Submit" 3>&1 1>&2 2>&3)
@@ -1173,6 +1204,7 @@ OPTIONS=(
   1 "Generate new validator keys"
   2 "Import validator keys from offline key generation or backup"
   3 "Add new or regenerate existing validator keys from Secret Recovery Phrase"
+  4 "Import Obol Charon key shares (/var/lib/charon/.charon)"
   - ""
   10 "List Keys (Keymanager API)"
   11 "Import Keystores (Keymanager API)"
@@ -1205,6 +1237,9 @@ while true; do
        ;;
       3)
         addRestoreValidatorKeys
+        ;;
+      4)
+        importCharonKeyShares
         ;;
       10)
         keymanagerListKeys

@@ -48,3 +48,10 @@ LAUNCHPAD_URL_LIDO_HOLESKY="https://csm-holesky.testnet.fi/?ref=ethpillar"
 MOUNT_POINTS=("/")
 THRESHOLD=10
 ALERT_FILE="/tmp/mount_alerts.txt"
+
+# Obol Charon DVT middleware (used when installing Obol Charon DV)
+CHARON_P2P_PORT=3610
+CHARON_VALIDATOR_API_PORT=3600
+CHARON_MONITORING_PORT=3620
+# Optional public IP advertised to cluster peers. Leave empty to rely on Obol relays.
+CHARON_P2P_EXTERNAL_IP=

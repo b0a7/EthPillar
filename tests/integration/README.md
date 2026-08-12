@@ -129,6 +129,11 @@ python3 /ethpillar/deploy/deploy-node.py --skip_prompts true \
   --network SEPOLIA --install_config "Custom Setup" \
   --ec Nethermind --cc Grandine --vc Lighthouse
 
+# Charon + signer VC (copy .charon to /var/lib/charon/.charon before starting charon):
+# python3 /ethpillar/deploy/deploy-node.py --skip_prompts true \
+#   --network SEPOLIA --install_config "Custom Setup" \
+#   --ec Geth --cc Lighthouse --vc Lodestar --with_charon --with_mevboost
+
 sudo systemctl status consensus
 sudo systemctl status execution
 journalctl -fu consensus --no-pager -n 50

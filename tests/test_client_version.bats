@@ -326,6 +326,26 @@ EOF
   [ "$VERSION" = "v2.0.4" ]
 }
 
+# ── parse_charon_version / parse_charon_commit ───────────────────────────────
+
+@test "parse_charon_version keeps v1.10.3 and does not collapse to 0.3" {
+  run parse_charon_version 'v1.10.3 [git_commit_hash=e60c838,git_commit_time=2026-06-24T09:43:48Z]'
+  [ "$status" -eq 0 ]
+  [ "$output" = "v1.10.3" ]
+}
+
+@test "parse_charon_commit reads git_commit_hash" {
+  run parse_charon_commit 'v1.10.3 [git_commit_hash=e60c838,git_commit_time=2026-06-24T09:43:48Z]'
+  [ "$status" -eq 0 ]
+  [ "$output" = "e60c838" ]
+}
+
+@test "parse_charon_version ignores charon --version help/error text" {
+  run parse_charon_version $'Usage:\n  charon [command]\n01:53:40.998 ERRO unknown flag: --version'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 # ── version_matches_latest ───────────────────────────────────────────────────
 
 @test "version_matches_latest matches equal semver without commits" {

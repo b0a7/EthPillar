@@ -473,7 +473,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                    validator_enabled: bool, validator_service_path: Optional[str],
                    validator_only: bool, bn_address: Optional[str], node_only: bool, fee_recipient_address: Optional[str],
                    skip_prompts: bool, cl_rest_port: str,
-                   vc_name: str = '', vc_ver: str = '') -> None:
+                   vc_name: str = '', vc_ver: str = '',
+                   charon_enabled: bool = False, charon_version: Optional[str] = None,
+                   charon_service_path: Optional[str] = None) -> None:
     """Display installation summary and optionally start/enable services.
 
     Args:
@@ -497,6 +499,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         fee_recipient_address: Fee recipient address.
         skip_prompts: Whether to skip interactive prompts.
         cl_rest_port: Consensus client REST port.
+        charon_enabled: Whether Obol Charon middleware was installed.
+        charon_version: Charon version string.
+        charon_service_path: Path to charon.service.
     """
     
     # Reload the systemd daemon
@@ -519,6 +524,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
 
     if mevboost_enabled and not validator_only:
         print(f'Mevboost Version: \n{mevboost_version}\n')
+
+    if charon_enabled and charon_version:
+        print(f'Charon Version: \n{charon_version}\n')
 
     print(f'Network: {eth_network.upper()}\n')
 
@@ -547,6 +555,21 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
     if mevboost_enabled and not validator_only:
         if mevboost_service_path:
             print(f'{mevboost_service_path}')
+    if charon_enabled and charon_service_path:
+        print(f'{charon_service_path}')
+
+    if charon_enabled:
+        from deploy.charon import CHARON_CLUSTER_DIR, CHARON_VALIDATOR_KEYS_DIR
+        print('\nObol Charon next steps:')
+        print(f'  1. Copy your existing .charon folder to {CHARON_CLUSTER_DIR}')
+        print(f'     sudo cp -a /path/to/.charon/. {CHARON_CLUSTER_DIR}/')
+        print(f'     sudo chown -R charon:charon {CHARON_CLUSTER_DIR}')
+        print('  2. sudo systemctl start charon')
+        print(f'  3. Import key shares from {CHARON_VALIDATOR_KEYS_DIR}')
+        print('     EthPillar → Validator → Generate / Import Validator Keys → Import Obol Charon key shares')
+        print('  4. sudo systemctl start validator')
+        print('  5. Open TCP 3610 on your firewall; set CHARON_P2P_EXTERNAL_IP if peers cannot use relays')
+        print('     See README.md (Obol Charon DV) for CDVN migration details.\n')
 
     if skip_prompts:
         print(f'\nNon-interactive install successful! Skipped prompts.')
@@ -585,6 +608,8 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                 subprocess.run(['sudo', 'systemctl', 'enable', 'validator'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if mevboost_enabled and not validator_only:
                 subprocess.run(['sudo', 'systemctl', 'enable', 'mevboost'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if charon_enabled:
+                subprocess.run(['sudo', 'systemctl', 'enable', 'charon'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     if skip_prompts:
         exit(0)
@@ -929,6 +954,8 @@ def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
     # Normalize client name to module name
     if client in ["mevboost", "mev-boost"]:
         module_name = "mevboost"
+    elif client in ["charon", "obol", "obol-charon"]:
+        module_name = "charon"
     else:
         module_name = client
 

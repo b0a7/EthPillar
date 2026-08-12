@@ -22,8 +22,9 @@ graph TD
     E -- "Consensus Client" --> G[cc_name.py]
     E -- "Validator Client" --> H[vc_name.py]
     E -- "MEV-Boost" --> I[mevboost.py]
+    E -- "Charon DVT" --> N[charon.py]
 
-    F & G & H & I -- "Generate Systemd" --> J[client modules + service_generators.py]
+    F & G & H & I & N -- "Generate Systemd" --> J[client modules + service_generators.py]
     J -- "Write Units" --> K[/etc/systemd/system/]
 
     K -- "Finalize Setup" --> L[common.py]
@@ -42,11 +43,15 @@ graph TD
 3.  **Client Selection**:
     *   If Custom: Pick EC, then CC, then VC.
     *   If Predefined: Pick from `PREDEFINED_COMBOS`.
+    *   **Obol Charon DV**: listed as a VC choice. Selecting it sets `flags['charon']=True` and re-prompts for the signer VC (no Charon, no Grandine integrated). CLI: `--with_charon --vc Lodestar`.
 4.  **Parameter Collection**: JWT, Fee Recipient, Graffiti, Sync URLs.
 5.  **Execution**:
     *   `common.setup_node()`: JWT creation, user/group setup.
     *   Execution Client installation (download binary + systemd).
     *   Consensus Client installation.
-    *   Validator Client installation.
     *   MEV-Boost installation.
-    *   `common.finish_install()`: Service reload and completion report.
+    *   Charon installation (`deploy/charon.py`) when `flags['charon']`: upstream BN REST → Charon; VC beacon flag → `http://127.0.0.1:3600`.
+    *   Validator Client installation (with `--distributed` for Lighthouse/Nimbus/Lodestar when Charon is on).
+    *   `common.finish_install()`: Service reload and completion report. Charon is enabled on boot but not started until `/var/lib/charon/.charon/cluster-lock.json` exists.
+
+Runtime: `getValidatorMode()` stays `none | separate | integrated_grandine`. Detect Charon via `isCharonEnabled()` (`charon.service`). After a CC switch, `patchValidatorBeaconEndpoint` updates Charon’s `--beacon-node-endpoints` (VC stays on `:3600`), then Charon is `try-restart`ed.

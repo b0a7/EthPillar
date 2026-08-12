@@ -10,8 +10,9 @@ from dotenv import load_dotenv
 
 import common as common
 from orchestrator import (
-    VALID_ROLES, resolve_role_flags, get_combo_menu, get_vc_menu, 
-    get_ec_menu, get_cc_menu, get_vc_options_for_cc, resolve_vc_name, run_install
+    VALID_ROLES, resolve_role_flags, get_combo_menu, get_vc_menu,
+    get_ec_menu, get_cc_menu, get_vc_options_for_cc, resolve_vc_name, run_install,
+    CHARON_VC_LABEL, is_charon_vc_choice,
 )
 import config
 
@@ -44,6 +45,12 @@ parser.add_argument("--cc", type=str, default="")
 parser.add_argument("--vc", type=str, default="")
 parser.add_argument("--with_validator", action="store_true", default=False)
 parser.add_argument("--with_mevboost", action="store_true", default=False)
+parser.add_argument(
+    "--with_charon",
+    action="store_true",
+    default=False,
+    help="Install Obol Charon DVT middleware and point the VC at Charon (:3600)",
+)
 parser.add_argument("--jwtsecret", type=str, default=JWTSECRET_PATH)
 parser.add_argument("--graffiti", type=str, default=GRAFFITI)
 parser.add_argument("--fee_address", type=str, default="")
@@ -96,6 +103,17 @@ else:
 
     flags = resolve_role_flags(role, eth_network)
 
+flags["charon"] = bool(args.with_charon)
+if args.vc == CHARON_VC_LABEL:
+    print(
+        "ERROR: --vc 'Obol Charon DV' is not a signer client. "
+        "Use --with_charon --vc <Lighthouse|Nimbus|Teku|Lodestar|Prysm>."
+    )
+    exit(1)
+if flags["charon"] and args.vc == "Grandine (integrated)":
+    print("ERROR: Obol Charon is incompatible with Grandine (integrated).")
+    exit(1)
+
 # 3. Client Selection
 ec_name = None
 cc_name = None
@@ -127,9 +145,21 @@ elif flags['validator_only']:
         if skip_prompts:
             vc_name = cc_name or args.cc or "Lighthouse"
         else:
-            vc_menu = get_vc_menu()
+            vc_menu = get_vc_menu(include_charon=True)
             index = SelectionMenu.get_selection(vc_menu, title='Validator Client Selection', subtitle='Select your Validator Client:', show_exit_option=False)
-            vc_name = vc_menu[index]
+            choice = vc_menu[index]
+            if is_charon_vc_choice(choice):
+                flags["charon"] = True
+                signer_menu = get_vc_menu(include_charon=False)
+                signer_idx = SelectionMenu.get_selection(
+                    signer_menu,
+                    title='Charon Signer',
+                    subtitle='Select the validator client that will sign behind Charon:',
+                    show_exit_option=False,
+                )
+                vc_name = signer_menu[signer_idx]
+            else:
+                vc_name = choice
     else:
         vc_name = args.vc or args.cc # Fallback to --cc if --vc not passed
 elif role == "Custom Setup":
@@ -159,13 +189,30 @@ elif role == "Custom Setup":
             val_prompt = SelectionMenu.get_selection(["Yes", "No"], title='Custom Setup', subtitle='Step 3: Do you want a Validator Client?', show_exit_option=False)
             if val_prompt == 0:
                 flags['validator'] = True
-                vc_opts = get_vc_options_for_cc(cc_name)
-                if len(vc_opts) == 4: # No "Same as CC"
-                    index = SelectionMenu.get_selection(vc_opts, title='Validator Client', subtitle='Select your Validator Client:', show_exit_option=False)
-                    vc_name = vc_opts[index]
+                vc_opts = get_vc_options_for_cc(cc_name, include_charon=True)
+                subtitle = (
+                    'Select your Validator Client:'
+                    if vc_opts[0] != "Same as CC"
+                    else 'Use same client as CC?'
+                )
+                index = SelectionMenu.get_selection(
+                    vc_opts, title='Validator Client', subtitle=subtitle, show_exit_option=False
+                )
+                choice = vc_opts[index]
+                if is_charon_vc_choice(choice):
+                    flags["charon"] = True
+                    signer_opts = get_vc_options_for_cc(
+                        cc_name, include_charon=False, for_charon_signer=True
+                    )
+                    signer_idx = SelectionMenu.get_selection(
+                        signer_opts,
+                        title='Charon Signer',
+                        subtitle='Select the validator client that will sign behind Charon:',
+                        show_exit_option=False,
+                    )
+                    vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
                 else:
-                    index = SelectionMenu.get_selection(vc_opts, title='Validator Client', subtitle='Use same client as CC?', show_exit_option=False)
-                    vc_name = resolve_vc_name(cc_name, vc_opts[index])
+                    vc_name = resolve_vc_name(cc_name, choice)
             else:
                 flags['validator'] = False
                 vc_name = None
@@ -199,9 +246,35 @@ else:
             ec_name = args.ec
             cc_name = args.cc
     
-    # For predefined roles, VC is usually same as CC if validator is enabled
+    # For predefined roles, VC is usually same as CC if validator is enabled.
+    # Offer Obol Charon DV as an alternate validator mode.
     if flags['validator']:
-        vc_name = cc_name
+        if args.vc:
+            vc_name = args.vc
+        elif skip_prompts or flags.get("charon"):
+            vc_name = cc_name
+        else:
+            mode_opts = ["Same as CC", CHARON_VC_LABEL]
+            mode_idx = SelectionMenu.get_selection(
+                mode_opts,
+                title='Validator Client',
+                subtitle='Use same client as consensus, or Obol Charon DV?',
+                show_exit_option=False,
+            )
+            if is_charon_vc_choice(mode_opts[mode_idx]):
+                flags["charon"] = True
+                signer_opts = get_vc_options_for_cc(
+                    cc_name, include_charon=False, for_charon_signer=True
+                )
+                signer_idx = SelectionMenu.get_selection(
+                    signer_opts,
+                    title='Charon Signer',
+                    subtitle='Select the validator client that will sign behind Charon:',
+                    show_exit_option=False,
+                )
+                vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
+            else:
+                vc_name = cc_name
 
 # 4. Role-specific prompts
 beacon_node_address = args.vc_only_bn_address

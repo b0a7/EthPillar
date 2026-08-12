@@ -52,7 +52,7 @@ docker run --rm -v "${PWD}:/ethpillar" ethpillar-test bats tests/
 
 ## 4. Running Integration Tests (Docker)
 
-These tests perform end-to-end installations of various client combinations and roles in a sandbox container.
+These tests perform end-to-end installations of various client combinations and roles in a sandbox container. The custom matrix includes `Geth-Lighthouse-Charon-Lodestar-SEPOLIA` (Charon + signer VC; health check is skipped without a cluster lock file).
 
 ### On Windows (PowerShell)
 ```powershell
@@ -85,9 +85,11 @@ Optional: set `$env:GITHUB_TOKEN` to avoid API rate limits when running the full
 
 ## Test Structure
 
-- `tests/test_orchestrator.py`: Logic for role flags and CSM overrides.
+- `tests/test_orchestrator.py`: Logic for role flags, VC menus (including Obol Charon DV), and CSM overrides.
+- `tests/test_charon.py`: Charon systemd unit beacon-endpoint patching.
 - `tests/test_service_generators.py`: Golden-string tests for systemd units (generators live in each `deploy/{client}.py` module).
 - `tests/test_client_module_contracts.py`: Verifies each client module exports required functions per `deploy/protocols.py`.
+- `tests/test_validator_helpers.bats` / `tests/test_switch_client.bats`: Validator mode helpers and CC-switch coordination (including Charon upstream patch).
 - `tests/test_extract_and_install.py`: Unit tests for `extract_and_install` and deploy-module adoption.
 - `tests/test_update_extract.bats`: Static checks that update scripts use the unified extract CLI.
 - `tests/test_integration_user.bats`: Static checks for non-root integration test execution.

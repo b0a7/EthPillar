@@ -143,6 +143,9 @@ INSTALL_CONFIG="{install_config}"
 GRAFFITI="EthPillarTest"
 FEE_RECIPIENT_ADDRESS=0x1234567890123456789012345678901234567890
 MEV_MIN_BID="0.006"
+CHARON_P2P_PORT=3610
+CHARON_VALIDATOR_API_PORT=3600
+CHARON_MONITORING_PORT=3620
 CSM_GRAFFITI=EthPillarCSM
 CSM_MEV_MIN_BID=0.1
 CSM_FEE_RECIPIENT_ADDRESS_MAINNET=0x1111111111111111111111111111111111111111
@@ -248,6 +251,9 @@ def parse_expected_artifacts(args: Any) -> Tuple[List[str], List[str], List[str]
     if mev_enabled and not vc_only:
         binaries.append("mev-boost"); users.append("mevboost"); services.append("mevboost")
 
+    if getattr(args, "charon", False):
+        binaries.append("charon"); users.append("charon"); services.append("charon")
+
     # VC artifacts
     target_vc = vc if vc else cc if cc else combo
     # Grandine is special: it has an integrated VC, so if Grandine is the target VC, 
@@ -273,8 +279,8 @@ def parse_expected_artifacts(args: Any) -> Tuple[List[str], List[str], List[str]
     return list(set(binaries)), list(set(users)), _sort_services(list(set(services)), caplin_mev=caplin_mev)
 
 
-DEFAULT_SERVICE_HEALTH_ORDER = ("execution", "mevboost", "consensus", "validator")
-CAPLIN_MEV_SERVICE_HEALTH_ORDER = ("mevboost", "execution", "consensus", "validator")
+DEFAULT_SERVICE_HEALTH_ORDER = ("execution", "mevboost", "consensus", "charon", "validator")
+CAPLIN_MEV_SERVICE_HEALTH_ORDER = ("mevboost", "execution", "consensus", "charon", "validator")
 
 
 def _sort_services(services: List[str], caplin_mev: bool = False) -> List[str]:
@@ -337,6 +343,7 @@ def run_install(args: Any, fee_address: str):
     if args.cc: cmd.extend(["--cc", args.cc])
     if args.vc: cmd.extend(["--vc", args.vc])
     if args.mev: cmd.append("--with_mevboost")
+    if getattr(args, "charon", False): cmd.append("--with_charon")
     if args.vc_only_bn_address: cmd.extend(["--vc_only_bn_address", args.vc_only_bn_address])
     checkpoint_url = checkpoint_sync_url_for_network(args.network)
     if checkpoint_url:
@@ -484,6 +491,10 @@ def check_service_start(service_name: str, has_caplin: bool = False) -> bool:
 
     if service_name == "validator" and not _has_validator_keys():
         print("  ⚠️  Skipping validator health check: no validator keys found (expected in test environment)")
+        return True
+
+    if service_name == "charon" and not os.path.isfile("/var/lib/charon/.charon/cluster-lock.json"):
+        print("  ⚠️  Skipping charon health check: no cluster-lock.json (expected in test environment)")
         return True
 
     if systemd_available():
@@ -791,6 +802,37 @@ def verify(args: Any):
         present = check_binary(b)
         print(f"{'✅' if present else '❌'} Binary: {b}")
         if not present: success = False
+
+    if getattr(args, "charon", False):
+        vc_unit = "/etc/systemd/system/validator.service"
+        ch_unit = "/etc/systemd/system/charon.service"
+        if os.path.isfile(vc_unit):
+            with open(vc_unit, encoding="utf-8") as fh:
+                vc_content = fh.read()
+            if ":3600" not in vc_content:
+                print("❌ validator.service does not point at Charon :3600")
+                success = False
+            else:
+                print("✅ validator.service points at Charon :3600")
+            vc_name = (args.vc or "").lower()
+            if vc_name in ("lodestar", "lighthouse", "nimbus") and "--distributed" not in vc_content:
+                print(f"❌ {args.vc} validator.service missing --distributed")
+                success = False
+            elif vc_name in ("lodestar", "lighthouse", "nimbus"):
+                print(f"✅ {args.vc} validator.service includes --distributed")
+        if os.path.isfile(ch_unit):
+            with open(ch_unit, encoding="utf-8") as fh:
+                ch_content = fh.read()
+            if "--beacon-node-endpoints=" not in ch_content:
+                print("❌ charon.service missing --beacon-node-endpoints")
+                success = False
+            else:
+                print("✅ charon.service has upstream beacon endpoints")
+            if args.mev and "--builder-api" not in ch_content:
+                print("❌ charon.service missing --builder-api (MEV enabled)")
+                success = False
+            elif args.mev:
+                print("✅ charon.service includes --builder-api")
     for u in expected_users:
         present = check_user(u)
         print(f"{'✅' if present else '❌'} User  : {u}")
@@ -880,6 +922,7 @@ if __name__ == "__main__":
     parser.add_argument('--cc', type=str, default="")
     parser.add_argument('--vc', type=str, default="")
     parser.add_argument('--mev', action='store_true', default=False)
+    parser.add_argument('--charon', action='store_true', default=False, help='Install Obol Charon DVT middleware')
     parser.add_argument('--config', type=str, default='Solo Staking Node')
     parser.add_argument('--network', type=str, default='SEPOLIA')
     parser.add_argument('--vc_only_bn_address', type=str, default="http://192.168.1.123:5052")

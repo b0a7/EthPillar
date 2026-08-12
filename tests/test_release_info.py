@@ -172,6 +172,18 @@ class TestGetClientReleaseInfo:
         assert any("validator" in u for u in info["download_urls"])
 
     @patch("deploy.common.get_github_release")
+    def test_charon_returns_expected_structure(self, mock_gh):
+        mock_gh.return_value = _make_github_release("v1.10.3", [
+            "charon-v1.10.3-linux-amd64.tar.gz",
+            "charon-v1.10.3-linux-arm64.tar.gz",
+            "checksums.txt",
+        ])
+        info = get_client_release_info("charon", "LATEST")
+        assert info["version"] == "v1.10.3"
+        assert info["filenames"][0] == "charon-v1.10.3-linux-amd64.tar.gz"
+        mock_gh.assert_called_once_with("ObolNetwork/charon", "LATEST")
+
+    @patch("deploy.common.get_github_release")
     def test_mevboost_returns_expected_structure(self, mock_gh):
         mock_gh.return_value = _make_github_release("v1.12", [
             "mev-boost_1.12_linux_amd64.tar.gz"

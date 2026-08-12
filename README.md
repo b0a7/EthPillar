@@ -80,7 +80,7 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 - **Plugins**: Aztec, Lido CSM, Node-checker, validator tools, monitoring, stats, and more
 - **Grafana Dashboards**: Built-in Ethereum node monitoring
 - **Troubleshooting Tools**: Built-in checks for common node issues with Node Checker
-- **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, or Failover setups
+- **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, Failover, or Obol Charon DV setups
 
 ---
 
@@ -137,6 +137,51 @@ Recommended next key steps:
 - Benchmark your node (Toolbox > Yet-Another-Bench-Script)
 - Set up validator keys (Validator Client > Generate / Import Validator Keys)
 - Finally, run the automated Node Checker to verify everything is up to spec (Security & Node Checks > Node Checker)
+
+---
+
+## 🪢 Obol Charon DV
+
+Charon is Obol’s DVT **middleware**. It is not a validator client: it sits between your beacon node and a normal VC (Lighthouse, Nimbus, Teku, Lodestar, or Prysm). EthPillar installs `charon.service` and points the VC at `http://127.0.0.1:3600`.
+
+You need an existing `.charon` folder from [charon-distributed-validator-node](https://github.com/ObolNetwork/charon-distributed-validator-node) or an Obol DKG / Launchpad ceremony.
+
+### Install
+
+1. In EthPillar, choose **Custom Setup** (or Solo / CSM / VC-only).
+2. When asked for a validator client, select **Obol Charon DV**, then select the **signer** VC (Lodestar matches CDVN’s default).
+3. Non-interactive: `--with_charon --vc Lodestar` (do not pass `--vc "Obol Charon DV"`).
+
+Artifacts:
+
+| Path | Owner | Purpose |
+|------|--------|---------|
+| `/var/lib/charon/.charon/` | `charon` | Cluster lock, ENR private key, deposit data, key-share backup |
+| `/var/lib/<vc>_validator/` | `validator` | Operational keystores after import |
+
+### Migrate from CDVN
+
+Stop Docker Compose first — never run CDVN Charon/VC and EthPillar Charon/VC at the same time (slashing risk).
+
+1. Complete **Install** above so the `charon` user and `/var/lib/charon` exist.
+2. Copy your existing `.charon` tree:
+
+```bash
+# From your CDVN checkout
+sudo mkdir -p /var/lib/charon/.charon
+sudo cp -a .charon/. /var/lib/charon/.charon/
+sudo chown -R charon:charon /var/lib/charon/.charon
+sudo chmod 700 /var/lib/charon /var/lib/charon/.charon
+```
+
+3. In EthPillar: **Obol Charon DV → Start Charon** (or `sudo systemctl start charon`)
+4. **Validator → Generate / Import Validator Keys → Import Obol Charon key shares**
+5. Start the validator client
+6. Open **TCP 3610** on your firewall. Optionally set `CHARON_P2P_EXTERNAL_IP` in `env` / `.env.overrides` and edit `charon.service` if peers cannot reach you via Obol relays.
+
+Charon does not auto-start until the lock file is in place. MEV-Boost still talks to the beacon node; Charon gets `--builder-api` when MEV is enabled. Lodestar/Lighthouse/Nimbus VCs also get `--distributed`. Grandine (integrated) is not supported behind Charon.
+
+See `deploy/DEPLOY_FLOW.md` for orchestrator wiring.
 
 ---
 

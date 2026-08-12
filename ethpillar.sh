@@ -109,6 +109,12 @@ function printInstalledVersions() {
   else
     _MB="Mev-boost: Not Installed"
   fi
+  if [[ -f /etc/systemd/system/charon.service ]]; then
+    _ch_version=$(parse_charon_version "$(charon version 2>/dev/null || true)")
+    _CH="Charon: ${_ch_version:-unknown}"
+  else
+    _CH=""
+  fi
   if [[ -z "${_VC:-}" ]] ; then
     _VC="Validator client: Not installed."
   fi
@@ -118,16 +124,21 @@ function printInstalledVersions() {
   if [[ -z "${_EL:-}" ]] ; then
     _EL="Not installed or still starting up."
   fi
-  printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\nEthPillar: %s\n' \
-    "$_CL" "$_EL" "$_VC" "$_MB" "$EP_VERSION"
+  if [[ -n "$_CH" ]]; then
+    printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\n%s\nEthPillar: %s\n' \
+      "$_CL" "$_EL" "$_VC" "$_MB" "$_CH" "$EP_VERSION"
+  else
+    printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\nEthPillar: %s\n' \
+      "$_CL" "$_EL" "$_VC" "$_MB" "$EP_VERSION"
+  fi
 }
 
 menuMain(){
 
 # Define systemctl services
-_SERVICES=("execution" "consensus" "validator" "mevboost" "csm_nimbusvalidator" "dora")
-_SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "CSM Nimbus Validator Plugin" "Dora the Explorer")
-_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "💧" "🔎")
+_SERVICES=("execution" "consensus" "validator" "mevboost" "charon" "csm_nimbusvalidator" "dora")
+_SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "Obol Charon DV" "CSM Nimbus Validator Plugin" "Dora the Explorer")
+_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "🪢" "💧" "🔎")
 
 function testAndServiceCommand() {
   for _service in "${_SERVICES[@]}"; do
@@ -211,6 +222,9 @@ while true; do
       ⚡)
         submenuMEV-Boost
         ;;
+      🪢)
+        submenuCharon
+        ;;
       💧)
         submenuPluginCSMValidator
         ;;
@@ -288,7 +302,7 @@ while true; do
         if [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.service ]]; then
               cd  /opt/ethpillar/aztec && docker compose logs -f --tail=233
         fi
-        view_journal_logs -u validator -u consensus -u execution -u mevboost -u csm_nimbusvalidator --no-hostname -f
+        view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f
         ;;
       📜)
         export_logs
@@ -631,6 +645,61 @@ while true; do
         checkValidatorAttestationInclusion
         ;;
       99)
+        break
+        ;;
+    esac
+done
+}
+
+submenuCharon(){
+while true; do
+    getBackTitle
+    SUBOPTIONS=(
+      1 "View logs"
+      2 "Start Charon"
+      3 "Stop Charon"
+      4 "Restart Charon"
+      5 "Edit configuration"
+      6 "Update to latest release"
+      - ""
+      9 "Back to main menu"
+    )
+
+    SUBCHOICE=$(whiptail --clear --cancel-button "Back" \
+      --backtitle "$BACKTITLE" \
+      --title "Obol Charon DV" \
+      --menu "Choose one of the following options:" \
+      0 0 0 \
+      "${SUBOPTIONS[@]}" \
+      3>&1 1>&2 2>&3)
+
+    if [ $? -gt 0 ]; then
+        break
+    fi
+
+    case $SUBCHOICE in
+      1)
+        view_journal_logs -fu charon
+        ;;
+      2)
+        sudo service charon start
+        ;;
+      3)
+        sudo service charon stop
+        ;;
+      4)
+        sudo service charon restart
+        ;;
+      5)
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/charon.service \
+          "Do you want to restart Charon?" \
+          charon
+        ;;
+      6)
+        runScript update_charon.sh
+        ;;
+      9)
         break
         ;;
     esac
@@ -1663,6 +1732,10 @@ function getBackTitle(){
         MB_TEXT=$(if systemctl is-active --quiet mevboost; then printf "✅ mevboost"; else printf "🛑 mevboost"; fi)
       else
         MB_TEXT="👀 mevboost not installed"
+      fi
+      if [[ -f /etc/systemd/system/charon.service ]]; then
+        CH_TEXT=$(if systemctl is-active --quiet charon; then printf "✅ charon"; else printf "🛑 charon"; fi)
+        MB_TEXT="$MB_TEXT | $CH_TEXT"
       fi
       [[ -n "$CL" ]] && CLIENT_TEXT="| $CL_TEXT | 👥 $CL-$EL |" || CLIENT_TEXT="| 👥 $EL |"
       # Handle integrated clients

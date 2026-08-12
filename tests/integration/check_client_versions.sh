@@ -146,11 +146,28 @@ check_mevboost_version() {
   assert_matches_latest "MEV-Boost" "mevboost" "$version"
 }
 
+check_charon_version() {
+  [[ -f /etc/systemd/system/charon.service ]] || return 0
+  local installed version
+  INSTALLED_COMMIT=""
+  installed=$(charon version 2>/dev/null || true)
+  version=$(parse_charon_version "$installed")
+  INSTALLED_COMMIT=$(parse_charon_commit "$installed")
+  if [[ -z "$version" ]]; then
+    echo "❌ Charon version parse failed: ${installed:-empty}"
+    fail=1
+    return 0
+  fi
+  echo "✅ Charon version: ${version}"
+  assert_matches_latest "Charon" "charon" "$version"
+}
+
 echo "🔢 Verifying installed client versions (parse + LATEST match)..."
 check_el_version
 check_cl_version
 check_vc_version
 check_mevboost_version
+check_charon_version
 
 if [[ "$fail" -ne 0 ]]; then
   exit 1
