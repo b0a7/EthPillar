@@ -362,8 +362,8 @@ class TestRunInstallRouting:
         self._verify_only_called(mocks, ['geth', 'lh_dl', 'lh_bn', 'ls_dl', 'ls_vc', 'mev', 'charon'])
         bn_arg = mocks['ls_vc'].call_args.args[4]
         assert "3600" in bn_arg
-        mev_params = mocks['ls_vc'].call_args.args[6]
-        assert "--distributed" in mev_params
+        extra_params = mocks['ls_vc'].call_args.args[6]
+        assert "--distributed" in extra_params
         assert mocks['charon'].call_args.kwargs.get("builder_api") is True
 
     def test_charon_rejects_grandine_integrated(self):

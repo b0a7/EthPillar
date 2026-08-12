@@ -583,7 +583,7 @@ class TestTekuService:
         bn_addr = f'--beacon-node-api-endpoint=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
         result = generate_teku_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Teku Validator Client service for MAINNET" in result
         assert f"--validators-graffiti={GRAFFITI}" in result
@@ -641,7 +641,7 @@ class TestLodestarService:
         bn_addr = f'--beaconNodes=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
         result = generate_lodestar_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Lodestar Validator Client service for MAINNET" in result
         assert f"--graffiti={GRAFFITI}" in result
@@ -694,7 +694,7 @@ class TestNimbusService:
         bn_addr = f'--beacon-node=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
         result = generate_nimbus_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Nimbus Validator Client service for MAINNET" in result
         assert f"--graffiti={GRAFFITI}" in result
@@ -751,7 +751,7 @@ class TestLighthouseService:
         bn_addr = f'--beacon-nodes=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
         result = generate_lighthouse_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Lighthouse Validator Client service for MAINNET" in result
         assert f"--graffiti={GRAFFITI}" in result
@@ -770,7 +770,7 @@ class TestLighthouseService:
         bn_addr = '--beacon-nodes=http://127.0.0.1:3600'
         result = generate_lighthouse_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            mev_parameters='--builder-proposals --distributed',
+            extra_parameters='--builder-proposals --distributed',
         )
         assert "--beacon-nodes=http://127.0.0.1:3600" in result
         assert "--distributed" in result
@@ -882,7 +882,7 @@ class TestPrysmService:
         from deploy.prysm import generate_prysm_vc_service
         result = generate_prysm_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Prysm Validator Client service for MAINNET" in result
         assert f"--graffiti={GRAFFITI}" in result

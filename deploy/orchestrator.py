@@ -141,12 +141,15 @@ def resolve_vc_name(cc_name: str, vc_choice: str) -> str:
         return cc_name
     return vc_choice
 
-def _with_dvt_params(mev_params: str, vc_name: Optional[str], charon_enabled: bool) -> str:
-    """Append ``--distributed`` for VCs that support it when Charon is enabled."""
+def _with_dvt_params(extra_params: str, vc_name: Optional[str], charon_enabled: bool) -> str:
+    """Append ``--distributed`` for VCs that support it when Charon is enabled.
+
+    ``extra_params`` holds optional VC ExecStart flags (builder/MEV and/or DVT).
+    """
     if not charon_enabled or vc_name not in ("Lighthouse", "Nimbus", "Lodestar"):
-        return mev_params
+        return extra_params
     dvt = "--distributed"
-    return f"{mev_params} {dvt}".strip() if mev_params else dvt
+    return f"{extra_params} {dvt}".strip() if extra_params else dvt
 
 
 def _int_param(params: Dict[str, str], key: str, default: int = 0) -> int:
@@ -304,47 +307,47 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lighthouse.download_lighthouse(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            mev_params = _with_dvt_params(
+            extra_params = _with_dvt_params(
                 '--builder-proposals' if flags['mevboost'] else '',
                 vc_name,
                 charon_enabled,
             )
             bn_arg = f'--beacon-nodes={addr}'
-            val_path = lighthouse.install_lighthouse_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, mev_params)
+            val_path = lighthouse.install_lighthouse_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
         elif vc_name == 'Nimbus':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else nimbus.download_nimbus(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            mev_params = _with_dvt_params(
+            extra_params = _with_dvt_params(
                 '--payload-builder=true' if flags['mevboost'] else '',
                 vc_name,
                 charon_enabled,
             )
             bn_arg = f'--beacon-node={addr}'
-            val_path = nimbus.install_nimbus_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, mev_params)
+            val_path = nimbus.install_nimbus_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
         elif vc_name == 'Teku':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else teku.download_teku(network)
             val_ver = v_ver
             fee_params = f'--validators-proposer-default-fee-recipient={fee_recipient}'
-            mev_params = '--validators-builder-registration-default-enabled=true' if flags['mevboost'] else ''
+            extra_params = '--validators-builder-registration-default-enabled=true' if flags['mevboost'] else ''
             bn_arg = f'--beacon-node-api-endpoint={addr}'
-            val_path = teku.install_teku_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, mev_params)
+            val_path = teku.install_teku_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
         elif vc_name == 'Lodestar':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lodestar.download_lodestar(network)
             val_ver = v_ver
             fee_params = f'--suggestedFeeRecipient={fee_recipient}'
-            mev_params = _with_dvt_params(
+            extra_params = _with_dvt_params(
                 '--builder' if flags['mevboost'] else '',
                 vc_name,
                 charon_enabled,
             )
             bn_arg = f'--beaconNodes={addr}'
-            val_path = lodestar.install_lodestar_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, mev_params)
+            val_path = lodestar.install_lodestar_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
         elif vc_name == 'Prysm':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else prysm.download_prysm(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            mev_params = '--enable-builder' if flags['mevboost'] else ''
+            extra_params = '--enable-builder' if flags['mevboost'] else ''
             bn_arg = f'--beacon-rest-api-provider={addr}'
             # gRPC beacon endpoint only when the local BN is also Prysm and Charon is off.
             beacon_rpc = "127.0.0.1:4000" if cc_name == "Prysm" and not charon_enabled else None
@@ -355,7 +358,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 graffiti,
                 bn_arg,
                 fee_params,
-                mev_params,
+                extra_params,
                 beacon_rpc_provider=beacon_rpc,
             )
 

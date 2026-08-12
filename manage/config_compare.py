@@ -35,6 +35,7 @@ import deploy.prysm as prysm
 import deploy.reth as reth
 import deploy.teku as teku
 from deploy.common import write_service_file
+from deploy.orchestrator import _with_dvt_params
 from deploy.vc_service import BEACON_FLAG_BY_VC, scrape_beacon_endpoint
 from manage.service_parse import (
     SERVICE_FILES,
@@ -384,33 +385,36 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
     if service_key == "validator":
         vc = str(ctx["vc_client"])
         fee_params = _fee_params_for_client(vc, fee, "vc")
-        mev_params = _mev_params_for_client(vc, "vc", mev)
+        extra_params = _mev_params_for_client(vc, "vc", mev)
+        # Match install: Charon adds --distributed for supported VCs.
+        charon_enabled = Path("/etc/systemd/system/charon.service").is_file()
+        extra_params = _with_dvt_params(extra_params, vc, charon_enabled)
         bn_arg = _beacon_flag_arg(vc, str(ctx["bn_endpoint"]))
         if vc == "Lighthouse":
             return lighthouse.generate_lighthouse_vc_service(
-                network, graffiti, bn_arg, fee_params, mev_params
+                network, graffiti, bn_arg, fee_params, extra_params
             )
         if vc == "Nimbus":
             return nimbus.generate_nimbus_vc_service(
-                network, graffiti, bn_arg, fee_params, mev_params
+                network, graffiti, bn_arg, fee_params, extra_params
             )
         if vc == "Teku":
             return teku.generate_teku_vc_service(
-                network, graffiti, bn_arg, fee_params, mev_params
+                network, graffiti, bn_arg, fee_params, extra_params
             )
         if vc == "Lodestar":
             return lodestar.generate_lodestar_vc_service(
-                network, graffiti, bn_arg, fee_params, mev_params
+                network, graffiti, bn_arg, fee_params, extra_params
             )
         if vc == "Prysm":
             cl = str(ctx["cl_client"])
-            beacon_rpc = "127.0.0.1:4000" if cl == "Prysm" else None
+            beacon_rpc = "127.0.0.1:4000" if cl == "Prysm" and not charon_enabled else None
             return prysm.generate_prysm_vc_service(
                 network,
                 graffiti,
                 bn_arg,
                 fee_params,
-                mev_params,
+                extra_params,
                 beacon_rpc_provider=beacon_rpc,
             )
         raise RuntimeError(f"Unsupported validator client for compare: {vc!r}")
