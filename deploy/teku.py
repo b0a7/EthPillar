@@ -1,6 +1,4 @@
-import os
-import subprocess
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, install_system_directory, ensure_java_available, BASE_DATA_DIR, extract_and_install
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, install_system_directory, ensure_java_available, ensure_jemalloc, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from typing import Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
@@ -172,6 +170,9 @@ def download_teku(eth_network: str) -> str:
     # NOTE: keep this version in sync with the `updateJRE 25` call in update_execution.sh.
     if not ensure_java_available(25):
         print("❌ JDK 25 is required by Teku but could not be installed. Aborting Teku install.")
+        exit(1)
+    if not ensure_jemalloc():
+        print("❌ libjemalloc-dev is required by Teku but could not be installed. Aborting Teku install.")
         exit(1)
 
     # Extract to canonical temp dir and install directory

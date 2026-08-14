@@ -232,3 +232,27 @@ def test_install_system_directory_hardens_permissions_and_writable_subdirs(tmp_p
     flat = [" ".join(map(str, c)) for c in calls]
     assert any("chown -R root:root" in s or "chown -R root:root" in s for s in flat) or any("chown" in s for s in flat)
     assert any("consensus:consensus" in s for s in flat)
+
+
+def test_ensure_jemalloc_installs_dev_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ensure_jemalloc apt-installs libjemalloc-dev (unversioned .so symlink)."""
+    calls = []
+
+    def fake_run(cmd, check=False, env=None, **kwargs):
+        calls.append(list(cmd))
+        assert env is not None and env.get("DEBIAN_FRONTEND") == "noninteractive"
+        return make_dummy_result(returncode=0)
+
+    monkeypatch.setattr(common.subprocess, "run", fake_run)
+    assert common.ensure_jemalloc() is True
+    assert calls == [["sudo", "apt-get", "-y", "-qq", "install", "libjemalloc-dev"]]
+
+
+def test_ensure_jemalloc_returns_false_on_apt_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ensure_jemalloc reports failure when apt cannot install the package."""
+
+    def fake_run(cmd, check=False, env=None, **kwargs):
+        return make_dummy_result(returncode=1)
+
+    monkeypatch.setattr(common.subprocess, "run", fake_run)
+    assert common.ensure_jemalloc() is False
