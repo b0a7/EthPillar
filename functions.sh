@@ -439,6 +439,17 @@ sys.exit(0 if ensure_java_available(int(sys.argv[1])) else 1)
 PY
 }
 
+# Install libjemalloc-dev so JVM clients (Teku, Besu) can LD_PRELOAD it on start.
+# Debian's -dev package provides the unversioned libjemalloc.so symlink the
+# start scripts look for. Returns non-zero if apt could not install it.
+ensureJemalloc(){
+  PYTHONPATH="${BASE_DIR}" python3 - <<'PY'
+import sys
+from deploy.common import ensure_jemalloc
+sys.exit(0 if ensure_jemalloc() else 1)
+PY
+}
+
 # Gets installed CL or VC version from binary.
 # Args: client (optional, defaults to CLIENT from getClient), role cl|vc (optional, defaults to cl).
 # Use role=cl for consensus/beacon (consensus.service); role=vc for validator (validator.service).
