@@ -77,31 +77,37 @@ initializeNetwork(){
 }
 
 function printInstalledVersions() {
-  local _VC _CL _EL _MB _mb_version
+  local _VC _CL _EL _MB _mb_version el_for_version
+  local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
 
-  if [[ -f /etc/systemd/system/validator.service ]]; then
-    getClient
+  getClient
+
+  if [[ -n "${EL:-}" ]]; then
+    el_for_version="$EL"
+    [[ "$el_for_version" == "Erigon-Caplin" ]] && el_for_version="Erigon"
+    getExecutionCurrentVersion "$el_for_version"
+    _EL="$EL $VERSION"
+  else
+    _EL="Not installed."
+  fi
+
+  if [[ -n "${CL:-}" ]]; then
+    getClVcCurrentVersion "$CL" cl
+    _CL="$CL $VERSION"
+  elif [[ "${EL:-}" == "Erigon-Caplin" ]]; then
+    _CL="$_EL"
+  else
+    _CL="Not installed."
+  fi
+
+  if [[ -n "${VC:-}" ]]; then
     getClVcCurrentVersion "$VC" vc
     _VC="Validator client: $VC $VERSION"
+  else
+    _VC="Validator client: Not installed."
   fi
-  if [[ -f /etc/systemd/system/consensus.service ]]; then
-    _CL=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/version" \
-      -H "accept: application/json" \
-      | jq -r '.data.version')
-  fi
-  if [[ -f /etc/systemd/system/execution.service ]]; then
-    _EL=$(curl -s -X POST \
-      -H "Content-Type: application/json" \
-      --data '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":2}' \
-      "${EL_RPC_ENDPOINT}" \
-      | jq -r '.result')
-  fi
-  if [[ "${EL:-}" == "Erigon-Caplin" ]]; then
-    _CL=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/version" \
-      -H "accept: application/json" \
-      | jq -r '.data.version')
-  fi
-  if [[ -f /etc/systemd/system/mevboost.service ]]; then
+
+  if [[ -f "$mev_svc" ]]; then
     _mb_version=$(mev-boost --version 2>&1 \
       | sed -E 's/.*v?([0-9]+\.[0-9]+\.[0-9]+).*/\1/' \
       || echo 'unknown')
@@ -109,15 +115,7 @@ function printInstalledVersions() {
   else
     _MB="Mev-boost: Not Installed"
   fi
-  if [[ -z "${_VC:-}" ]] ; then
-    _VC="Validator client: Not installed."
-  fi
-  if [[ -z "${_CL:-}" ]] ; then
-    _CL="Not installed or still starting up."
-  fi
-  if [[ -z "${_EL:-}" ]] ; then
-    _EL="Not installed or still starting up."
-  fi
+
   printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\nEthPillar: %s\n' \
     "$_CL" "$_EL" "$_VC" "$_MB" "$EP_VERSION"
 }
@@ -1776,7 +1774,6 @@ function setNodeMode(){
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   if [[ "${1:-}" == "--version" ]]; then
-    initializeRpcEndpoints
     printInstalledVersions
     exit 0
   fi
