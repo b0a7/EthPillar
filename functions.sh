@@ -451,6 +451,17 @@ sys.exit(0 if ensure_java_available(int(sys.argv[1])) else 1)
 PY
 }
 
+# Install libjemalloc-dev so JVM clients (Teku, Besu) can LD_PRELOAD it on start.
+# Debian's -dev package provides the unversioned libjemalloc.so symlink the
+# start scripts look for. Returns non-zero if apt could not install it.
+ensureJemalloc(){
+  PYTHONPATH="${BASE_DIR}" python3 - <<'PY'
+import sys
+from deploy.common import ensure_jemalloc
+sys.exit(0 if ensure_jemalloc() else 1)
+PY
+}
+
 # Gets installed CL or VC version from binary.
 # Args: client (optional, defaults to CLIENT from getClient), role cl|vc (optional, defaults to cl).
 # Use role=cl for consensus/beacon (consensus.service); role=vc for validator (validator.service).
@@ -549,18 +560,22 @@ version_matches_latest() {
 
 # Read clients from systemd config files
 getClient(){
+    local exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local csm_svc="${CSM_VALIDATOR_SERVICE_FILE:-/etc/systemd/system/csm_nimbusvalidator.service}"
     EL=""; CL=""; VC=""; CSM_VC=""
-    if [ -f /etc/systemd/system/execution.service ]; then
-        EL=$(grep Description= /etc/systemd/system/execution.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    if [ -f "$exec_svc" ]; then
+        EL=$(grep Description= "$exec_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
-    if [ -f /etc/systemd/system/consensus.service ]; then
-        CL=$(grep Description= /etc/systemd/system/consensus.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    if [ -f "$consensus_svc" ]; then
+        CL=$(grep Description= "$consensus_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
-    if [ -f /etc/systemd/system/validator.service ]; then
-        VC=$(grep Description= /etc/systemd/system/validator.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    if [ -f "$validator_svc" ]; then
+        VC=$(grep Description= "$validator_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
-    if [ -f /etc/systemd/system/csm_nimbusvalidator.service ]; then
-        CSM_VC=$(grep Description= /etc/systemd/system/csm_nimbusvalidator.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    if [ -f "$csm_svc" ]; then
+        CSM_VC=$(grep Description= "$csm_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
     if [[ -n $CL  ]]; then
         CLIENT=$CL

@@ -143,6 +143,7 @@ function updateClient(){
 		# cannot start (UnsupportedClassVersionError).
 		# NOTE: keep this version in sync with ensure_java_available(25) in deploy/teku.py.
 		updateJRE 25|| error "❌ JDK 25 is required by Teku but could not be installed. Aborting update; Teku was left untouched."
+		ensureJemalloc || error "❌ libjemalloc-dev is required by Teku but could not be installed. Aborting update; Teku was left untouched."
 		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"

@@ -1,6 +1,5 @@
-import subprocess
 from typing import Tuple, Optional
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, ensure_java_available, BASE_DATA_DIR, extract_and_install
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, ensure_java_available, ensure_jemalloc, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
@@ -96,7 +95,9 @@ def download_and_install_besu(eth_network: str, el_p2p_port: str, el_rpc_port: s
     if not ensure_java_available(25):
         print("❌ JDK 25 is required by Besu but could not be installed. Aborting Besu install.")
         exit(1)
-    subprocess.run(["sudo", "apt-get", '-qq', "install", "libjemalloc-dev", "-y"], check=True)
+    if not ensure_jemalloc():
+        print("❌ libjemalloc-dev is required by Besu but could not be installed. Aborting Besu install.")
+        exit(1)
 
     # Resolve version and download URL
     arch_amd64 = get_machine_architecture() == "amd64"

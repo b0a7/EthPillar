@@ -286,6 +286,37 @@ def ensure_java_available(min_version: int = 25) -> bool:
     return False
 
 
+def ensure_jemalloc() -> bool:
+    """Install libjemalloc-dev so JVM clients (Besu, Teku) can preload it.
+
+    Besu and Teku start scripts look for the unversioned ``libjemalloc.so``
+    name and ``LD_PRELOAD`` it when found. On Debian/Ubuntu that symlink ships
+    in the ``-dev`` package (not a newer/unstable jemalloc — it also pulls in
+    the runtime ``libjemalloc2``). glibc malloc fragments badly for long-running
+    JVM native allocations (RocksDB, Netty); jemalloc keeps RSS much flatter.
+
+    Other EthPillar clients do not auto-load a system jemalloc: Lighthouse,
+    Reth, and Grandine compile jemalloc into official Linux binaries; Ethrex
+    uses mimalloc; Go/.NET/Node/Nim clients use their own allocators.
+
+    Returns True if apt succeeded, False otherwise. Best-effort: installing
+    requires sudo privileges.
+    """
+    print(">> Installing libjemalloc-dev (jemalloc for JVM memory management)")
+    env = os.environ.copy()
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    res = subprocess.run(
+        ["sudo", "apt-get", "-y", "-qq", "install", "libjemalloc-dev"],
+        check=False,
+        env=env,
+    )
+    if res.returncode == 0:
+        print(">> libjemalloc-dev installed")
+        return True
+    print(">> ❌ ERROR: could not install 'libjemalloc-dev' from apt.")
+    return False
+
+
 def clear_screen() -> None:
     """Clear the terminal screen based on the operating system."""
     if os.name == 'posix':  # Unix-based systems (e.g., Linux, macOS)
