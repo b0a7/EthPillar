@@ -661,7 +661,7 @@ while true; do
       4 "Restart Charon"
       5 "Edit configuration"
       6 "Update to latest release"
-      7 "Migrate from CDVN (.charon + .env)"
+      7 "Migrate from CDVN (full stack)"
       - ""
       9 "Back to main menu"
     )
@@ -1856,6 +1856,39 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     printInstalledVersions
     exit 0
   fi
+
+  # ethpillar --migrate_cdvn [--migrate_cdvn_path=PATH]
+  if [[ "${1:-}" == "--migrate_cdvn" ]] || [[ "${1:-}" == --migrate_cdvn=* ]]; then
+    setWhiptailColors
+    _migrate_path=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --migrate_cdvn)
+          shift
+          ;;
+        --migrate_cdvn=*)
+          _migrate_path="${1#--migrate_cdvn=}"
+          shift
+          ;;
+        --migrate_cdvn_path=*)
+          _migrate_path="${1#--migrate_cdvn_path=}"
+          shift
+          ;;
+        --migrate_cdvn_path)
+          _migrate_path="${2:-}"
+          shift 2
+          ;;
+        *)
+          echo "Unknown option: $1" >&2
+          echo "Usage: ethpillar --migrate_cdvn [--migrate_cdvn_path=PATH]" >&2
+          exit 1
+          ;;
+      esac
+    done
+    migrateCdvnFull "$_migrate_path"
+    exit $?
+  fi
+
   checkV1StakingSetup
   setWhiptailColors
   installNode

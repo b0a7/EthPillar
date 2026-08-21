@@ -46,6 +46,13 @@ parser.add_argument("--vc", type=str, default="")
 parser.add_argument("--with_validator", action="store_true", default=False)
 parser.add_argument("--with_mevboost", action="store_true", default=False)
 parser.add_argument(
+    "--with_builder_api",
+    action="store_true",
+    default=False,
+    help="Enable Charon/VC builder flags without installing local MEV-Boost "
+    "(e.g. external relays / CDVN BUILDER_API_ENABLED)",
+)
+parser.add_argument(
     "--with_charon",
     action="store_true",
     default=False,
@@ -88,6 +95,7 @@ if args.switch_client:
     role = f"Switch {args.switch_client.capitalize()} Client"
     flags = {
         "mevboost": args.with_mevboost,
+        "builder_api": bool(args.with_mevboost or args.with_builder_api),
         "validator": False,
         "validator_only": False,
         "node_only": False,
@@ -104,6 +112,12 @@ else:
     flags = resolve_role_flags(role, eth_network)
 
 flags["charon"] = bool(args.with_charon)
+if args.with_mevboost:
+    flags["mevboost"] = True
+# Builder API can be on without a local mevboost.service (external MEV / CDVN).
+flags["builder_api"] = bool(
+    flags.get("builder_api") or flags.get("mevboost") or args.with_builder_api
+)
 if args.vc == CHARON_VC_LABEL:
     print(
         "ERROR: --vc 'Obol Charon DV' is not a signer client. "
@@ -228,6 +242,7 @@ elif role == "Custom Setup":
         flags['mevboost'] = (mev_prompt == 0)
     else:
         flags['mevboost'] = False
+    flags['builder_api'] = bool(flags.get('mevboost') or args.with_builder_api)
 
 
 else:

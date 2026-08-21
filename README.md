@@ -161,37 +161,51 @@ Artifacts:
 
 ### Migrate from CDVN
 
-Stop Docker Compose first — never run CDVN Charon/VC and EthPillar Charon/VC at the same time (slashing risk).
-
-1. Complete **Install** above so the `charon` user and `/var/lib/charon` exist.
-2. In EthPillar: **Obol Charon DV → Migrate from CDVN (.charon + .env)**
-   - Point at your CDVN checkout (directory or `.env` path)
-   - Copies `.charon` → `/var/lib/charon/.charon` (lock + key-share backup)
-   - Maps `.env` `CHARON_*` / `BUILDER_API_ENABLED` → `charon.service` (tmeld side-by-side preview)
-   - Offers key-share import into the VC and Charon start when the lock is present
-3. Open **TCP 3610** on your firewall if peers need direct P2P. Optionally set `CHARON_P2P_EXTERNAL_IP` in `env` / `.env.overrides`.
-
-Manual copy (if you prefer not to use the assistant):
+One-shot migrate of a [charon-distributed-validator-node](https://github.com/ObolNetwork/charon-distributed-validator-node) stack into EthPillar (clients + Charon + datadirs):
 
 ```bash
-# From your CDVN checkout
-sudo mkdir -p /var/lib/charon/.charon
-sudo cp -a .charon/. /var/lib/charon/.charon/
-sudo chown -R charon:charon /var/lib/charon/.charon
-sudo chmod 700 /var/lib/charon /var/lib/charon/.charon
+# After install.sh / from a clone
+ethpillar --migrate_cdvn
+ethpillar --migrate_cdvn --migrate_cdvn_path=/path/to/charon-distributed-validator-node
 ```
 
-CLI helpers:
+**Stop Docker Compose first** — migrate aborts if CDVN Compose still has running services (slashing / port conflict risk). Never run CDVN Charon/VC and EthPillar Charon/VC at the same time.
+
+What it does:
+
+1. Ensures the `ethpillar` symlink + Python deps exist
+2. Builds a plan from CDVN `.env` (`NETWORK`, `EL`, `CL`, `VC`, `MEV`, builder flags, BN endpoints) and on-disk `.charon` / `./data/*`
+3. Shows the plan and asks you to confirm; you can decline individual datadir **moves**
+4. Runs non-interactive deploy for the detected role, then moves confirmed Docker datadirs into `/var/lib/…`
+5. Overlays `.charon` + maps `CHARON_*` → `charon.service`, installs **fresh** EthPillar monitoring (not the CDVN Grafana volume), offers key import / start
+
+**Role detection (v1):**
+
+| CDVN stack | EthPillar |
+|---|---|
+| `EL=el-none` + `CL=cl-none` + VC + Charon (external BN) | **Validator Client Only** + `--with_charon` + rewritten `CHARON_BEACON_NODE_ENDPOINTS` |
+| Local EL + local CL + VC + Charon | **Custom Setup** + `--ec` / `--cc` / `--vc` / `--with_charon` |
+| `MEV=mev-mevboost` + local CL | also `--with_mevboost` |
+| `MEV=mev-none` / external MEV + `BUILDER_API_ENABLED` | no `mevboost.service`; still Charon `--builder-api` + VC builder flags |
+| Unknown `EL=` / `CL=` profile token | hard fail (rename to a supported stock profile) |
+| Local CL with `EL=el-none` (or EL without CL) | unsupported in v1 |
+
+Supported stock profiles today: `el-nethermind`, `el-reth`; `cl-lighthouse` / `teku` / `lodestar` / `prysm` / `nimbus` / `grandine`; `vc-lodestar` / `teku` / `prysm` / `nimbus`.
+
+Datadir moves (after confirm): e.g. `./data/nethermind` → `/var/lib/nethermind`, `./data/lodestar` (VC) → `/var/lib/lodestar_validator`, `.charon` → `/var/lib/charon/.charon`. Destinations that already have data are skipped (clear manually if you want the CDVN DB).
+
+TUI: **Obol Charon DV → Migrate from CDVN (full stack)** runs the same flow.
+
+Dry-run / inspect plan (tests / advanced):
 
 ```bash
-PYTHONPATH=. python3 -m deploy.charon resolve_cdvn --path ~/charon-distributed-validator-node
-PYTHONPATH=. python3 -m deploy.charon copy_charon --src ~/charon-distributed-validator-node/.charon
-PYTHONPATH=. python3 -m deploy.charon import_env --env ~/charon-distributed-validator-node/.env --tmeld --apply
+PYTHONPATH=. python3 -m deploy.cdvn_migrate plan --path ~/charon-distributed-validator-node
+PYTHONPATH=. python3 -m deploy.cdvn_migrate run --path ~/charon-distributed-validator-node --dry-run
 ```
 
-Docker beacon hostnames (`lighthouse`, `host.docker.internal`, …) are rewritten to `127.0.0.1`, and VC/metrics binds of `0.0.0.0` become `127.0.0.1`.
+Lower-level Charon-only helpers (`.charon` copy / `.env` import) remain available via `python3 -m deploy.charon …`.
 
-Charon does not auto-start until the lock file is in place. MEV-Boost still talks to the beacon node; Charon gets `--builder-api` when MEV is enabled. Behind Charon, Lighthouse/Nimbus/Lodestar/Prysm VCs get `--distributed`; Teku gets `--Xobol-dvt-integration-enabled=true`. Grandine (integrated) is not supported behind Charon.
+Docker beacon hostnames (`lighthouse`, `host.docker.internal`, …) are rewritten to `127.0.0.1`. Behind Charon, Lighthouse/Nimbus/Lodestar/Prysm VCs get `--distributed`; Teku gets `--Xobol-dvt-integration-enabled=true`. Grandine (integrated) is not supported behind Charon.
 
 ### Beacon node notes (Obol)
 

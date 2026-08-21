@@ -42,6 +42,7 @@ def resolve_role_flags(role: str, network: str) -> Dict[str, bool]:
     """Pure function: resolve role and network to capability flags."""
     flags = {
         "mevboost": False,
+        "builder_api": False,
         "validator": False,
         "validator_only": False,
         "node_only": False
@@ -49,6 +50,7 @@ def resolve_role_flags(role: str, network: str) -> Dict[str, bool]:
 
     if role == "Solo Staking Node" or role == "Lido CSM Staking Node":
         flags["mevboost"] = True
+        flags["builder_api"] = True
         flags["validator"] = True
     elif role == "Full Node Only":
         flags["node_only"] = True
@@ -58,6 +60,7 @@ def resolve_role_flags(role: str, network: str) -> Dict[str, bool]:
         flags["validator_only"] = True
     elif role == "Failover Staking Node":
         flags["mevboost"] = True
+        flags["builder_api"] = True
 
     return flags
 
@@ -302,7 +305,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
         charon_ver, charon_path = charon.install_charon(
             network,
             upstream_bn,
-            builder_api=bool(flags['mevboost']),
+            builder_api=bool(flags.get('builder_api') or flags['mevboost']),
             p2p_external_ip=p2p_external_ip,
             validator_api_address=f"127.0.0.1:{charon_api_port}",
             monitoring_address=f"127.0.0.1:{charon_mon_port}",
@@ -313,6 +316,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
 
     val_path = ""
     val_ver = ""
+    use_builder = bool(flags.get('builder_api') or flags.get('mevboost'))
     if flags['validator'] and vc_name:
         addr = (
             charon.charon_validator_api_url(
@@ -327,7 +331,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             extra_params = _with_dvt_params(
-                '--builder-proposals' if flags['mevboost'] else '',
+                '--builder-proposals' if use_builder else '',
                 vc_name,
                 charon_enabled,
             )
@@ -338,7 +342,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             extra_params = _with_dvt_params(
-                '--payload-builder=true' if flags['mevboost'] else '',
+                '--payload-builder=true' if use_builder else '',
                 vc_name,
                 charon_enabled,
             )
@@ -349,7 +353,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             val_ver = v_ver
             fee_params = f'--validators-proposer-default-fee-recipient={fee_recipient}'
             extra_params = _with_dvt_params(
-                '--validators-builder-registration-default-enabled=true' if flags['mevboost'] else '',
+                '--validators-builder-registration-default-enabled=true' if use_builder else '',
                 vc_name,
                 charon_enabled,
             )
@@ -360,7 +364,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             val_ver = v_ver
             fee_params = f'--suggestedFeeRecipient={fee_recipient}'
             extra_params = _with_dvt_params(
-                '--builder' if flags['mevboost'] else '',
+                '--builder' if use_builder else '',
                 vc_name,
                 charon_enabled,
             )
@@ -371,7 +375,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             extra_params = _with_dvt_params(
-                '--enable-builder' if flags['mevboost'] else '',
+                '--enable-builder' if use_builder else '',
                 vc_name,
                 charon_enabled,
             )

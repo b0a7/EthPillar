@@ -48,12 +48,12 @@ MOCK_ENV = {}
 
 class TestResolveRoleFlags:
     @pytest.mark.parametrize("role,expected", [
-        ("Solo Staking Node",              {"mevboost": True,  "validator": True,  "validator_only": False, "node_only": False}),
-        ("Lido CSM Staking Node",          {"mevboost": True,  "validator": True,  "validator_only": False, "node_only": False}),
-        ("Full Node Only",                 {"mevboost": False, "validator": False, "validator_only": False, "node_only": True}),
-        ("Validator Client Only",          {"mevboost": False, "validator": True,  "validator_only": True,  "node_only": False}),
-        ("Lido CSM Validator Client Only", {"mevboost": False, "validator": True,  "validator_only": True,  "node_only": False}),
-        ("Failover Staking Node",          {"mevboost": True,  "validator": False, "validator_only": False, "node_only": False}),
+        ("Solo Staking Node",              {"mevboost": True,  "builder_api": True,  "validator": True,  "validator_only": False, "node_only": False}),
+        ("Lido CSM Staking Node",          {"mevboost": True,  "builder_api": True,  "validator": True,  "validator_only": False, "node_only": False}),
+        ("Full Node Only",                 {"mevboost": False, "builder_api": False, "validator": False, "validator_only": False, "node_only": True}),
+        ("Validator Client Only",          {"mevboost": False, "builder_api": False, "validator": True,  "validator_only": True,  "node_only": False}),
+        ("Lido CSM Validator Client Only", {"mevboost": False, "builder_api": False, "validator": True,  "validator_only": True,  "node_only": False}),
+        ("Failover Staking Node",          {"mevboost": True,  "builder_api": True,  "validator": False, "validator_only": False, "node_only": False}),
     ])
     def test_role_flags(self, role, expected):
         """Verify that roles correctly map to internal installation flags."""
