@@ -247,6 +247,31 @@ class TestRunInstallRouting:
         # For VC-only, only VC download and VC install should happen
         self._verify_only_called(mocks, ['tk_dl', 'tk_vc'])
 
+    def test_validator_only_builder_api_without_local_mev(self):
+        """Remote BN MEV: enable VC builder flags without installing mevboost."""
+        mocks = self._run(
+            "Validator Client Only",
+            None,
+            None,
+            "Lodestar",
+            flags_override={"builder_api": True, "mevboost": False},
+        )
+        self._verify_only_called(mocks, ['ls_dl', 'ls_vc'])
+        extra_params = mocks['ls_vc'].call_args.args[6]
+        assert "--builder" in extra_params
+
+    def test_validator_only_charon_builder_api_without_local_mev(self):
+        mocks = self._run(
+            "Validator Client Only",
+            None,
+            None,
+            "Lodestar",
+            flags_override={"builder_api": True, "mevboost": False, "charon": True},
+        )
+        self._verify_only_called(mocks, ['ls_dl', 'ls_vc', 'charon'])
+        assert mocks['charon'].call_args.kwargs.get("builder_api") is True
+        assert mocks['mev'].call_count == 0
+
     def test_failover_skips_vc(self):
         mocks = self._run("Failover Staking Node", "Nethermind", "Lodestar")
         # Failover = EC + BN + MEV (No VC)

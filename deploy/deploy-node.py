@@ -176,6 +176,23 @@ elif flags['validator_only']:
                 vc_name = choice
     else:
         vc_name = args.vc or args.cc # Fallback to --cc if --vc not passed
+
+    # Remote BN may already run MEV-Boost; enable VC/Charon builder flags without
+    # installing a local mevboost.service.
+    if args.with_builder_api or args.with_mevboost:
+        flags['builder_api'] = True
+    elif not skip_prompts:
+        builder_prompt = SelectionMenu.get_selection(
+            ["Yes", "No"],
+            title='Validator Client Only',
+            subtitle=(
+                'Does the remote beacon node use MEV-Boost / builder API?\n'
+                '(Enables VC builder flags; does not install local MEV-Boost)'
+            ),
+            show_exit_option=False,
+        )
+        flags['builder_api'] = builder_prompt == 0
+    # else: keep flags['builder_api'] from CLI / role defaults (False)
 elif role == "Custom Setup":
     # Custom Path
     # EC
