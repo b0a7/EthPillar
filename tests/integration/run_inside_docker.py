@@ -815,18 +815,24 @@ def verify(args: Any):
             else:
                 print("✅ validator.service points at Charon :3600")
             vc_name = (args.vc or "").lower()
-            dvt_flag = {
-                "lodestar": "--distributed",
-                "lighthouse": "--distributed",
-                "nimbus": "--distributed",
-                "prysm": "--distributed",
-                "teku": "--Xobol-dvt-integration-enabled=true",
-            }.get(vc_name)
-            if dvt_flag and dvt_flag not in vc_content:
-                print(f"❌ {args.vc} validator.service missing {dvt_flag}")
-                success = False
-            elif dvt_flag:
-                print(f"✅ {args.vc} validator.service includes {dvt_flag}")
+            dvt_flags = {
+                "lodestar": ["--distributed"],
+                "lighthouse": ["--distributed"],
+                "nimbus": ["--distributed"],
+                "prysm": ["--distributed"],
+                "teku": [
+                    "--Xobol-dvt-integration-enabled=true",
+                    "--Xvalidator-client-beacon-api-executor-threads=50",
+                ],
+            }.get(vc_name, [])
+            dvt_ok = True
+            for dvt_flag in dvt_flags:
+                if dvt_flag not in vc_content:
+                    print(f"❌ {args.vc} validator.service missing {dvt_flag}")
+                    dvt_ok = False
+                    success = False
+            if dvt_flags and dvt_ok:
+                print(f"✅ {args.vc} validator.service includes DVT flags")
         if os.path.isfile(ch_unit):
             with open(ch_unit, encoding="utf-8") as fh:
                 ch_content = fh.read()

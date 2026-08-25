@@ -149,7 +149,9 @@ def _with_dvt_params(extra_params: str, vc_name: Optional[str], charon_enabled: 
 
     Per Obol client configuration + CDVN:
       - Lighthouse / Lodestar / Nimbus / Prysm: ``--distributed``
-      - Teku: ``--Xobol-dvt-integration-enabled=true``
+      - Teku: ``--Xobol-dvt-integration-enabled=true`` and
+        ``--Xvalidator-client-beacon-api-executor-threads=50`` (CDVN PR #480;
+        default pool is too small for Charon API load)
 
     ``extra_params`` holds optional VC ExecStart flags (builder/MEV and/or DVT).
     """
@@ -160,7 +162,10 @@ def _with_dvt_params(extra_params: str, vc_name: Optional[str], charon_enabled: 
         "Lodestar": "--distributed",
         "Nimbus": "--distributed",
         "Prysm": "--distributed",
-        "Teku": "--Xobol-dvt-integration-enabled=true",
+        "Teku": (
+            "--Xobol-dvt-integration-enabled=true "
+            "--Xvalidator-client-beacon-api-executor-threads=50"
+        ),
     }
     dvt = dvt_by_vc.get(vc_name)
     if not dvt:

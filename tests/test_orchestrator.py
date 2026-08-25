@@ -146,7 +146,9 @@ class TestCustomClientMenuLogic:
         assert _with_dvt_params("--enable-builder", "Prysm", True) == "--enable-builder --distributed"
         assert (
             _with_dvt_params("--validators-builder-registration-default-enabled=true", "Teku", True)
-            == "--validators-builder-registration-default-enabled=true --Xobol-dvt-integration-enabled=true"
+            == "--validators-builder-registration-default-enabled=true "
+            "--Xobol-dvt-integration-enabled=true "
+            "--Xvalidator-client-beacon-api-executor-threads=50"
         )
         assert _with_dvt_params("--builder", "Lodestar", False) == "--builder"
         assert _with_dvt_params("", "Grandine (integrated)", True) == ""
@@ -413,6 +415,7 @@ class TestRunInstallRouting:
         assert "--validators-graffiti-client-append-format=DISABLED" in fee_params
         extra_params = mocks['tk_vc'].call_args.args[6]
         assert "--Xobol-dvt-integration-enabled=true" in extra_params
+        assert "--Xvalidator-client-beacon-api-executor-threads=50" in extra_params
 
     def test_charon_rejects_grandine_integrated(self):
         with pytest.raises(ValueError, match="incompatible with Grandine"):

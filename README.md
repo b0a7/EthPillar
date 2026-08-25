@@ -205,7 +205,7 @@ PYTHONPATH=. python3 -m deploy.cdvn_migrate run --path ~/charon-distributed-vali
 
 Lower-level Charon-only helpers (`.charon` copy / `.env` import) remain available via `python3 -m deploy.charon …`.
 
-Docker beacon hostnames (`lighthouse`, `host.docker.internal`, …) are rewritten to `127.0.0.1`. Behind Charon, Lighthouse/Nimbus/Lodestar/Prysm VCs get `--distributed`; Teku gets `--Xobol-dvt-integration-enabled=true`. Grandine (integrated) is not supported behind Charon.
+Docker beacon hostnames (`lighthouse`, `host.docker.internal`, …) are rewritten to `127.0.0.1`. Behind Charon, Lighthouse/Nimbus/Lodestar/Prysm VCs get `--distributed`; Teku gets `--Xobol-dvt-integration-enabled=true` and `--Xvalidator-client-beacon-api-executor-threads=50` (matches CDVN DVT tuning). Grandine (integrated) is not supported behind Charon.
 
 ### Beacon node notes (Obol)
 
