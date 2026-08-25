@@ -20,6 +20,7 @@ from deploy.orchestrator import (
     run_install, is_valid_combination,
     PREDEFINED_COMBOS, EXECUTION_CLIENTS, CONSENSUS_CLIENTS,
     CHARON_VC_LABEL, _int_param, _with_dvt_params,
+    lodestar_bn_vc_incompatibility_message, LODESTAR_BN_INCOMPATIBLE_VCS,
 )
 
 # Mock parameters for run_install — keys must match what orchestrator.run_install() reads
@@ -140,9 +141,10 @@ class TestCustomClientMenuLogic:
         assert not is_charon_vc_choice("Lodestar")
 
     def test_with_dvt_params_appends_client_specific_flags(self):
-        assert _with_dvt_params("--builder", "Lodestar", True) == "--builder --distributed"
+        assert _with_dvt_params("--builder", "Lodestar", True) == "--builder --distributed --slotSkip false"
         assert _with_dvt_params("", "Lighthouse", True) == "--distributed"
         assert _with_dvt_params("", "Nimbus", True) == "--distributed"
+        assert _with_dvt_params("", "Lodestar", True) == "--distributed --slotSkip false"
         assert _with_dvt_params("--enable-builder", "Prysm", True) == "--enable-builder --distributed"
         assert (
             _with_dvt_params("--validators-builder-registration-default-enabled=true", "Teku", True)
@@ -152,6 +154,16 @@ class TestCustomClientMenuLogic:
         )
         assert _with_dvt_params("--builder", "Lodestar", False) == "--builder"
         assert _with_dvt_params("", "Grandine (integrated)", True) == ""
+
+    def test_lodestar_bn_vc_incompatibility_message(self):
+        msg = lodestar_bn_vc_incompatibility_message("Lodestar", "Lighthouse")
+        assert msg is not None
+        assert "Lodestar beacon node" in msg
+        assert "Lighthouse" in msg
+        assert lodestar_bn_vc_incompatibility_message("Lodestar", "Lodestar") is None
+        assert lodestar_bn_vc_incompatibility_message("Lighthouse", "Lodestar") is None
+        for vc in LODESTAR_BN_INCOMPATIBLE_VCS:
+            assert lodestar_bn_vc_incompatibility_message("Lodestar", vc)
 
 class TestPredefinedCombos:
     def test_lighthouse_reth_maps_to_correct_ec_cc(self):
@@ -397,6 +409,7 @@ class TestRunInstallRouting:
         assert "3600" in bn_arg
         extra_params = mocks['ls_vc'].call_args.args[6]
         assert "--distributed" in extra_params
+        assert "--slotSkip false" in extra_params
         assert mocks['charon'].call_args.kwargs.get("builder_api") is True
 
     def test_charon_nimbus_bn_enables_json_requests(self):

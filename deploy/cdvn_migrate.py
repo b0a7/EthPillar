@@ -19,6 +19,7 @@ from deploy.charon import (
     resolve_cdvn_checkout,
     rewrite_endpoint_list,
 )
+from deploy.orchestrator import lodestar_bn_vc_incompatibility_message
 from deploy.common import BASE_DATA_DIR
 
 # Stock CDVN compose profile tokens → EthPillar client names.
@@ -291,6 +292,23 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
             "Use el-none+cl-none (external BN) or enable both EL and CL."
         )
 
+    bn_address = ""
+    warnings: List[str] = []
+    bn_vc_warn = lodestar_bn_vc_incompatibility_message(cc_name, vc_name)
+    if bn_vc_warn:
+        warnings.append(bn_vc_warn)
+    if el_none and cl_none:
+        role = "Validator Client Only"
+        raw_bn = (env.get("CHARON_BEACON_NODE_ENDPOINTS") or "").strip()
+        if not raw_bn:
+            raise ValueError(
+                "CL=cl-none requires CHARON_BEACON_NODE_ENDPOINTS for the remote beacon node."
+            )
+        bn_address, bn_warns = rewrite_endpoint_list(raw_bn, local_host=local_host)
+        warnings.extend(bn_warns)
+    else:
+        role = "Custom Setup"
+
     charon_dir = info.get("charon_dir")
     has_lock = bool(info.get("has_lock"))
     has_keyshares = bool(info.get("has_keyshares"))
@@ -306,20 +324,6 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
     with_mevboost = mev_raw in MEV_LOCAL and not el_none and not cl_none
     builder_raw = env.get("CHARON_BUILDER_API") or env.get("BUILDER_API_ENABLED") or ""
     with_builder_api = with_mevboost or (bool(builder_raw) and _truthy(builder_raw))
-
-    bn_address = ""
-    warnings: List[str] = []
-    if el_none and cl_none:
-        role = "Validator Client Only"
-        raw_bn = (env.get("CHARON_BEACON_NODE_ENDPOINTS") or "").strip()
-        if not raw_bn:
-            raise ValueError(
-                "CL=cl-none requires CHARON_BEACON_NODE_ENDPOINTS for the remote beacon node."
-            )
-        bn_address, bn_warns = rewrite_endpoint_list(raw_bn, local_host=local_host)
-        warnings.extend(bn_warns)
-    else:
-        role = "Custom Setup"
 
     compose_file = info.get("compose_file")
     docker_running = detect_docker_compose_running(

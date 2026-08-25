@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import Dict, List, Optional, Tuple
 import deploy.besu as besu
 import deploy.nethermind as nethermind
@@ -16,6 +17,9 @@ import deploy.charon as charon
 import deploy.prysm as prysm
 
 CHARON_VC_LABEL = "Obol Charon DV"
+
+# Charon v1.11+ compatibility matrix: Lodestar BN + these VCs may fail duties (client bug, not Charon).
+LODESTAR_BN_INCOMPATIBLE_VCS = frozenset({"Lighthouse", "Nimbus", "Prysm"})
 
 VALID_ROLES = [
     'Solo Staking Node',
@@ -144,11 +148,29 @@ def resolve_vc_name(cc_name: str, vc_choice: str) -> str:
         return cc_name
     return vc_choice
 
+def lodestar_bn_vc_incompatibility_message(
+    cc_name: Optional[str],
+    vc_name: Optional[str],
+) -> Optional[str]:
+    """Return a warning when Lodestar BN is paired with a VC Obol marks as 🟠 in Charon v1.11+."""
+    if cc_name != "Lodestar" or not vc_name:
+        return None
+    if vc_name in LODESTAR_BN_INCOMPATIBLE_VCS:
+        return (
+            f"Lodestar beacon node + {vc_name} validator client is a known incompatible "
+            f"combination (Charon v1.11+ matrix: duties may fail). This is a client-side "
+            f"issue, not Charon. Prefer Lodestar or Teku VC, or use a different BN "
+            f"(Lighthouse, Nimbus, Prysm, Teku, Grandine) until Lodestar ships a fix."
+        )
+    return None
+
+
 def _with_dvt_params(extra_params: str, vc_name: Optional[str], charon_enabled: bool) -> str:
     """Append Charon/DVT VC flags when Charon is enabled.
 
     Per Obol client configuration + CDVN:
-      - Lighthouse / Lodestar / Nimbus / Prysm: ``--distributed``
+      - Lighthouse / Nimbus / Prysm: ``--distributed``
+      - Lodestar: ``--distributed`` and ``--slotSkip false`` (CDVN / Obol docs)
       - Teku: ``--Xobol-dvt-integration-enabled=true`` and
         ``--Xvalidator-client-beacon-api-executor-threads=50`` (CDVN PR #480;
         default pool is too small for Charon API load)
@@ -159,7 +181,7 @@ def _with_dvt_params(extra_params: str, vc_name: Optional[str], charon_enabled: 
         return extra_params
     dvt_by_vc = {
         "Lighthouse": "--distributed",
-        "Lodestar": "--distributed",
+        "Lodestar": "--distributed --slotSkip false",
         "Nimbus": "--distributed",
         "Prysm": "--distributed",
         "Teku": (
@@ -209,6 +231,9 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
     mev_min_bid = params.get('mev_min_bid', '')
     skip_prompts = params.get('skip_prompts', 'false').lower() == 'true'
 
+    bn_vc_warn = lodestar_bn_vc_incompatibility_message(cc_name, vc_name)
+    if bn_vc_warn:
+        print(f"WARNING: {bn_vc_warn}", file=sys.stderr)
 
     fee_recipient, graffiti, mev_min_bid = apply_csm_overrides(role, network, env_vars, fee_recipient, graffiti)
 

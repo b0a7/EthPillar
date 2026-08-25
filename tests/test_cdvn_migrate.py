@@ -151,6 +151,21 @@ def test_plan_orphan_data_warning(tmp_path: Path):
     assert not any(m.relative_src == "data/lighthouse" and m.will_move for m in plan.datadir_moves)
 
 
+def test_plan_lodestar_bn_incompatible_vc_warns(tmp_path: Path):
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=el-nethermind\n"
+        "CL=cl-lodestar\n"
+        "VC=vc-prysm\n"
+        "MEV=mev-mevboost\n",
+    )
+    plan = plan_cdvn_migration(str(root))
+    assert plan.cc_name == "Lodestar"
+    assert plan.vc_name == "Prysm"
+    assert any("Lodestar beacon node" in w and "Prysm" in w for w in plan.warnings)
+
+
 def test_datadir_map_covers_stock_clients():
     assert "data/nethermind" in DATADIR_MOVES
     assert "data/reth" in DATADIR_MOVES

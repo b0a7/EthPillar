@@ -12,7 +12,7 @@ import common as common
 from orchestrator import (
     VALID_ROLES, resolve_role_flags, get_combo_menu, get_vc_menu,
     get_ec_menu, get_cc_menu, get_vc_options_for_cc, resolve_vc_name, run_install,
-    CHARON_VC_LABEL, is_charon_vc_choice,
+    CHARON_VC_LABEL, is_charon_vc_choice, lodestar_bn_vc_incompatibility_message,
 )
 import config
 
@@ -368,6 +368,22 @@ params = {
 }
 
 env_vars = dict(os.environ)
+
+# Warn on Lodestar BN + incompatible VC (Charon v1.11+ matrix); interactive can abort.
+_bn_vc_warn = lodestar_bn_vc_incompatibility_message(
+    cc_name if args.switch_client != "execution" else None,
+    vc_name,
+)
+if _bn_vc_warn and not skip_prompts:
+    print(f"\nWARNING: {_bn_vc_warn}\n")
+    cont = SelectionMenu.get_selection(
+        ["Continue anyway", "Abort install"],
+        title="Lodestar BN compatibility",
+        subtitle="Obol Charon v1.11+ marks this BN/VC pair as duties may fail.",
+        show_exit_option=False,
+    )
+    if cont != 0:
+        exit(0)
 
 # 5. Execute Install
 run_install(
