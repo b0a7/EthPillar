@@ -32,6 +32,20 @@ get_latest_release_tag() {
 }
 
 # Integration tests snapshot LATEST before deploy so a release mid-test cannot fail verify.
+# ETHPILLAR_<CLIENT>_VERSION pins (Lodestar ePBS RC) skip LATEST and match x.y.z of the pin.
+pinned_version_for_client() {
+  local key="${1,,}"
+  case "$key" in
+    lodestar) printf '%s' "${ETHPILLAR_LODESTAR_VERSION:-}" ;;
+    *) printf '%s' "" ;;
+  esac
+}
+
+semver_core() {
+  local v="${1#v}"
+  grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' <<< "$v" | head -1
+}
+
 get_expected_release_tag() {
   local client="$1"
   local snapshot="${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}"
@@ -57,6 +71,23 @@ assert_matches_latest() {
   local installed="$3"
   local expected
   local expected_label="LATEST"
+  local pin
+  pin=$(pinned_version_for_client "$release_client")
+
+  if [[ -n "$pin" ]]; then
+    expected_label="pinned ${pin}"
+    local inst_core pin_core
+    inst_core=$(semver_core "$installed")
+    pin_core=$(semver_core "$pin")
+    # RC binaries may omit -rc.N in --version (Lodestar v1.47.0-rc.0 reports v1.47.0).
+    if [[ -n "$inst_core" && "$inst_core" == "$pin_core" ]]; then
+      echo "✅ ${label} matches ${expected_label} (parsed ${installed#v})"
+      return 0
+    fi
+    echo "❌ ${label} mismatch: installed ${installed#v}${INSTALLED_COMMIT:+ (${INSTALLED_COMMIT:0:7})}, ${expected_label}"
+    fail=1
+    return 0
+  fi
 
   if [[ -n "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}" && -f "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT}" ]]; then
     expected_label="install-time LATEST"

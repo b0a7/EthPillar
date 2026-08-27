@@ -1,4 +1,5 @@
 from typing import Tuple, Optional
+import os
 from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
@@ -135,9 +136,11 @@ def download_lodestar(eth_network: str) -> str:
     setup_client_user_and_dir("consensus", "lodestar")
     setup_client_user_and_dir("validator", "lodestar_validator")
 
-    # Resolve version and download URL
+    # Resolve version and download URL. ETHPILLAR_LODESTAR_VERSION pins a tag
+    # (used by the ePBS integration test for v1.47.0-rc.0).
     arch_amd64 = get_machine_architecture() == "amd64"
-    info = get_release_info("LATEST", arch_amd64)
+    version_tag = os.environ.get("ETHPILLAR_LODESTAR_VERSION") or "LATEST"
+    info = get_release_info(version_tag, arch_amd64)
     lodestar_version = info["version"]
 
     # Validate version for network requirements

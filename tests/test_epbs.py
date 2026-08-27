@@ -20,6 +20,7 @@ from manage.epbs import (
     EpbsError,
     EpbsFilesystem,
     complete,
+    eth_min_bid_to_gwei,
     parse_mevboost_relays,
     prepare,
     status,
@@ -96,7 +97,8 @@ def _args(content: str) -> list[str]:
 def test_tui_is_gated_to_full_support_only() -> None:
     """MEV-Boost TUI (``epbsTuiSupported``) matches ``support_level == full``."""
     assert support_level("Prysm") == "full"
-    for client in ("Lodestar", "Lighthouse", "Teku", "Nimbus", "Grandine", ""):
+    assert support_level("Lodestar") == "full"
+    for client in ("Lighthouse", "Teku", "Nimbus", "Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -181,7 +183,19 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
     assert "Complete: refused" not in after
 
 
-def test_lodestar_prepare_prerelease_flags(tmp_path: Path) -> None:
+def test_eth_min_bid_to_gwei() -> None:
+    """MEV-Boost ETH min-bid becomes Lodestar integer Gwei."""
+    assert eth_min_bid_to_gwei("0") == "0"
+    assert eth_min_bid_to_gwei("0.006") == "6000000"
+    assert eth_min_bid_to_gwei("0.01") == "10000000"
+    assert eth_min_bid_to_gwei("1") == "1000000000"
+    with pytest.raises(EpbsError, match="Cannot convert"):
+        eth_min_bid_to_gwei("not-a-number")
+    with pytest.raises(EpbsError, match="non-negative"):
+        eth_min_bid_to_gwei("-0.1")
+
+
+def test_lodestar_prepare_adds_builder_urls(tmp_path: Path) -> None:
     """Lodestar prepare adds ``--builder.urls`` when ``--help`` lists the flag."""
     fs = _fs(tmp_path)
     fs.run_help = lambda _argv: "--builder.urls --builder.minBid\n"
@@ -206,12 +220,12 @@ def test_lodestar_prepare_prerelease_flags(tmp_path: Path) -> None:
         ),
     )
     plan = prepare(fs, apply=True)
-    assert plan.support == "prerelease"
+    assert plan.support == "full"
     args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
     assert has_flag(args, "--builder")
     urls = get_flag_value(args, "--builder.urls")
     assert "boost-relay.flashbots.net" in urls
-    assert get_flag_value(args, "--builder.minBid") == "0.01"
+    assert get_flag_value(args, "--builder.minBid") == "10000000"  # 0.01 ETH → Gwei
 
     complete(fs, apply=True)
     bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))

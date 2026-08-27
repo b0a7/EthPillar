@@ -649,7 +649,7 @@ while true; do
       7 "Check relay registration"
       8 "Check relay latency"
     )
-    # ePBS TUI is Prysm-only (full support). CLI remains available for others.
+    # ePBS TUI is Prysm and Lodestar (full support). CLI remains available for others.
     if epbsTuiSupported; then
       SUBOPTIONS+=(9 "ePBS migration")
     fi

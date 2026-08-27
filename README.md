@@ -81,7 +81,7 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 - **Grafana Dashboards**: Built-in Ethereum node monitoring
 - **Troubleshooting Tools**: Built-in checks for common node issues with Node Checker
 - **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, or Failover setups
-- **ePBS / Gloas migration**: Two-step MEV-Boost cutover under **MEV-Boost → ePBS migration** (Prysm TUI; [guide](docs/ePBS-migration.md))
+- **ePBS / Gloas migration**: Two-step MEV-Boost cutover under **MEV-Boost → ePBS migration** (Prysm and Lodestar TUI; [guide](docs/ePBS-migration.md))
 
 ---
 

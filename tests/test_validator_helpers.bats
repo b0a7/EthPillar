@@ -49,6 +49,16 @@ ExecStart=/usr/local/bin/lighthouse validator_client --beacon-nodes=http://127.0
 EOF
 }
 
+write_lodestar_validator_service() {
+  cat > "$VALIDATOR_SERVICE_FILE" <<EOF
+[Unit]
+Description=Lodestar Validator Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/lodestar validator --beaconNodes=http://127.0.0.1:5052
+EOF
+}
+
 # ── getValidatorMode ─────────────────────────────────────────────────────────
 
 @test "getValidatorMode returns none when no validator services exist" {
@@ -92,6 +102,12 @@ EOF
 
 @test "epbsTuiSupported is true for Prysm VC" {
   write_prysm_validator_service
+  run epbsTuiSupported
+  [ "$status" -eq 0 ]
+}
+
+@test "epbsTuiSupported is true for Lodestar VC" {
+  write_lodestar_validator_service
   run epbsTuiSupported
   [ "$status" -eq 0 ]
 }

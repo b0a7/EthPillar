@@ -12,10 +12,9 @@ Two-step operator flow (EthStaker Glamsterdam guidance):
 
 Support levels:
 
-* ``full`` — Prysm (shipped ``BuilderConfig.Relays`` in proposer-settings).
-* ``prerelease`` — Lodestar flags from open PR ChainSafe/lodestar#9832;
-  prepare writes them only when ``lodestar validator --help`` lists
-  ``--builder.urls``.
+* ``full`` — Prysm (proposer-settings relays) and Lodestar v1.47.0-rc.0+
+  (VC ``--builder.urls`` / ``--builder.minBid``). Lodestar prepare still
+  probes ``lodestar validator --help`` so older binaries are skipped.
 * ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
   list; prepare is a documented no-op. Complete is refused without
   ``--force``.
@@ -30,6 +29,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from deploy.common import BASE_DATA_DIR, write_service_file
@@ -47,6 +47,7 @@ from manage.service_parse import (
 )
 
 SIDECAR_MARKERS = ("127.0.0.1:18550", "localhost:18550", "[::1]:18550")
+GWEI_PER_ETH = Decimal("1000000000")
 PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
 COMPLETE_ROLLBACK_HINT = (
     "If you completed too early: restore the newest consensus.service.bak.epbs.* "
@@ -81,10 +82,9 @@ SUPPORT_NOTES: Dict[str, str] = {
         "Requires Prysm v7.1.7+."
     ),
     "Lodestar": (
-        "Prerelease: VC flags --builder.urls / --builder.minBid from "
-        "ChainSafe/lodestar#9832. Prepare writes them only when "
-        "`lodestar validator --help` lists --builder.urls; tagged releases "
-        "are skipped so the VC can still start."
+        "Full: VC flags --builder.urls / --builder.minBid from "
+        "ChainSafe/lodestar#9832 (v1.47.0-rc.0+). Prepare writes them only "
+        "when `lodestar validator --help` lists --builder.urls."
     ),
     "Lighthouse": (
         "Placeholder: VC has --builder-proposals only; no released relay-list "
@@ -151,7 +151,7 @@ class MigrationPlan:
     Attributes:
         command: ``prepare`` or ``complete``.
         client: Detected validator (or BN for integrated Grandine).
-        support: ``full``, ``prerelease``, or ``placeholder``.
+        support: ``full`` or ``placeholder``.
         notes: Per-client support blurb from :data:`SUPPORT_NOTES`.
         actions: Files or systemd operations that would change (or did).
         warnings: Operator cautions (do not complete pre-fork, unknown flags).
@@ -162,7 +162,7 @@ class MigrationPlan:
 
     command: str
     client: str
-    support: str  # full | prerelease | placeholder
+    support: str  # full | placeholder
     notes: str
     actions: List[PlanAction] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -480,14 +480,12 @@ def support_level(client: str) -> str:
         client: Validator client name (``Prysm``, ``Lodestar``, …).
 
     Returns:
-        ``full`` (Prysm), ``prerelease`` (Lodestar), or ``placeholder``.
+        ``full`` (Prysm, Lodestar) or ``placeholder``.
         The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) is shown
         only for ``full``.
     """
-    if client == "Prysm":
+    if client in ("Prysm", "Lodestar"):
         return "full"
-    if client == "Lodestar":
-        return "prerelease"
     return "placeholder"
 
 
@@ -616,23 +614,49 @@ def apply_relays_prysm(
     return new_unit, settings_json, settings_path
 
 
+def eth_min_bid_to_gwei(eth: str) -> str:
+    """Convert MEV-Boost ``-min-bid`` (ETH) to Lodestar ``--builder.minBid`` (Gwei).
+
+    Lodestar ``parseBuilderMinBid`` rejects decimals. Flashbots MEV-Boost
+    ``-min-bid`` is ETH (EthPillar default ``0.006`` → ``6000000`` Gwei).
+
+    Args:
+        eth: Non-negative ETH amount as a decimal string.
+
+    Returns:
+        Integer Gwei string with no decimal point.
+
+    Raises:
+        EpbsError: If *eth* is not a non-negative number.
+    """
+    try:
+        value = Decimal(str(eth).strip())
+    except (InvalidOperation, AttributeError) as exc:
+        raise EpbsError(f"Cannot convert MEV-Boost min-bid {eth!r} to Gwei") from exc
+    if value < 0:
+        raise EpbsError(f"MEV-Boost min-bid must be non-negative, got {eth!r}")
+    gwei = (value * GWEI_PER_ETH).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return str(int(gwei))
+
+
 def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
-    """Add prerelease Lodestar VC builder URL / min-bid flags (PR #9832).
+    """Add Lodestar VC builder URL / min-bid flags (v1.47.0-rc.0+, PR #9832).
 
     Args:
         vc_content: Current ``validator.service`` text.
-        relays: Relays and optional min-bid from MEV-Boost.
+        relays: Relays and optional min-bid from MEV-Boost. ``min_bid`` is ETH
+            and is converted to integer Gwei for ``--builder.minBid``.
 
     Returns:
         Unit text with ``--builder``, ``--builder.urls``, and optional
-        ``--builder.minBid``. Tagged Lodestar may reject these flags.
+        ``--builder.minBid``. Older Lodestar may reject these flags.
     """
     unit = parse_unit(vc_content)
     args = normalize_cli_args(unit.exec_args)
     args = upsert_flag(args, "--builder")
     args = upsert_flag(args, "--builder.urls", ",".join(relays.urls))
     if relays.min_bid:
-        args = upsert_flag(args, "--builder.minBid", relays.min_bid)
+        args = upsert_flag(args, "--builder.minBid", eth_min_bid_to_gwei(relays.min_bid))
     return _rebuild_unit(vc_content, args)
 
 
@@ -769,7 +793,8 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     """Copy mev-boost relays onto the VC. Keep the sidecar running.
 
     Prysm writes proposer-settings JSON and VC flags. Lodestar gets
-    prerelease ``--builder.urls``. Other VCs are a documented no-op.
+    ``--builder.urls`` when the binary documents that flag. Other VCs are
+    a documented no-op.
     Beacon-node sidecar flags are not touched.
 
     Args:
@@ -845,13 +870,13 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
             plan.actions.append(
                 PlanAction(
                     "Lodestar VC",
-                    "skipped: binary --help has no --builder.urls (tagged release)",
+                    "skipped: binary --help has no --builder.urls (need v1.47.0-rc.0+)",
                 )
             )
             plan.warnings.append(
                 "Prepare: no-op on this Lodestar build — Complete will stop "
-                "MEV-Boost without a VC relay replacement. Install a build with "
-                "ChainSafe/lodestar#9832, or wait for a tagged release."
+                "MEV-Boost without a VC relay replacement. Install Lodestar "
+                "v1.47.0-rc.0 or later (ChainSafe/lodestar#9832)."
             )
         else:
             new_vc = apply_relays_lodestar(vc_content, relays)

@@ -81,11 +81,19 @@ switch_tests = [
     ("Switch-Reth-Lighthouse-to-Besu-Nimbus", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-switching"),
 ]
 
-# Post-install ePBS migration cases (Prysm empty-wallet VC start).
+# Post-install ePBS migration cases (empty-wallet VC start).
+# Lodestar is pinned to v1.47.0-rc.0 (Gloas builder API / --builder.urls).
+LODESTAR_EPBS_VERSION = "v1.47.0-rc.0"
 epbs_tests = [
     (
         "Prysm-Reth-ePBS-Migration-SEPOLIA",
         f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config 'Custom Setup' --test-epbs",
+    ),
+    (
+        "Lodestar-Reth-ePBS-Migration-SEPOLIA",
+        f"env ETHPILLAR_LODESTAR_VERSION={LODESTAR_EPBS_VERSION} {RUN_TEST} "
+        "deploy/deploy-node.py --ec Reth --cc Lodestar --vc Lodestar --network SEPOLIA "
+        "--mev --config 'Custom Setup' --test-epbs",
     ),
 ]
 

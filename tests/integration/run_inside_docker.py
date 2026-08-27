@@ -930,7 +930,7 @@ if __name__ == "__main__":
         '--test-epbs',
         action='store_true',
         default=False,
-        help='After a Prysm+MEV install, apply ePBS prepare/complete and start the VC',
+        help='After a Prysm/Lodestar+MEV install, apply ePBS prepare/complete and start the VC',
     )
     parser.add_argument(
         '--rpc-exposure-el',
