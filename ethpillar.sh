@@ -648,8 +648,14 @@ while true; do
       6 "Update to latest release"
       7 "Check relay registration"
       8 "Check relay latency"
+    )
+    # ePBS TUI is Prysm-only (full support). CLI remains available for others.
+    if epbsTuiSupported; then
+      SUBOPTIONS+=(9 "ePBS migration")
+    fi
+    SUBOPTIONS+=(
       - ""
-      9 "Back to main menu"
+      10 "Back to main menu"
     )
 
     # Display the submenu and get the user's choice
@@ -695,6 +701,9 @@ while true; do
         checkRelayLatency
         ;;
       9)
+        submenuEPBS
+        ;;
+      10)
         break
         ;;
     esac
