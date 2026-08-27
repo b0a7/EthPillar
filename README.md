@@ -81,6 +81,15 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 - **Grafana Dashboards**: Built-in Ethereum node monitoring
 - **Troubleshooting Tools**: Built-in checks for common node issues with Node Checker
 - **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, or Failover setups
+- **ePBS / Gloas migration**: Two-step MEV-Boost cutover under **MEV-Boost → ePBS migration** ([guide](docs/ePBS-migration.md))
+
+---
+
+## 🔀 ePBS migration (Gloas)
+
+When Gloas lands, builder relays move from the MEV-Boost sidecar onto the validator client. EthPillar splits that into **prepare** (copy relays to the VC, keep MEV-Boost running) and **complete** (stop MEV-Boost and drop the BN sidecar URL after the fork).
+
+See **[docs/ePBS-migration.md](docs/ePBS-migration.md)** for the TUI/CLI steps, what each client changes, and when it is safe to complete.
 
 ---
 

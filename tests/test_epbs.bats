@@ -17,6 +17,13 @@ setup() {
   grep -q 'After Merge' functions.sh
 }
 
+@test "README links ePBS migration guide" {
+  grep -q 'docs/ePBS-migration.md' README.md
+  test -f docs/ePBS-migration.md
+  grep -q 'prepare' docs/ePBS-migration.md
+  grep -q 'complete' docs/ePBS-migration.md
+}
+
 @test "integration matrix has Prysm ePBS migration case" {
   grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
