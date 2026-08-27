@@ -2064,6 +2064,103 @@ saved left-pane changes (with optional .bak backup)." 20 72
 }
 
 
+# Run manage.epbs (status | prepare | complete). Extra args are forwarded.
+runEpbsCli() {
+    local py
+    ensure_python_deps
+    py="${ETHPILLAR_PYTHON:-python3}"
+    PYTHONPATH="${BASE_DIR}" "$py" -m manage.epbs "$@"
+}
+
+# Dry-run, confirm, apply an ePBS prepare/complete step. Prompt to restart units.
+runEpbsMigrationStep() {
+    local cmd="$1"
+    local title="$2"
+    local confirm="$3"
+    local tmp err rc json restarts svc
+
+    tmp=$(mktemp /tmp/ethpillar-epbs-XXXXXX)
+    err="${tmp}.err"
+    set +e
+    runEpbsCli "$cmd" >"$tmp" 2>"$err"
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "$title" --scrolltext --msgbox "$(cat "$err" "$tmp" 2>/dev/null)" 20 78
+        rm -f "$tmp" "$err"
+        return 1
+    fi
+    whiptail --title "$title" --scrolltext --textbox "$tmp" 22 78
+    if ! whiptail --title "$title" --yesno "$confirm" 12 78; then
+        rm -f "$tmp" "$err"
+        return 0
+    fi
+    set +e
+    json=$(runEpbsCli "$cmd" --apply --json 2>"$err")
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "$title" --scrolltext --msgbox "$(cat "$err")" 20 78
+        rm -f "$tmp" "$err"
+        return 1
+    fi
+    printf '%s\n' "$json" >"$tmp"
+    whiptail --title "$title — applied" --scrolltext --textbox "$tmp" 22 78
+
+    restarts=$(printf '%s\n' "$json" | PYTHONPATH="${BASE_DIR}" "${ETHPILLAR_PYTHON:-python3}" -c \
+        "import json,sys; print(' '.join(json.load(sys.stdin).get('services_to_restart') or []))")
+    sudo systemctl daemon-reload
+    if [[ -n "$restarts" ]]; then
+        if whiptail --title "Restart services" --yesno \
+            "Restart now so the new flags take effect?\n\n${restarts}" 12 70; then
+            for svc in $restarts; do
+                sudo systemctl restart "$svc" || true
+            done
+        fi
+    fi
+    rm -f "$tmp" "$err"
+}
+
+submenuEPBS() {
+    local choice tmp
+    while true; do
+        getBackTitle
+        choice=$(whiptail --clear --cancel-button "Back" \
+            --backtitle "$BACKTITLE" \
+            --title "ePBS migration" \
+            --menu "Gloas moves relay config from MEV-Boost onto the validator client.\n\nBefore the fork: copy relays to the VC and keep MEV-Boost running.\nAfter the fork: disable MEV-Boost and drop the BN sidecar URL." \
+            0 0 0 \
+            1 "Before Merge — Apply Relays to VC" \
+            2 "After Merge — Complete ePBS migration" \
+            3 "Show current ePBS status" \
+            4 "Back" \
+            3>&1 1>&2 2>&3) || break
+        case "$choice" in
+            1)
+                runEpbsMigrationStep prepare "Before Merge — Apply Relays to VC" \
+                    "Write these VC changes now?\n\nMEV-Boost stays running. Do not complete migration until after Gloas."
+                ;;
+            2)
+                runEpbsMigrationStep complete "After Merge — Complete ePBS migration" \
+                    "Stop MEV-Boost and remove BN sidecar flags now?\n\nOnly do this after the Gloas fork. Missed proposals if you cut over early."
+                ;;
+            3)
+                tmp=$(mktemp /tmp/ethpillar-epbs-XXXXXX)
+                if runEpbsCli status >"$tmp" 2>&1; then
+                    whiptail --title "ePBS status" --scrolltext --textbox "$tmp" 22 78
+                else
+                    whiptail --title "ePBS status" --scrolltext --msgbox "$(cat "$tmp")" 20 78
+                fi
+                rm -f "$tmp"
+                ;;
+            4|"")
+                break
+                ;;
+        esac
+    done
+}
+
+
 # Host tools first (whiptail, curl, …), then Python venv deps.
 ensure_host_runtime_packages
 ensure_python_deps
