@@ -15,6 +15,8 @@ from deploy.prysm import generate_prysm_bn_service, generate_prysm_vc_service
 from deploy.teku import generate_teku_bn_service, generate_teku_vc_service
 from deploy.grandine import generate_grandine_bn_service
 from manage.epbs import (
+    COMPLETE_REFUSED,
+    COMPLETE_ROLLBACK_HINT,
     EpbsError,
     EpbsFilesystem,
     complete,
@@ -22,6 +24,7 @@ from manage.epbs import (
     prepare,
     status,
     strip_bn_sidecar,
+    support_level,
 )
 from manage.service_parse import get_flag_value, has_flag, normalize_cli_args, parse_unit
 
@@ -88,6 +91,13 @@ def _args(content: str) -> list[str]:
         CLI argument list including the binary path.
     """
     return normalize_cli_args(parse_unit(content).exec_args)
+
+
+def test_tui_is_gated_to_full_support_only() -> None:
+    """MEV-Boost TUI (``epbsTuiSupported``) matches ``support_level == full``."""
+    assert support_level("Prysm") == "full"
+    for client in ("Lodestar", "Lighthouse", "Teku", "Nimbus", "Grandine", ""):
+        assert support_level(client) != "full"
 
 
 def test_parse_mevboost_relays_and_min_bid() -> None:
@@ -159,11 +169,22 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
     assert not has_flag(_args(bn), "--http-mev-relay")
     # VC relays remain
     assert json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))["default_config"]["builder"]["relays"]
+    assert COMPLETE_ROLLBACK_HINT in done.format_text()
+
+    # Idempotent complete + status after a successful cutover
+    again_done = complete(fs, apply=True)
+    assert again_done.applied
+    assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    after = status(fs)
+    assert "VC relays: yes" in after
+    assert "already removed" in after
+    assert "Complete: refused" not in after
 
 
 def test_lodestar_prepare_prerelease_flags(tmp_path: Path) -> None:
-    """Lodestar prepare adds ``--builder.urls``; complete strips the BN sidecar."""
+    """Lodestar prepare adds ``--builder.urls`` when ``--help`` lists the flag."""
     fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "--builder.urls --builder.minBid\n"
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.01", RELAYS))
     _write(
         fs,
@@ -202,7 +223,7 @@ def test_lodestar_prepare_prerelease_flags(tmp_path: Path) -> None:
 
 
 def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) -> None:
-    """Lighthouse prepare is a no-op; complete still removes BN ``--builder`` sidecar."""
+    """Lighthouse prepare is a no-op; complete requires ``--force`` to strip BN sidecar."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(
@@ -228,12 +249,50 @@ def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) ->
     vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
     assert "--builder-proposals" in vc
     assert "boost-relay.flashbots.net" not in vc
+    assert any("no-op on this client" in w for w in plan.warnings)
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
 
-    done = complete(fs, apply=True)
+    done = complete(fs, apply=True, force=True)
     assert any("relay list" in w.lower() for w in done.warnings)
     bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
     assert "18550" not in bn
     assert "--builder-proposals" in Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+
+
+def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
+    tmp_path: Path,
+) -> None:
+    """Tagged Lodestar without ``--builder.urls`` in ``--help`` is a prepare no-op."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Usage: lodestar validator [options]\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.01", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_lodestar_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            mev_parameters="--builder --builder.urls http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_lodestar_vc_service(
+            "mainnet",
+            "ep",
+            "--beaconNodes=http://127.0.0.1:5052",
+            fee_parameters=f"--suggestedFeeRecipient={FEE}",
+            mev_parameters="--builder",
+        ),
+    )
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+    assert any("no --builder.urls" in a.detail for a in plan.actions)
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
 
 
 @pytest.mark.parametrize(
@@ -279,7 +338,7 @@ def test_placeholder_clients_complete_strips_sidecar(
     vc_unit: str,
     sidecar_token: str,
 ) -> None:
-    """Teku/Nimbus prepare is a no-op; complete drops the BN sidecar URL flag."""
+    """Teku/Nimbus prepare is a no-op; complete is refused without ``--force``."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(fs, "consensus", bn_unit)
@@ -287,8 +346,10 @@ def test_placeholder_clients_complete_strips_sidecar(
     plan = prepare(fs, apply=True)
     assert plan.support == "placeholder"
     assert client.lower() in plan.client.lower() or plan.client == client
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
 
-    complete(fs, apply=True)
+    complete(fs, apply=True, force=True)
     bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
     assert not has_flag(bn_args, sidecar_token)
     # VC builder-enable flags stay
@@ -300,7 +361,7 @@ def test_placeholder_clients_complete_strips_sidecar(
 
 
 def test_grandine_integrated_placeholder_and_complete(tmp_path: Path) -> None:
-    """Integrated Grandine prepare is a no-op; complete strips ``--builder-url``."""
+    """Integrated Grandine prepare is a no-op; complete requires ``--force``."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(
@@ -322,8 +383,10 @@ def test_grandine_integrated_placeholder_and_complete(tmp_path: Path) -> None:
     assert plan.client == "Grandine"
     assert plan.support == "placeholder"
     assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
 
-    complete(fs, apply=True)
+    complete(fs, apply=True, force=True)
     bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
     assert "18550" not in bn
     assert "keystore-dir" in bn
@@ -425,3 +488,33 @@ def test_status_reports_prysm(tmp_path: Path) -> None:
     assert "relays=2" in text
     assert "BN sidecar flags: present" in text
     assert "VC relays: no" in text
+    assert "Complete: refused until Prepare writes a VC relay list" in text
+
+
+def test_complete_refused_on_prysm_without_prepare(tmp_path: Path) -> None:
+    """Prysm complete without a relay list is refused (TUI and CLI)."""
+    fs = _fs(tmp_path)
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            mev_parameters="--enable-builder",
+        ),
+    )
+    with pytest.raises(EpbsError, match="Complete refused") as exc:
+        complete(fs, apply=False)
+    assert str(exc.value) == COMPLETE_REFUSED
+    assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")

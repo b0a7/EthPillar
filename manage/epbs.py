@@ -7,14 +7,18 @@ Two-step operator flow (EthStaker Glamsterdam guidance):
    pre-Gloas proposals still work.
 2. **complete** — stop/disable MEV-Boost and strip BN flags that pointed at
    ``http://127.0.0.1:18550``. Keep VC builder-enable flags and the VC relay
-   list from step 1.
+   list from step 1. Refused unless the VC already has a relay list (or
+   ``--force``).
 
 Support levels:
 
 * ``full`` — Prysm (shipped ``BuilderConfig.Relays`` in proposer-settings).
-* ``prerelease`` — Lodestar flags from open PR ChainSafe/lodestar#9832.
+* ``prerelease`` — Lodestar flags from open PR ChainSafe/lodestar#9832;
+  prepare writes them only when ``lodestar validator --help`` lists
+  ``--builder.urls``.
 * ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
-  list; prepare is a documented no-op. Complete still strips the BN sidecar.
+  list; prepare is a documented no-op. Complete is refused without
+  ``--force``.
 """
 
 from __future__ import annotations
@@ -44,6 +48,16 @@ from manage.service_parse import (
 
 SIDECAR_MARKERS = ("127.0.0.1:18550", "localhost:18550", "[::1]:18550")
 PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
+COMPLETE_ROLLBACK_HINT = (
+    "If you completed too early: restore the newest consensus.service.bak.epbs.* "
+    "over consensus.service, then: sudo systemctl enable --now mevboost && "
+    "sudo systemctl daemon-reload && sudo systemctl restart consensus"
+)
+COMPLETE_REFUSED = (
+    "Complete refused: this validator has no relay list to replace MEV-Boost. "
+    "Run prepare first, or pass --force to stop MEV-Boost and use local EL + "
+    "P2P bids only."
+)
 
 # BN flags whose *value* is a builder/relay URL (strip only sidecar URLs).
 BN_URL_FLAGS: Dict[str, Tuple[str, ...]] = {
@@ -68,25 +82,27 @@ SUPPORT_NOTES: Dict[str, str] = {
     ),
     "Lodestar": (
         "Prerelease: VC flags --builder.urls / --builder.minBid from "
-        "ChainSafe/lodestar#9832 (not in a tagged release as of Aug 2026). "
-        "Unreleased Lodestar builds may reject these flags."
+        "ChainSafe/lodestar#9832. Prepare writes them only when "
+        "`lodestar validator --help` lists --builder.urls; tagged releases "
+        "are skipped so the VC can still start."
     ),
     "Lighthouse": (
         "Placeholder: VC has --builder-proposals only; no released relay-list "
-        "flag. Prepare is a no-op. Complete still removes BN --builder sidecar URL."
+        "flag. Prepare is a no-op. Complete is refused without --force "
+        "(would stop MEV-Boost with no VC relay replacement)."
     ),
     "Teku": (
         "Placeholder: Staked Builder API REST client (Consensys/teku#11026) is "
-        "not wired into proposing. Prepare is a no-op. Complete removes BN "
-        "--builder-endpoint sidecar URL."
+        "not wired into proposing. Prepare is a no-op. Complete is refused "
+        "without --force."
     ),
     "Nimbus": (
         "Placeholder: VC has --payload-builder=true only. Prepare is a no-op. "
-        "Complete removes BN --payload-builder-url sidecar URL."
+        "Complete is refused without --force."
     ),
     "Grandine": (
         "Placeholder: integrated client; --builder-url takes a single sidecar. "
-        "Prepare is a no-op. Complete removes the BN sidecar URL."
+        "Prepare is a no-op. Complete is refused without --force."
     ),
 }
 
@@ -94,8 +110,9 @@ SUPPORT_NOTES: Dict[str, str] = {
 class EpbsError(Exception):
     """Operator-facing ePBS migration error.
 
-    Raised for missing units, invalid proposer-settings JSON, or an empty
-    relay list. Caught by :func:`main` and printed to stderr.
+    Raised for missing units, invalid proposer-settings JSON, an empty
+    relay list, or a refused ``complete`` when the VC has no relays.
+    Caught by :func:`main` and printed to stderr.
     """
 
 
@@ -177,6 +194,9 @@ class MigrationPlan:
         if self.disable_mevboost:
             lines.append("MEV-Boost will be stopped and disabled (unit file kept).")
             lines.append("")
+        if self.command == "complete":
+            lines.append(COMPLETE_ROLLBACK_HINT)
+            lines.append("")
         if self.services_to_restart:
             lines.append("Restart after apply: " + ", ".join(self.services_to_restart))
             lines.append("")
@@ -200,6 +220,7 @@ class EpbsFilesystem:
         write_unit: Optional override for writing systemd units.
         write_data: Optional override for writing JSON/data files.
         stop_disable_mevboost: Optional override for ``systemctl stop/disable``.
+        run_help: Optional ``argv -> help text`` probe (Lodestar ``--help``).
     """
 
     systemd_dir: str = "/etc/systemd/system"
@@ -209,6 +230,7 @@ class EpbsFilesystem:
     write_unit: Optional[Callable[[str, str], None]] = None
     write_data: Optional[Callable[[str, str], None]] = None
     stop_disable_mevboost: Optional[Callable[[], None]] = None
+    run_help: Optional[Callable[[Sequence[str]], str]] = None
 
     def unit_path(self, key: str) -> str:
         """Return the systemd unit path for *key*.
@@ -459,6 +481,8 @@ def support_level(client: str) -> str:
 
     Returns:
         ``full`` (Prysm), ``prerelease`` (Lodestar), or ``placeholder``.
+        The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) is shown
+        only for ``full``.
     """
     if client == "Prysm":
         return "full"
@@ -524,6 +548,11 @@ def _prysm_builder_config(relays: RelaysConfig) -> dict:
     return {
         "enabled": True,
         "relays": list(relays.urls),
+        # Cap on extra Gloas *execution_payment* from a builder (wei), not the
+        # MEV bid / proposer reward. Public gossip bids must use
+        # execution_payment=0; uint64 0 is also Prysm's proto/omitempty default
+        # (v7.1.7 BuilderConfig). It does not disable builder mode or zero out
+        # builder block value.
         "max_execution_payment": "0",
     }
 
@@ -605,6 +634,50 @@ def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
     if relays.min_bid:
         args = upsert_flag(args, "--builder.minBid", relays.min_bid)
     return _rebuild_unit(vc_content, args)
+
+
+def _command_help(fs: EpbsFilesystem, argv: Sequence[str]) -> str:
+    """Return ``--help`` text for *argv*, or empty string on failure.
+
+    Args:
+        fs: IO adapter; ``run_help`` short-circuits subprocess in tests.
+        argv: Command line including the binary and trailing ``--help``.
+
+    Returns:
+        Combined stdout and stderr, or ``""`` if the binary cannot be run.
+    """
+    if fs.run_help is not None:
+        return fs.run_help(argv)
+    try:
+        result = subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return (result.stdout or "") + (result.stderr or "")
+
+
+def lodestar_has_builder_urls_flag(fs: EpbsFilesystem, vc_content: str) -> bool:
+    """True when the Lodestar VC binary documents ``--builder.urls``.
+
+    Args:
+        fs: IO adapter used to run ``lodestar validator --help``.
+        vc_content: Current ``validator.service`` text (binary + subcommand).
+
+    Returns:
+        True if help text contains ``--builder.urls`` (ChainSafe/lodestar#9832).
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    if not args:
+        return False
+    # First ExecStart token is the binary, or "binary subcommand" (Lodestar).
+    help_cmd: List[str] = list(args[0].split())
+    help_cmd.append("--help")
+    return "--builder.urls" in _command_help(fs, help_cmd)
 
 
 def apply_relays_placeholder(client: str) -> str:
@@ -768,27 +841,39 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
         else:
             plan.warnings.append("Prysm VC already has these relays; nothing to change.")
     elif vc_name == "Lodestar":
-        new_vc = apply_relays_lodestar(vc_content, relays)
-        if _write_unit_if_changed(fs, vc_path, vc_content, new_vc, apply):
+        if not lodestar_has_builder_urls_flag(fs, vc_content):
             plan.actions.append(
                 PlanAction(
-                    vc_path,
-                    "add --builder --builder.urls --builder.minBid (PR #9832)",
+                    "Lodestar VC",
+                    "skipped: binary --help has no --builder.urls (tagged release)",
                 )
             )
-            plan.services_to_restart.append("validator")
             plan.warnings.append(
-                "Lodestar #9832 is unreleased; the VC may refuse unknown flags."
+                "Prepare: no-op on this Lodestar build — Complete will stop "
+                "MEV-Boost without a VC relay replacement. Install a build with "
+                "ChainSafe/lodestar#9832, or wait for a tagged release."
             )
         else:
-            plan.warnings.append("Lodestar VC already has builder.urls; nothing to change.")
+            new_vc = apply_relays_lodestar(vc_content, relays)
+            if _write_unit_if_changed(fs, vc_path, vc_content, new_vc, apply):
+                plan.actions.append(
+                    PlanAction(
+                        vc_path,
+                        "add --builder --builder.urls --builder.minBid (PR #9832)",
+                    )
+                )
+                plan.services_to_restart.append("validator")
+            else:
+                plan.warnings.append(
+                    "Lodestar VC already has builder.urls; nothing to change."
+                )
     else:
         planned = apply_relays_placeholder(vc_name)
         plan.actions.append(PlanAction(f"{vc_name} VC (placeholder)", planned))
         plan.warnings.append(
-            f"{vc_name} has no released VC relay-list flag. No unit files will "
-            "be changed. After Gloas, complete migration for local+P2P bids only, "
-            "or wait for a client release."
+            f"Prepare: no-op on this client — Complete will stop MEV-Boost "
+            f"without a VC relay replacement. Complete is refused unless you "
+            f"pass --force (local EL + P2P bids only)."
         )
         if mode == "integrated_grandine":
             plan.warnings.append("Grandine is integrated; there is no separate validator.service.")
@@ -832,21 +917,27 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
     return False
 
 
-def complete(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> MigrationPlan:
+def complete(
+    fs: Optional[EpbsFilesystem] = None,
+    apply: bool = False,
+    force: bool = False,
+) -> MigrationPlan:
     """Disable MEV-Boost and remove BN sidecar builder flags.
 
-    Does not rewrite VC relay config from prepare. Warns when the VC has no
-    relay list (node will use local EL + P2P bids only).
+    Does not rewrite VC relay config from prepare. Refused when the VC has no
+    relay list unless *force* is True (local EL + P2P bids only).
 
     Args:
         fs: IO adapter; production defaults if omitted.
         apply: If True, write the BN unit and stop/disable mevboost.
+        force: Allow complete without a VC relay list.
 
     Returns:
         Plan including BN strip actions and ``disable_mevboost``.
 
     Raises:
-        EpbsError: If no consensus unit exists.
+        EpbsError: If no consensus unit exists, or the VC has no relay list
+            and *force* is False.
     """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
@@ -866,17 +957,17 @@ def complete(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrat
     )
 
     vc_content = ""
+    has_relays = False
     if mode == "separate":
         _, vc_content = _read_required_unit(fs, "validator")
-        if not _vc_has_relays(fs, vc_name, vc_content):
-            plan.warnings.append(
-                "VC does not have a relay list. After this step the node will "
-                "use local EL + P2P builder bids only (no off-protocol relays)."
-            )
-    elif mode == "integrated_grandine":
+        has_relays = _vc_has_relays(fs, vc_name, vc_content)
+    if not has_relays and not force:
+        raise EpbsError(COMPLETE_REFUSED)
+    if not has_relays:
         plan.warnings.append(
-            "Grandine has no VC relay list. After this step bids come from "
-            "local EL + P2P only."
+            "Prepare was a no-op / this VC has no relay list. After this step "
+            "the node will use local EL + P2P builder bids only (no off-protocol "
+            "relays)."
         )
 
     bn_path, bn_content = _read_required_unit(fs, "consensus")
@@ -923,10 +1014,11 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
     """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
+    level = support_level(vc_name) if vc_name else ""
     lines = [
         f"Validator: {vc_name or '(none)'}  mode={mode}",
         f"Beacon node: {bn_name or '(none)'}",
-        f"Support: {support_level(vc_name) if vc_name else 'n/a'}",
+        f"Support: {level or 'n/a'}",
     ]
     if vc_name:
         lines.append(SUPPORT_NOTES.get(vc_name, ""))
@@ -943,9 +1035,25 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
 
     if mode == "separate":
         _, vc_content = _read_required_unit(fs, "validator")
+        has_relays = _vc_has_relays(fs, vc_name, vc_content)
+        lines.append("VC relays: " + ("yes" if has_relays else "no"))
+        if not has_relays:
+            if level == "placeholder":
+                lines.append(
+                    "Prepare: no-op on this client — Complete will stop "
+                    "MEV-Boost without a VC relay replacement."
+                )
+            lines.append(
+                "Complete: refused until Prepare writes a VC relay list "
+                "(or --force for local EL + P2P only)."
+            )
+    elif mode == "integrated_grandine":
         lines.append(
-            "VC relays: "
-            + ("yes" if _vc_has_relays(fs, vc_name, vc_content) else "no")
+            "Prepare: no-op on this client — Complete will stop MEV-Boost "
+            "without a VC relay replacement."
+        )
+        lines.append(
+            "Complete: refused unless --force (local EL + P2P only)."
         )
     if bn_name:
         _, bn_content = _read_required_unit(fs, "consensus")
@@ -976,6 +1084,8 @@ def _print_plan(plan: MigrationPlan, as_json: bool) -> None:
             "disable_mevboost": plan.disable_mevboost,
             "applied": plan.applied,
         }
+        if plan.command == "complete":
+            payload["rollback"] = COMPLETE_ROLLBACK_HINT
         print(json.dumps(payload, indent=2))
         return
     print(plan.format_text(), end="")
@@ -1005,6 +1115,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Write unit/settings changes (default is dry-run).",
     )
     parser.add_argument("--json", action="store_true", help="Machine-readable output.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow complete without a VC relay list (local EL + P2P bids only).",
+    )
     parser.add_argument(
         "--systemd-dir",
         default=None,
@@ -1039,7 +1154,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if args.command == "prepare":
             _print_plan(prepare(fs, apply=args.apply), args.json)
             return 0
-        _print_plan(complete(fs, apply=args.apply), args.json)
+        _print_plan(complete(fs, apply=args.apply, force=args.force), args.json)
         return 0
     except EpbsError as exc:
         print(f"ePBS: {exc}", file=sys.stderr)

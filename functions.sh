@@ -607,6 +607,15 @@ getValidatorClient(){
     echo "$VALIDATOR_CLIENT"
 }
 
+# True when the MEV-Boost TUI should offer ePBS migration.
+# Only clients with manage.epbs.support_level == "full" (currently Prysm).
+# CLI (`python -m manage.epbs`) is not gated; prerelease/placeholder stay there.
+epbsTuiSupported() {
+    local client
+    client=$(getValidatorClient)
+    [[ "$client" == "Prysm" ]]
+}
+
 # Build the beacon node REST URL that a separate VC should target.
 # Prefers environment variables, then falls back to scraping the consensus.service.
 # Sets BEACON_NODE_ENDPOINT.
