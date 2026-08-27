@@ -15,7 +15,7 @@ import sys
 import signal
 import shlex
 import time
-from typing import List, Dict, Optional, Any, Union, Tuple
+from typing import List, Dict, Optional, Any, Union, Tuple, Sequence
 
 # Line-buffer stdout so docker log files reflect true execution order.
 try:
@@ -379,7 +379,10 @@ def _journalctl_args(service_name: str) -> List[str]:
     return ["journalctl", "-u", service_name, "--no-pager", "-n", "100"]
 
 
-def check_service_journal_errors(service_name: str) -> bool:
+def check_service_journal_errors(
+    service_name: str,
+    ignore_patterns: Optional[Sequence[str]] = None,
+) -> bool:
     """Check journal for fatal service errors that indicate invalid install/config."""
     result = subprocess.run(
         _journalctl_args(service_name),
@@ -388,6 +391,7 @@ def check_service_journal_errors(service_name: str) -> bool:
     if result.returncode != 0:
         return True
     journal = result.stdout
+    ignore = set(ignore_patterns or ())
 
     fatal_patterns = (
         "caxa stub:",
@@ -408,6 +412,8 @@ def check_service_journal_errors(service_name: str) -> bool:
         "cannot connect to builder client",
     )
     for pattern in fatal_patterns:
+        if pattern in ignore:
+            continue
         if pattern in journal:
             print(f"  FAIL: Service {service_name} journal contains fatal error: {pattern}")
             print("--- JOURNAL OUTPUT ---")
@@ -476,15 +482,26 @@ def _has_validator_keys() -> bool:
     return False
 
 
-def check_service_start(service_name: str, has_caplin: bool = False) -> bool:
+def check_service_start(
+    service_name: str,
+    has_caplin: bool = False,
+    force_validator: bool = False,
+    ignore_journal_patterns: Optional[Sequence[str]] = None,
+) -> bool:
     """Validates the service file via systemd and verifies it can start securely."""
     service_path = f"/etc/systemd/system/{service_name}.service"
     if not os.path.exists(service_path):
         return False
 
-    if service_name == "validator" and not _has_validator_keys():
+    if service_name == "validator" and not force_validator and not _has_validator_keys():
         print("  ⚠️  Skipping validator health check: no validator keys found (expected in test environment)")
         return True
+    if service_name == "validator" and force_validator and not _has_validator_keys():
+        print(
+            "  [systemd] Starting validator without keystores "
+            "(empty wallet; asserts flags/config, not attesting)",
+            flush=True,
+        )
 
     if systemd_available():
         print(f"  [systemd] Validating {service_name} service via systemctl...", flush=True)
@@ -546,7 +563,7 @@ def check_service_start(service_name: str, has_caplin: bool = False) -> bool:
                 or main_pid == "0"
             )
             if is_bad_state:
-                if not check_service_journal_errors(service_name):
+                if not check_service_journal_errors(service_name, ignore_journal_patterns):
                     print(f"  ❌ Service {service_name} has fatal config/binary error", flush=True)
                     subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
                     return False
@@ -563,8 +580,8 @@ def check_service_start(service_name: str, has_caplin: bool = False) -> bool:
                             f"bound to port(s) {ports_text} after {attempt * POLL_INTERVAL_SEC}s)",
                             flush=True,
                         )
-                        return check_service_journal_errors(service_name)
-                    if not check_service_journal_errors(service_name):
+                        return check_service_journal_errors(service_name, ignore_journal_patterns)
+                    if not check_service_journal_errors(service_name, ignore_journal_patterns):
                         print(
                             f"  ❌ Service {service_name} journal shows fatal error "
                             f"while waiting for port(s) to bind",
@@ -577,7 +594,7 @@ def check_service_start(service_name: str, has_caplin: bool = False) -> bool:
             else:
                 if attempt >= 3:
                     print(f"  ✅ Service {service_name} is healthy (active, PID: {main_pid}, 15s stability check passed)", flush=True)
-                    return check_service_journal_errors(service_name)
+                    return check_service_journal_errors(service_name, ignore_journal_patterns)
 
         ports_text = ", ".join(str(p) for p in required_ports) if required_ports else "required ports"
         print(
@@ -886,6 +903,12 @@ if __name__ == "__main__":
     parser.add_argument('--test-updates', action='store_true', default=False)
     parser.add_argument('--test-switching', action='store_true', default=False)
     parser.add_argument(
+        '--test-epbs',
+        action='store_true',
+        default=False,
+        help='After a Prysm+MEV install, apply ePBS prepare/complete and start the VC',
+    )
+    parser.add_argument(
         '--rpc-exposure-el',
         action='store_true',
         default=False,
@@ -898,6 +921,18 @@ if __name__ == "__main__":
         help='Run CL expose/revoke RPC bind cycle (once per client in the matrix)',
     )
     parser.add_argument('--service', type=str, default="", help='Service name for verify-service-health')
+    parser.add_argument(
+        '--force-validator',
+        action='store_true',
+        default=False,
+        help='Start validator even when no keystores are present (empty-wallet smoke)',
+    )
+    parser.add_argument(
+        '--ignore-journal-pattern',
+        action='append',
+        default=[],
+        help='Fatal journal substring to ignore during verify-service-health (repeatable)',
+    )
     args = parser.parse_args()
     require_non_root_integration_runner()
     require_production_python_deps()
@@ -911,7 +946,12 @@ if __name__ == "__main__":
             if args.service == "execution"
             else False
         )
-        success = check_service_start(args.service, has_caplin=has_caplin)
+        success = check_service_start(
+            args.service,
+            has_caplin=has_caplin,
+            force_validator=args.force_validator,
+            ignore_journal_patterns=args.ignore_journal_pattern or None,
+        )
         sys.exit(0 if success else 1)
 
     write_test_env(args)
@@ -929,6 +969,15 @@ if __name__ == "__main__":
             print("=========================================", flush=True)
             subprocess.run(
                 ["bash", "/ethpillar/tests/integration/test_updates.sh"],
+                check=True,
+                env=subprocess_env,
+            )
+        if args.test_epbs:
+            print("\n=========================================", flush=True)
+            print(" Running ePBS Migration Integration Test...", flush=True)
+            print("=========================================", flush=True)
+            subprocess.run(
+                ["bash", "/ethpillar/tests/integration/test_epbs.sh"],
                 check=True,
                 env=subprocess_env,
             )

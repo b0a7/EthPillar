@@ -16,3 +16,12 @@ setup() {
   grep -q 'Before Merge' functions.sh
   grep -q 'After Merge' functions.sh
 }
+
+@test "integration matrix has Prysm ePBS migration case" {
+  grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
+  grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
+  grep -q -- '--test-epbs' tests/integration/run_inside_docker.py
+  grep -q -- '--force-validator' tests/integration/run_inside_docker.py
+  test -f tests/integration/test_epbs.sh
+  grep -q -- '--force-validator' tests/integration/test_epbs.sh
+}
