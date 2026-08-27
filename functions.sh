@@ -2065,6 +2065,8 @@ saved left-pane changes (with optional .bak backup)." 20 72
 
 
 # Run manage.epbs (status | prepare | complete). Extra args are forwarded.
+# Usage: runEpbsCli <command> [flags...]
+# Relies on ETHPILLAR_PYTHON / PYTHONPATH from ensure_python_deps.
 runEpbsCli() {
     local py
     ensure_python_deps
@@ -2073,6 +2075,10 @@ runEpbsCli() {
 }
 
 # Dry-run, confirm, apply an ePBS prepare/complete step. Prompt to restart units.
+# Args:
+#   $1  command  — prepare | complete
+#   $2  title    — whiptail window title
+#   $3  confirm  — yes/no prompt after the dry-run textbox
 runEpbsMigrationStep() {
     local cmd="$1"
     local title="$2"
@@ -2121,6 +2127,7 @@ runEpbsMigrationStep() {
     rm -f "$tmp" "$err"
 }
 
+# MEV-Boost submenu: prepare (before Gloas), complete (after Gloas), status.
 submenuEPBS() {
     local choice tmp
     while true; do

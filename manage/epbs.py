@@ -92,12 +92,22 @@ SUPPORT_NOTES: Dict[str, str] = {
 
 
 class EpbsError(Exception):
-    """Operator-facing ePBS migration error."""
+    """Operator-facing ePBS migration error.
+
+    Raised for missing units, invalid proposer-settings JSON, or an empty
+    relay list. Caught by :func:`main` and printed to stderr.
+    """
 
 
 @dataclass
 class RelaysConfig:
-    """Relays and min-bid scraped from mevboost.service."""
+    """Relays and min-bid scraped from ``mevboost.service``.
+
+    Attributes:
+        urls: Relay URLs from ``-relay`` / ``--relay`` (comma lists expanded).
+        min_bid: Optional ``-min-bid`` value in ETH; empty if unset.
+        network: Network name parsed from the unit Description, if present.
+    """
 
     urls: List[str]
     min_bid: str = ""
@@ -106,7 +116,12 @@ class RelaysConfig:
 
 @dataclass
 class PlanAction:
-    """One planned file or systemd change."""
+    """One planned file or systemd change.
+
+    Attributes:
+        target: Path or short label (unit file, settings JSON, or summary).
+        detail: Human-readable description of the change.
+    """
 
     target: str
     detail: str
@@ -114,7 +129,19 @@ class PlanAction:
 
 @dataclass
 class MigrationPlan:
-    """Result of prepare/complete (dry-run or applied)."""
+    """Result of prepare/complete (dry-run or applied).
+
+    Attributes:
+        command: ``prepare`` or ``complete``.
+        client: Detected validator (or BN for integrated Grandine).
+        support: ``full``, ``prerelease``, or ``placeholder``.
+        notes: Per-client support blurb from :data:`SUPPORT_NOTES`.
+        actions: Files or systemd operations that would change (or did).
+        warnings: Operator cautions (do not complete pre-fork, unknown flags).
+        services_to_restart: Unit names to bounce after ``--apply``.
+        disable_mevboost: True when complete will stop/disable MEV-Boost.
+        applied: True after a successful ``--apply`` write.
+    """
 
     command: str
     client: str
@@ -127,6 +154,11 @@ class MigrationPlan:
     applied: bool = False
 
     def format_text(self) -> str:
+        """Render a TUI/CLI dry-run or apply summary.
+
+        Returns:
+            Multi-line text ending with a newline.
+        """
         lines = [
             f"ePBS {self.command}: {self.client} ({self.support})",
             self.notes,
@@ -154,7 +186,21 @@ class MigrationPlan:
 
 @dataclass
 class EpbsFilesystem:
-    """Injectable IO so unit tests do not need sudo or /etc."""
+    """Injectable IO so unit tests do not need sudo or ``/etc``.
+
+    Production uses :func:`read_text_file` / :func:`write_service_file` and
+    sudo copies. Tests swap in plain pathlib writers and a fake mev-boost
+    stopper.
+
+    Attributes:
+        systemd_dir: Directory containing ``*.service`` files.
+        prysm_settings_path: Default Prysm proposer-settings JSON path.
+        read_text: Read a file; return None if missing.
+        exists: True when the path is a regular file.
+        write_unit: Optional override for writing systemd units.
+        write_data: Optional override for writing JSON/data files.
+        stop_disable_mevboost: Optional override for ``systemctl stop/disable``.
+    """
 
     systemd_dir: str = "/etc/systemd/system"
     prysm_settings_path: str = PRYSM_SETTINGS_PATH
@@ -165,16 +211,37 @@ class EpbsFilesystem:
     stop_disable_mevboost: Optional[Callable[[], None]] = None
 
     def unit_path(self, key: str) -> str:
+        """Return the systemd unit path for *key*.
+
+        Args:
+            key: Logical name such as ``validator``, ``consensus``, ``mevboost``.
+
+        Returns:
+            Absolute path. Uses :data:`SERVICE_FILES` when ``systemd_dir`` is
+            the production directory; otherwise ``{systemd_dir}/{key}.service``.
+        """
         if self.systemd_dir == "/etc/systemd/system":
             return SERVICE_FILES[key]
         return os.path.join(self.systemd_dir, f"{key}.service")
 
 
 def _default_write_unit(path: str, content: str) -> None:
+    """Write a systemd unit via the production sudo temp-file helper.
+
+    Args:
+        path: Destination unit path (typically under ``/etc/systemd/system``).
+        content: Full unit file text.
+    """
     write_service_file(content, path, temp_filename="epbs_temp.service")
 
 
 def _default_write_data(path: str, content: str) -> None:
+    """Write proposer-settings JSON (or a backup) as validator-owned 0644.
+
+    Args:
+        path: Destination path (for example ``/var/lib/prysm_validator/...``).
+        content: File text. A trailing newline is added if missing.
+    """
     import tempfile
 
     directory = os.path.dirname(path)
@@ -197,6 +264,7 @@ def _default_write_data(path: str, content: str) -> None:
 
 
 def _default_stop_disable_mevboost() -> None:
+    """Stop and disable ``mevboost.service`` without deleting the unit file."""
     subprocess.run(
         ["sudo", "systemctl", "stop", "mevboost"],
         check=False,
@@ -210,6 +278,18 @@ def _default_stop_disable_mevboost() -> None:
 
 
 def _backup(path: str, fs: EpbsFilesystem) -> str:
+    """Copy *path* to ``{path}.bak.epbs.<timestamp>`` before overwrite.
+
+    Args:
+        path: Existing unit or data file to snapshot.
+        fs: IO adapter (uses ``write_unit`` or ``write_data``).
+
+    Returns:
+        Backup path that was written.
+
+    Raises:
+        EpbsError: If *path* cannot be read.
+    """
     stamp = time.strftime("%Y%m%d%H%M%S")
     backup_path = f"{path}.bak.epbs.{stamp}"
     content = fs.read_text(path)
@@ -223,7 +303,19 @@ def _backup(path: str, fs: EpbsFilesystem) -> str:
 
 
 def upsert_flag(args: Sequence[str], name: str, value: Optional[str] = None) -> List[str]:
-    """Set *name* to *value* (or as a boolean flag when *value* is None)."""
+    """Set *name* to *value* (or as a boolean flag when *value* is None).
+
+    Existing occurrences of *name* are replaced; duplicates after the first
+    are dropped. The flag is appended if it was not present.
+
+    Args:
+        args: Normalized CLI tokens from a unit ``ExecStart``.
+        name: Flag including leading dashes (for example ``--enable-builder``).
+        value: If set, written as ``name=value``; otherwise a bare boolean flag.
+
+    Returns:
+        New argument list.
+    """
     key = name.lower()
     out: List[str] = []
     found = False
@@ -246,7 +338,17 @@ def remove_flags(
     *names: str,
     value_contains: Optional[str] = None,
 ) -> List[str]:
-    """Drop flags matching *names*, optionally only when the value contains a marker."""
+    """Drop flags matching *names*, optionally only when the value contains a marker.
+
+    Args:
+        args: Normalized CLI tokens.
+        *names: Flag names to remove (for example ``--http-mev-relay``).
+        value_contains: If set, keep the flag unless this substring appears in
+            the value (used so non-sidecar builder URLs survive).
+
+    Returns:
+        New argument list with matching flags removed.
+    """
     want = {n.lower() for n in names}
     out: List[str] = []
     for arg in args:
@@ -262,13 +364,28 @@ def remove_flags(
 
 
 def is_sidecar_url(url: str) -> bool:
-    """True if *url* points at the local mev-boost listen address."""
+    """Return True if *url* points at the local mev-boost listen address.
+
+    Args:
+        url: Single URL or a comma-separated list fragment.
+
+    Returns:
+        True when any :data:`SIDECAR_MARKERS` substring is present
+        (``127.0.0.1:18550``, ``localhost:18550``, ``[::1]:18550``).
+    """
     lowered = (url or "").lower()
     return any(marker in lowered for marker in SIDECAR_MARKERS)
 
 
 def parse_mevboost_relays(content: str) -> RelaysConfig:
-    """Extract ``-relay`` URLs and ``-min-bid`` from a mevboost unit."""
+    """Extract ``-relay`` URLs and ``-min-bid`` from a mevboost unit.
+
+    Args:
+        content: Full ``mevboost.service`` text.
+
+    Returns:
+        Parsed relay URLs (comma lists expanded), min-bid, and network.
+    """
     unit = parse_unit(content)
     args = normalize_cli_args(unit.exec_args)
     urls = get_flag_values(args, "-relay", "--relay", "-relays", "--relays")
@@ -283,6 +400,18 @@ def parse_mevboost_relays(content: str) -> RelaysConfig:
 
 
 def _read_required_unit(fs: EpbsFilesystem, key: str) -> Tuple[str, str]:
+    """Read a systemd unit that must exist.
+
+    Args:
+        fs: IO adapter.
+        key: Logical unit name (``validator``, ``consensus``, ``mevboost``).
+
+    Returns:
+        Tuple of ``(absolute_path, file_contents)``.
+
+    Raises:
+        EpbsError: If the unit is missing or unreadable.
+    """
     path = fs.unit_path(key)
     if not fs.exists(path):
         raise EpbsError(f"Missing {key} unit: {path}")
@@ -293,9 +422,18 @@ def _read_required_unit(fs: EpbsFilesystem, key: str) -> Tuple[str, str]:
 
 
 def detect_clients(fs: EpbsFilesystem) -> Tuple[str, str, str]:
-    """Return ``(vc_name, bn_name, validator_mode)``.
+    """Detect validator and beacon-node client names from systemd units.
 
-    *validator_mode* is ``separate``, ``integrated_grandine``, or ``none``.
+    Grandine with ``keystore-dir`` on the consensus unit is treated as
+    integrated (no separate ``validator.service``).
+
+    Args:
+        fs: IO adapter.
+
+    Returns:
+        ``(vc_name, bn_name, validator_mode)`` where *validator_mode* is
+        ``separate``, ``integrated_grandine``, or ``none``. Names are empty
+        strings when the corresponding unit is absent.
     """
     bn_name = ""
     consensus_path = fs.unit_path("consensus")
@@ -314,7 +452,14 @@ def detect_clients(fs: EpbsFilesystem) -> Tuple[str, str, str]:
 
 
 def support_level(client: str) -> str:
-    """Return full / prerelease / placeholder for *client*."""
+    """Return the VC relay-list support level for *client*.
+
+    Args:
+        client: Validator client name (``Prysm``, ``Lodestar``, …).
+
+    Returns:
+        ``full`` (Prysm), ``prerelease`` (Lodestar), or ``placeholder``.
+    """
     if client == "Prysm":
         return "full"
     if client == "Lodestar":
@@ -323,6 +468,15 @@ def support_level(client: str) -> str:
 
 
 def _rebuild_unit(content: str, args: Sequence[str]) -> str:
+    """Rewrite ``ExecStart`` in *content* using *args*.
+
+    Args:
+        content: Original unit file text.
+        args: Replacement ExecStart tokens (binary plus flags).
+
+    Returns:
+        Full unit file with the ExecStart block replaced.
+    """
     unit = parse_unit(content)
     return rebuild_service_content(
         content, unit.exec_start_index, unit.exec_start_end_index, list(args)
@@ -336,6 +490,19 @@ def _write_unit_if_changed(
     new_content: str,
     apply: bool,
 ) -> bool:
+    """Write *new_content* when it differs and *apply* is True.
+
+    Args:
+        fs: IO adapter.
+        path: Unit file path.
+        old_content: Current on-disk text.
+        new_content: Proposed text.
+        apply: If False, still report whether a change exists without writing.
+
+    Returns:
+        True if *new_content* differs from *old_content* (a write happened
+        only when *apply* is True).
+    """
     if old_content == new_content:
         return False
     if apply:
@@ -346,6 +513,14 @@ def _write_unit_if_changed(
 
 
 def _prysm_builder_config(relays: RelaysConfig) -> dict:
+    """Build Prysm ``default_config.builder`` (schema v2 BuilderConfig).
+
+    Args:
+        relays: URLs (and unused min-bid; Prysm has no min-bid field here).
+
+    Returns:
+        Dict with ``enabled``, ``relays``, and ``max_execution_payment``.
+    """
     return {
         "enabled": True,
         "relays": list(relays.urls),
@@ -359,7 +534,24 @@ def apply_relays_prysm(
     existing_settings: Optional[str],
     settings_path: str = PRYSM_SETTINGS_PATH,
 ) -> Tuple[str, str, str]:
-    """Return ``(new_vc_unit, proposer_settings_json, settings_path_flag)``."""
+    """Merge mev-boost relays into Prysm proposer-settings and VC flags.
+
+    Sets schema version 2, enables builder, copies ``--suggested-fee-recipient``
+    into ``default_config.fee_recipient`` when missing, and upserts
+    ``--enable-builder`` plus ``--proposer-settings-file``.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        relays: Relays scraped from MEV-Boost.
+        existing_settings: Current proposer-settings JSON, or None.
+        settings_path: Default JSON path if the VC flag is absent.
+
+    Returns:
+        ``(new_vc_unit, proposer_settings_json, settings_path_used)``.
+
+    Raises:
+        EpbsError: If existing settings are invalid JSON or the wrong shape.
+    """
     unit = parse_unit(vc_content)
     args = normalize_cli_args(unit.exec_args)
     fee = get_flag_value(args, "--suggested-fee-recipient")
@@ -396,7 +588,16 @@ def apply_relays_prysm(
 
 
 def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
-    """Add prerelease Lodestar VC builder URL / min-bid flags (PR #9832)."""
+    """Add prerelease Lodestar VC builder URL / min-bid flags (PR #9832).
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        relays: Relays and optional min-bid from MEV-Boost.
+
+    Returns:
+        Unit text with ``--builder``, ``--builder.urls``, and optional
+        ``--builder.minBid``. Tagged Lodestar may reject these flags.
+    """
     unit = parse_unit(vc_content)
     args = normalize_cli_args(unit.exec_args)
     args = upsert_flag(args, "--builder")
@@ -407,7 +608,14 @@ def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
 
 
 def apply_relays_placeholder(client: str) -> str:
-    """Document the unreleased VC relay surface; do not mutate units."""
+    """Return a planned-flag blurb; do not mutate units.
+
+    Args:
+        client: Placeholder VC name (Lighthouse, Teku, Nimbus, Grandine).
+
+    Returns:
+        Human-readable description of the unreleased relay-list surface.
+    """
     planned = {
         "Lighthouse": "--builder-relays=<urls> (not shipped; VC still --builder-proposals)",
         "Teku": "--validators-builder-relays=<urls> (not shipped; #11026 REST client unwired)",
@@ -418,7 +626,18 @@ def apply_relays_placeholder(client: str) -> str:
 
 
 def strip_bn_sidecar(bn_content: str, bn_client: str) -> str:
-    """Remove BN flags that pointed at local mev-boost."""
+    """Remove BN flags whose value is the local mev-boost listen address.
+
+    Non-sidecar builder URLs are kept. Lodestar's boolean ``--builder`` is
+    dropped only when no builder URL remains.
+
+    Args:
+        bn_content: Current ``consensus.service`` text.
+        bn_client: Beacon-node client name (keys :data:`BN_URL_FLAGS`).
+
+    Returns:
+        Unit text with sidecar URL flags removed.
+    """
     unit = parse_unit(bn_content)
     args = normalize_cli_args(unit.exec_args)
     for flag in BN_URL_FLAGS.get(bn_client, ()):
@@ -447,6 +666,17 @@ def strip_bn_sidecar(bn_content: str, bn_client: str) -> str:
 
 
 def _load_relays(fs: EpbsFilesystem) -> RelaysConfig:
+    """Read and validate relays from ``mevboost.service``.
+
+    Args:
+        fs: IO adapter.
+
+    Returns:
+        Parsed :class:`RelaysConfig` with a non-empty URL list.
+
+    Raises:
+        EpbsError: If the unit is missing, unreadable, or has no ``-relay`` URLs.
+    """
     path = fs.unit_path("mevboost")
     if not fs.exists(path):
         raise EpbsError(
@@ -463,7 +693,23 @@ def _load_relays(fs: EpbsFilesystem) -> RelaysConfig:
 
 
 def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> MigrationPlan:
-    """Copy mev-boost relays onto the VC. Keep the sidecar running."""
+    """Copy mev-boost relays onto the VC. Keep the sidecar running.
+
+    Prysm writes proposer-settings JSON and VC flags. Lodestar gets
+    prerelease ``--builder.urls``. Other VCs are a documented no-op.
+    Beacon-node sidecar flags are not touched.
+
+    Args:
+        fs: IO adapter; production defaults if omitted.
+        apply: If True, write units/settings; otherwise dry-run.
+
+    Returns:
+        Plan including actions, warnings, and services to restart.
+
+    Raises:
+        EpbsError: If no validator unit exists or MEV-Boost relays cannot
+            be loaded.
+    """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
     if mode == "none" or not vc_name:
@@ -553,6 +799,18 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
 
 
 def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
+    """Return True if the VC already has a non-sidecar relay list.
+
+    Args:
+        fs: IO adapter (Prysm reads proposer-settings via this).
+        vc_name: Validator client name.
+        vc_content: ``validator.service`` text.
+
+    Returns:
+        True for Prysm when ``default_config.builder.relays`` is non-empty,
+        or for Lodestar when ``--builder.urls`` is set and is not the sidecar.
+        Always False for placeholder clients.
+    """
     if vc_name == "Prysm":
         args = normalize_cli_args(parse_unit(vc_content).exec_args)
         settings_path = (
@@ -575,7 +833,21 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
 
 
 def complete(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> MigrationPlan:
-    """Disable MEV-Boost and remove BN sidecar builder flags."""
+    """Disable MEV-Boost and remove BN sidecar builder flags.
+
+    Does not rewrite VC relay config from prepare. Warns when the VC has no
+    relay list (node will use local EL + P2P bids only).
+
+    Args:
+        fs: IO adapter; production defaults if omitted.
+        apply: If True, write the BN unit and stop/disable mevboost.
+
+    Returns:
+        Plan including BN strip actions and ``disable_mevboost``.
+
+    Raises:
+        EpbsError: If no consensus unit exists.
+    """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
     if not bn_name and mode != "integrated_grandine":
@@ -640,7 +912,15 @@ def complete(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrat
 
 
 def status(fs: Optional[EpbsFilesystem] = None) -> str:
-    """Human-readable snapshot of ePBS migration state."""
+    """Human-readable snapshot of ePBS migration state.
+
+    Args:
+        fs: IO adapter; production defaults if omitted.
+
+    Returns:
+        Multi-line status (VC/BN names, support level, MEV-Boost relay
+        count, whether the VC has relays, whether BN sidecar flags remain).
+    """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
     lines = [
@@ -678,6 +958,12 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
 
 
 def _print_plan(plan: MigrationPlan, as_json: bool) -> None:
+    """Print *plan* as JSON or :meth:`MigrationPlan.format_text`.
+
+    Args:
+        plan: Prepare or complete result.
+        as_json: If True, emit a JSON object to stdout.
+    """
     if as_json:
         payload = {
             "command": plan.command,
@@ -696,6 +982,14 @@ def _print_plan(plan: MigrationPlan, as_json: bool) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """CLI entry for ``python -m manage.epbs``.
+
+    Args:
+        argv: Argument list; defaults to ``sys.argv[1:]``.
+
+    Returns:
+        ``0`` on success, ``1`` on :class:`EpbsError`.
+    """
     parser = argparse.ArgumentParser(
         prog="python -m manage.epbs",
         description="Prepare a VC for ePBS, or complete MEV-Boost teardown after Gloas.",
@@ -753,6 +1047,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _read_plain(path: str) -> Optional[str]:
+    """Read UTF-8 text without sudo (used with ``--systemd-dir`` in tests).
+
+    Args:
+        path: File to read.
+
+    Returns:
+        File contents, or None if the path does not exist.
+    """
     try:
         with open(path, encoding="utf-8") as handle:
             return handle.read()
@@ -761,6 +1063,12 @@ def _read_plain(path: str) -> Optional[str]:
 
 
 def _write_plain(path: str, content: str) -> None:
+    """Write UTF-8 text without sudo (used with ``--systemd-dir`` in tests).
+
+    Args:
+        path: Destination file; parent directories are created.
+        content: File text. A trailing newline is added if missing.
+    """
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)

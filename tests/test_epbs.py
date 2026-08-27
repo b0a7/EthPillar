@@ -41,6 +41,16 @@ SYNC = "https://example.invalid"
 
 
 def _fs(tmp_path: Path) -> EpbsFilesystem:
+    """Build an in-memory-style filesystem under *tmp_path* for unit tests.
+
+    Args:
+        tmp_path: Pytest temporary directory.
+
+    Returns:
+        :class:`EpbsFilesystem` writing units into ``tmp_path/systemd`` and
+        Prysm settings into ``tmp_path/proposer-settings.json``. Stopping
+        mev-boost sets ``fs.mevboost_disabled``.
+    """
     systemd = tmp_path / "systemd"
     systemd.mkdir()
     settings = tmp_path / "proposer-settings.json"
@@ -58,14 +68,30 @@ def _fs(tmp_path: Path) -> EpbsFilesystem:
 
 
 def _write(fs: EpbsFilesystem, key: str, content: str) -> None:
+    """Write a systemd unit named *key* into *fs*.
+
+    Args:
+        fs: Test filesystem.
+        key: Logical unit (``validator``, ``consensus``, ``mevboost``).
+        content: Full unit file text.
+    """
     Path(fs.unit_path(key)).write_text(content if content.endswith("\n") else content + "\n", encoding="utf-8")
 
 
-def _args(content: str):
+def _args(content: str) -> list[str]:
+    """Return normalized ExecStart tokens from a unit file.
+
+    Args:
+        content: Full systemd unit text.
+
+    Returns:
+        CLI argument list including the binary path.
+    """
     return normalize_cli_args(parse_unit(content).exec_args)
 
 
-def test_parse_mevboost_relays_and_min_bid():
+def test_parse_mevboost_relays_and_min_bid() -> None:
+    """``-relay`` URLs and ``-min-bid`` are scraped from mevboost.service."""
     unit = generate_mevboost_service("mainnet", "0.006", RELAYS)
     cfg = parse_mevboost_relays(unit)
     assert cfg.min_bid == "0.006"
@@ -73,7 +99,8 @@ def test_parse_mevboost_relays_and_min_bid():
     assert "boost-relay.flashbots.net" in cfg.urls[0]
 
 
-def test_prysm_prepare_and_complete(tmp_path):
+def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
+    """Prysm prepare writes proposer-settings; complete strips the BN sidecar."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(
@@ -134,7 +161,8 @@ def test_prysm_prepare_and_complete(tmp_path):
     assert json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))["default_config"]["builder"]["relays"]
 
 
-def test_lodestar_prepare_prerelease_flags(tmp_path):
+def test_lodestar_prepare_prerelease_flags(tmp_path: Path) -> None:
+    """Lodestar prepare adds ``--builder.urls``; complete strips the BN sidecar."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.01", RELAYS))
     _write(
@@ -173,7 +201,8 @@ def test_lodestar_prepare_prerelease_flags(tmp_path):
     assert has_flag(vc_args, "--builder.urls")
 
 
-def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path):
+def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) -> None:
+    """Lighthouse prepare is a no-op; complete still removes BN ``--builder`` sidecar."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(
@@ -243,7 +272,14 @@ def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path):
     ],
     ids=["Teku", "Nimbus"],
 )
-def test_placeholder_clients_complete_strips_sidecar(tmp_path, client, bn_unit, vc_unit, sidecar_token):
+def test_placeholder_clients_complete_strips_sidecar(
+    tmp_path: Path,
+    client: str,
+    bn_unit: str,
+    vc_unit: str,
+    sidecar_token: str,
+) -> None:
+    """Teku/Nimbus prepare is a no-op; complete drops the BN sidecar URL flag."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(fs, "consensus", bn_unit)
@@ -263,7 +299,8 @@ def test_placeholder_clients_complete_strips_sidecar(tmp_path, client, bn_unit, 
         assert "payload-builder=true" in vc or "--payload-builder=true" in vc
 
 
-def test_grandine_integrated_placeholder_and_complete(tmp_path):
+def test_grandine_integrated_placeholder_and_complete(tmp_path: Path) -> None:
+    """Integrated Grandine prepare is a no-op; complete strips ``--builder-url``."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(
@@ -292,7 +329,8 @@ def test_grandine_integrated_placeholder_and_complete(tmp_path):
     assert "keystore-dir" in bn
 
 
-def test_prepare_requires_mevboost(tmp_path):
+def test_prepare_requires_mevboost(tmp_path: Path) -> None:
+    """Prepare fails when ``mevboost.service`` is missing."""
     fs = _fs(tmp_path)
     _write(
         fs,
@@ -305,7 +343,8 @@ def test_prepare_requires_mevboost(tmp_path):
         prepare(fs, apply=False)
 
 
-def test_strip_bn_keeps_non_sidecar_builder_url():
+def test_strip_bn_keeps_non_sidecar_builder_url() -> None:
+    """BN builder URLs that are not local MEV-Boost survive complete."""
     unit = generate_lighthouse_bn_service(
         "mainnet",
         SYNC,
@@ -320,7 +359,8 @@ def test_strip_bn_keeps_non_sidecar_builder_url():
     assert "boost-relay.flashbots.net" in stripped
 
 
-def test_cli_prepare_prysm(tmp_path, capsys):
+def test_cli_prepare_prysm(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``python -m manage.epbs prepare --apply --json`` writes Prysm settings."""
     from manage.epbs import main
 
     systemd = tmp_path / "systemd"
@@ -356,7 +396,8 @@ def test_cli_prepare_prysm(tmp_path, capsys):
     assert settings.is_file()
 
 
-def test_status_reports_prysm(tmp_path):
+def test_status_reports_prysm(tmp_path: Path) -> None:
+    """Status lists Prysm support, relay count, and BN sidecar presence."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(

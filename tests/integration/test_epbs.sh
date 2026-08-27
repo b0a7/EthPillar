@@ -17,10 +17,13 @@ BN_UNIT="/etc/systemd/system/consensus.service"
 MEV_UNIT="/etc/systemd/system/mevboost.service"
 SIDECAR="127.0.0.1:18550"
 
+# Run manage.epbs with the integration venv. Extra args are forwarded.
 epbs_cli() {
     PYTHONPATH=/ethpillar "$py" -m manage.epbs "$@"
 }
 
+# Delegate to run_inside_docker.py verify-service-health (optional extra flags).
+# Args: $1 service name; remaining args passed through (e.g. --force-validator).
 check_service_health() {
     local service="$1"
     shift
@@ -28,6 +31,7 @@ check_service_health() {
     bash /ethpillar/tests/integration/run_test.sh verify-service-health --service "$service" "$@"
 }
 
+# Fail unless validator.service is a Prysm VC.
 assert_prysm_vc() {
     if [[ ! -f "$VC_UNIT" ]]; then
         echo "❌ validator.service not found"
@@ -40,6 +44,7 @@ assert_prysm_vc() {
     fi
 }
 
+# Fail unless mevboost.service exists.
 assert_mev_installed() {
     if [[ ! -f "$MEV_UNIT" ]]; then
         echo "❌ mevboost.service not found (install with --mev)"
@@ -47,6 +52,7 @@ assert_mev_installed() {
     fi
 }
 
+# Fail unless *unit* contains *needle* (fixed string).
 assert_unit_has() {
     local unit="$1"
     local needle="$2"
@@ -57,6 +63,7 @@ assert_unit_has() {
     fi
 }
 
+# Fail if *unit* still contains *needle* (fixed string).
 assert_unit_lacks() {
     local unit="$1"
     local needle="$2"
@@ -67,6 +74,7 @@ assert_unit_lacks() {
     fi
 }
 
+# Fail unless proposer-settings.json is schema v2 with enabled builder relays.
 assert_proposer_settings() {
     if [[ ! -f "$SETTINGS" ]]; then
         echo "❌ proposer-settings.json not written at $SETTINGS"
@@ -86,6 +94,7 @@ print(f"✅ proposer-settings.json: {len(relays)} relay(s), builder.enabled=true
 PY
 }
 
+# Fail unless the live validator process argv includes ePBS flags.
 assert_vc_process_has_epbs_flags() {
     local pid
     pid=$(sudo systemctl show -p MainPID --value validator 2>/dev/null || echo "0")
@@ -113,6 +122,7 @@ assert_vc_process_has_epbs_flags() {
     echo "✅ running VC pid=${pid} has --enable-builder and --proposer-settings-file"
 }
 
+# daemon-reload then restart each listed systemd unit (exits 1 on failure).
 reload_and_restart() {
     local svc
     echo "  [ePBS] daemon-reload + restart: $*"

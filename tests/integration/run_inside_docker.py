@@ -383,7 +383,18 @@ def check_service_journal_errors(
     service_name: str,
     ignore_patterns: Optional[Sequence[str]] = None,
 ) -> bool:
-    """Check journal for fatal service errors that indicate invalid install/config."""
+    """Check journal for fatal service errors that indicate invalid install/config.
+
+    Args:
+        service_name: Systemd unit name without ``.service``.
+        ignore_patterns: Fatal-pattern substrings to skip (for example
+            ``cannot connect to builder client`` after ePBS complete on a
+            pre-Gloas network).
+
+    Returns:
+        True if no matching fatal pattern is present (or journalctl failed
+        to run). False after printing the journal when a pattern hits.
+    """
     result = subprocess.run(
         _journalctl_args(service_name),
         capture_output=True, text=True
@@ -488,7 +499,20 @@ def check_service_start(
     force_validator: bool = False,
     ignore_journal_patterns: Optional[Sequence[str]] = None,
 ) -> bool:
-    """Validates the service file via systemd and verifies it can start securely."""
+    """Validate the service file via systemd and verify it can start securely.
+
+    Args:
+        service_name: Systemd unit name without ``.service``.
+        has_caplin: When True, execution health also requires Caplin's P2P port.
+        force_validator: Start ``validator`` even with no keystores (empty-wallet
+            smoke for flag/config checks). The default skip remains for the
+            rest of the matrix.
+        ignore_journal_patterns: Forwarded to :func:`check_service_journal_errors`.
+
+    Returns:
+        True if the unit is healthy (or validator was skipped for missing keys).
+        False on start failure, crash, timeout, or fatal journal lines.
+    """
     service_path = f"/etc/systemd/system/{service_name}.service"
     if not os.path.exists(service_path):
         return False

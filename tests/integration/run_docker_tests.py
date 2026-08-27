@@ -81,6 +81,7 @@ switch_tests = [
     ("Switch-Reth-Lighthouse-to-Besu-Nimbus", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-switching"),
 ]
 
+# Post-install ePBS migration cases (Prysm empty-wallet VC start).
 epbs_tests = [
     (
         "Prysm-Reth-ePBS-Migration-SEPOLIA",
