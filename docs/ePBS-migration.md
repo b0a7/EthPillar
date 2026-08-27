@@ -13,7 +13,7 @@ Do **not** run complete until Gloas is live on your network. Completing early me
 
 In the TUI:
 
-**MEV-Boost → 9 ePBS migration**
+**MEV-Boost → 9 ePBS migration** (shown only when a validator client is installed — separate `validator.service` or Grandine integrated)
 
 | Menu item | Command | When |
 |-----------|---------|------|

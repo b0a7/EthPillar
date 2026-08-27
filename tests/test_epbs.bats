@@ -4,9 +4,10 @@ setup() {
   cd "$BATS_TEST_DIRNAME/.."
 }
 
-@test "MEV menu lists ePBS migration" {
+@test "MEV menu lists ePBS migration only when a VC is installed" {
   grep -q 'ePBS migration' ethpillar.sh
   grep -q 'submenuEPBS' ethpillar.sh
+  grep -A30 '^submenuMEV-Boost()' ethpillar.sh | grep -q 'getValidatorMode'
 }
 
 @test "functions.sh defines ePBS CLI wrappers" {

@@ -648,7 +648,12 @@ while true; do
       6 "Update to latest release"
       7 "Check relay registration"
       8 "Check relay latency"
-      9 "ePBS migration"
+    )
+    # ePBS prepare/complete needs a VC (separate unit or Grandine integrated).
+    if [[ "$(getValidatorMode)" != "none" ]]; then
+      SUBOPTIONS+=(9 "ePBS migration")
+    fi
+    SUBOPTIONS+=(
       - ""
       10 "Back to main menu"
     )
