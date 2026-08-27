@@ -14,8 +14,8 @@ setup() {
   grep -q '^runEpbsCli()' functions.sh
   grep -q '^runEpbsMigrationStep()' functions.sh
   grep -q '^submenuEPBS()' functions.sh
-  grep -q 'Before Merge' functions.sh
-  grep -q 'After Merge' functions.sh
+  grep -q 'Before Gloas Fork' functions.sh
+  grep -q 'After Gloas Fork' functions.sh
 }
 
 @test "README links ePBS migration guide" {

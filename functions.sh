@@ -2137,18 +2137,18 @@ submenuEPBS() {
             --title "ePBS migration" \
             --menu "Gloas moves relay config from MEV-Boost onto the validator client.\n\nBefore the fork: copy relays to the VC and keep MEV-Boost running.\nAfter the fork: disable MEV-Boost and drop the BN sidecar URL." \
             0 0 0 \
-            1 "Before Merge — Apply Relays to VC" \
-            2 "After Merge — Complete ePBS migration" \
+            1 "Before Gloas Fork — Apply Relays to VC" \
+            2 "After Gloas Fork — Complete ePBS migration" \
             3 "Show current ePBS status" \
             4 "Back" \
             3>&1 1>&2 2>&3) || break
         case "$choice" in
             1)
-                runEpbsMigrationStep prepare "Before Merge — Apply Relays to VC" \
-                    "Write these VC changes now?\n\nMEV-Boost stays running. Do not complete migration until after Gloas."
+                runEpbsMigrationStep prepare "Before Gloas Fork — Apply Relays to VC" \
+                    "Write these VC changes now?\n\nMEV-Boost stays running. Do not complete migration until after the Gloas fork."
                 ;;
             2)
-                runEpbsMigrationStep complete "After Merge — Complete ePBS migration" \
+                runEpbsMigrationStep complete "After Gloas Fork — Complete ePBS migration" \
                     "Stop MEV-Boost and remove BN sidecar flags now?\n\nOnly do this after the Gloas fork. Missed proposals if you cut over early."
                 ;;
             3)

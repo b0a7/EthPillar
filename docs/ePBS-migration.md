@@ -17,8 +17,8 @@ In the TUI:
 
 | Menu item | Command | When |
 |-----------|---------|------|
-| Before Merge — Apply Relays to VC | `prepare` | Before Gloas |
-| After Merge — Complete ePBS migration | `complete` | After Gloas |
+| Before Gloas Fork — Apply Relays to VC | `prepare` | Before the Gloas fork |
+| After Gloas Fork — Complete ePBS migration | `complete` | After the Gloas fork |
 | Show current ePBS status | `status` | Anytime |
 
 Each apply step dry-runs first, asks for confirmation, writes backups, then offers to restart the units that changed.
