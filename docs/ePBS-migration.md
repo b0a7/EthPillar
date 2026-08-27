@@ -1,31 +1,90 @@
 # ePBS / Gloas MEV migration
 
-Gloas (the consensus-layer half of [Glamsterdam](https://docs.ethstaker.org/upgrades/glamsterdam-features/)) moves builder relay configuration **off MEV-Boost and onto the validator client**. Until that fork, proposals still go through the local MEV-Boost sidecar on `127.0.0.1:18550`.
+Gloas (the consensus-layer half of [Glamsterdam](https://docs.ethstaker.org/upgrades/glamsterdam-features/)) moves builder relay configuration **off MEV-Boost and onto the validator client**. Until that fork, proposals still go through the local MEV-Boost sidecar.
 
-EthPillar follows EthStaker’s two-step cutover so you do not drop MEV too early:
+EthPillar follows EthStaker’s two-step cutover so you do not drop MEV too early.
 
-1. **Before the fork (prepare)** — copy relays onto the VC. Keep MEV-Boost running and keep the beacon node’s sidecar URL.
-2. **After the fork (complete)** — stop MEV-Boost and remove the BN flags that pointed at `http://127.0.0.1:18550`.
+---
 
-Do **not** run complete until Gloas is live on your network. Completing early means the BN no longer talks to MEV-Boost, and most VCs cannot yet fetch relays themselves.
+## For node operators
 
-## How to run it
+This section is the TUI only. You do not need to run Python yourself.
 
-In the TUI:
+### The two steps
 
-**MEV-Boost → 9 ePBS migration** (shown only when a validator client is installed — separate `validator.service` or Grandine integrated)
+1. **Before the Gloas fork** — copy your relays onto the validator client. Keep MEV-Boost running. The beacon node still talks to local MEV-Boost.
+2. **After the Gloas fork** — stop MEV-Boost and tell the beacon node to stop using the local sidecar.
 
-| Menu item | Command | When |
-|-----------|---------|------|
-| Before Gloas Fork — Apply Relays to VC | `prepare` | Before the Gloas fork |
-| After Gloas Fork — Complete ePBS migration | `complete` | After the Gloas fork |
-| Show current ePBS status | `status` | Anytime |
+Do **not** run the after-fork step until Gloas is live on your network. Doing it early means the beacon node no longer talks to MEV-Boost, and most validator clients cannot fetch relays themselves yet.
 
-Each apply step dry-runs first, asks for confirmation, writes backups, then offers to restart the units that changed.
+### Open the menu
 
-From the CLI (EthPillar install directory, production venv):
+**MEV-Boost → 9 ePBS migration**
+
+That item appears only when a validator client is installed (a separate validator service, or Grandine with the validator built into the consensus client).
+
+| Menu item | When to use it |
+|-----------|----------------|
+| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork |
+| After Gloas Fork — Complete ePBS migration | After the Gloas fork |
+| Show current ePBS status | Anytime (read-only) |
+
+### What you see
+
+**Before Gloas Fork** and **After Gloas Fork** use the same four screens. Nothing is written until you say yes on the second screen.
+
+1. **Preview (dry-run).** A scrollable textbox titled with the menu item. It lists your client, what *would* change, warnings, and which services would need a restart. The last line is **`Dry-run (no files written).`** Press OK. Disk is unchanged.
+2. **Confirm.** Yes/no. Before-fork: *Write these VC changes now?* (MEV-Boost stays running). After-fork: *Stop MEV-Boost and remove BN sidecar flags now?* (cutting over early can miss proposals). **No** or Esc returns to the ePBS menu with no changes.
+3. **Applied.** If you confirmed, EthPillar copies the old files next to the originals, writes the new config, then shows a second textbox titled **`… — applied`**.
+4. **Restart?** Only if something actually changed. Example: *Restart now so the new flags take effect?* **No** leaves the new config on disk; it takes effect the next time you restart that client from the usual menus.
+
+**Show current ePBS status** is one textbox: which clients you have, whether relays are already on the validator, and whether the beacon node still points at local MEV-Boost. No confirm, no writes.
+
+### What each step does (in plain language)
+
+**Before the Gloas fork**
+
+| Your validator | What EthPillar does |
+|----------------|---------------------|
+| **Prysm** (v7.1.7+) | Writes your MEV-Boost relays into Prysm’s proposer settings and turns builder mode on. Restarts the validator if you agree. **Does not** stop MEV-Boost. |
+| **Lodestar** | Tries to put relay URLs on the validator. This needs a Lodestar build that is not in a normal release yet; the client may refuse to start. |
+| **Lighthouse, Teku, Nimbus, Grandine** | Nothing is changed. Those clients cannot take a relay list on the validator yet. You can still run the after-fork step later to drop MEV-Boost and use local + P2P bids only. |
+
+After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks keep working as they do today.
+
+**After the Gloas fork**
+
+- Stops and disables MEV-Boost (the service file stays on disk).
+- Removes the beacon-node setting that pointed at local MEV-Boost (`127.0.0.1:18550`). Other builder URLs are left alone.
+- Leaves any validator relay config from the first step in place.
+
+If the validator never got a relay list (placeholder clients, or you skipped the first step), the node uses **local execution client + P2P builder bids only** — no off-protocol relays.
+
+### Safety
+
+- Run the before-fork step while MEV-Boost is healthy.
+- Run the after-fork step only after Gloas on that network.
+- Read the preview before you confirm.
+- Old files are copied beside the originals before overwrite (`*.bak.epbs.` plus a timestamp).
+
+### Checking from the TUI
+
+Use **Show current ePBS status**. It reports:
+
+- validator and beacon-node clients
+- whether your client fully supports VC relays yet
+- whether MEV-Boost is installed and how many relays it has
+- whether the validator already has a relay list
+- whether the beacon node still has the local MEV-Boost URL
+
+---
+
+## For automation and developers
+
+The TUI calls `python -m manage.epbs`. Scripts and tests can do the same. Default is dry-run; pass `--apply` to write.
 
 ```bash
+# From the EthPillar install directory
 PYTHONPATH="${PWD}" python3 -m manage.epbs status
 PYTHONPATH="${PWD}" python3 -m manage.epbs prepare          # dry-run
 PYTHONPATH="${PWD}" python3 -m manage.epbs prepare --apply
@@ -33,30 +92,30 @@ PYTHONPATH="${PWD}" python3 -m manage.epbs complete         # dry-run
 PYTHONPATH="${PWD}" python3 -m manage.epbs complete --apply
 ```
 
-Add `--json` for machine-readable output. Default is dry-run until you pass `--apply`.
+`--json` prints a machine-readable plan (the TUI uses this after apply). `--systemd-dir` and `--prysm-settings` override paths for tests.
 
-## What each step changes
+Implementation: `manage/epbs.py`. TUI wrappers: `runEpbsCli` / `runEpbsMigrationStep` / `submenuEPBS` in `functions.sh`.
 
-Relays and `-min-bid` are read from `mevboost.service`. Sidecar URLs are recognized when the value contains `127.0.0.1:18550`, `localhost:18550`, or `[::1]:18550`. Non-sidecar builder URLs on the BN are left alone.
+### What each command changes
 
-Changed unit files and Prysm settings are copied to `*.bak.epbs.<timestamp>` before overwrite. `mevboost.service` is stopped and disabled on complete; the unit file is kept.
+Relays and `-min-bid` are read from `mevboost.service`. Sidecar URLs are those containing `127.0.0.1:18550`, `localhost:18550`, or `[::1]:18550`. Non-sidecar builder URLs on the BN are kept.
 
-### Prepare (before Gloas)
+Changed units and Prysm settings are copied to `*.bak.epbs.<timestamp>` before overwrite. `complete` stops and disables `mevboost.service`; the unit file is kept.
 
-| Client | What happens |
-|--------|----------------|
-| **Prysm** (v7.1.7+) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema v2) with `default_config.builder.enabled`, `relays`, and `max_execution_payment: "0"`. Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Adds VC `--enable-builder` and `--proposer-settings-file`. Restarts `validator`. **Does not** stop MEV-Boost. |
-| **Lodestar** | Adds prerelease VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` if set. These flags come from [ChainSafe/lodestar#9832](https://github.com/ChainSafe/lodestar/pull/9832) and are **not in a tagged Lodestar release** as of August 2026. The VC may refuse unknown flags. |
-| **Lighthouse, Teku, Nimbus, Grandine** | No released VC relay-list flag. Prepare is a documented no-op (units are not changed). |
+#### `prepare`
 
-After prepare, the BN still has its MEV-Boost sidecar flag (for example Prysm `--http-mev-relay=http://127.0.0.1:18550`). Pre-fork blocks keep using the sidecar.
+| Client | Behavior |
+|--------|----------|
+| **Prysm** (v7.1.7+) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema v2) with `default_config.builder.enabled`, `relays`, and `max_execution_payment: "0"`. Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Upserts VC `--enable-builder` and `--proposer-settings-file`. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
+| **Lodestar** | Adds prerelease VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` if set ([ChainSafe/lodestar#9832](https://github.com/ChainSafe/lodestar/pull/9832); not in a tagged release as of August 2026). |
+| **Lighthouse, Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |
 
-### Complete (after Gloas)
+BN sidecar flags stay until `complete`.
 
-Runs for every client that has a consensus unit:
+#### `complete`
 
-1. Stop and disable `mevboost.service` (unit file stays on disk).
-2. Strip BN sidecar builder flags whose value is the local MEV-Boost URL:
+1. Stop and disable `mevboost.service`.
+2. Strip BN sidecar builder flags:
 
    | Beacon node | Flag removed when it points at local MEV-Boost |
    |-------------|--------------------------------------------------|
@@ -68,33 +127,22 @@ Runs for every client that has a consensus unit:
    | Grandine | `--builder-url` / `--builder-api-url` |
    | Erigon-Caplin | `--caplin.mev-relay-url` |
 
-3. Leave VC builder-enable flags and any relay list from prepare in place. Complete does not rewrite the Prysm proposer-settings file.
+3. Do not rewrite VC relay config from `prepare`.
 
-If you complete without a VC relay list (placeholder clients, or prepare never applied), the node uses **local EL + P2P builder bids only** — no off-protocol relays.
+Restart `consensus` after apply so the BN drops the sidecar URL. Prysm/Lodestar VC flags do not change on this step.
 
-Restart `consensus` after complete so the BN drops the sidecar URL. Prysm/Lodestar VC flags do not change on this step.
-
-## Client support
+### Client support levels
 
 | Validator | Support | Notes |
 |-----------|---------|--------|
-| Prysm v7.1.7+ | **full** | Relays live in proposer-settings (`BuilderConfig.Relays`). BN still uses `--http-mev-relay` until complete. |
+| Prysm v7.1.7+ | **full** | Relays in proposer-settings (`BuilderConfig.Relays`). BN `--http-mev-relay` until complete. |
 | Lodestar | **prerelease** | VC `--builder.urls` / `--builder.minBid` from an open PR; tagged builds may reject them. |
-| Lighthouse | **placeholder** | VC is `--builder-proposals` only; one BN `--builder` URL. |
+| Lighthouse | **placeholder** | VC `--builder-proposals` only; one BN `--builder` URL. |
 | Teku | **placeholder** | Staked Builder REST client ([Consensys/teku#11026](https://github.com/Consensys/teku/issues/11026)) not wired. Relays stay on BN `--builder-endpoint`. |
 | Nimbus | **placeholder** | VC `--payload-builder=true`; URL on BN. |
 | Grandine | **placeholder** | Integrated client; single `--builder-url`. |
 
-## Checking the result
-
-TUI **Show current ePBS status** (or `python -m manage.epbs status`) reports:
-
-- detected VC / BN and support level
-- whether MEV-Boost is installed and how many relays it has
-- whether the VC already has a relay list
-- whether BN sidecar flags are still present
-
-For Prysm you can also inspect the live process after a validator restart:
+### Inspecting a running Prysm VC
 
 ```bash
 pid=$(sudo systemctl show -p MainPID --value validator)
@@ -102,11 +150,3 @@ tr '\0' ' ' < /proc/${pid}/cmdline
 # expect --enable-builder and --proposer-settings-file=...
 sudo cat /var/lib/prysm_validator/proposer-settings.json
 ```
-
-## Safety
-
-- Run **prepare** while MEV-Boost is healthy and the BN sidecar URL is still present.
-- Run **complete** only after Gloas on that network.
-- Review the dry-run textbox (or CLI output) before confirming `--apply`.
-- Backups are `*.bak.epbs.<timestamp>` next to the original unit or settings file.
-- Completing on a placeholder client is still valid if you only want to drop the sidecar and rely on local + P2P bids.
