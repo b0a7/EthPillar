@@ -18,7 +18,7 @@ def generate_prysm_bn_service(eth_network: str, sync_url: str, jwtsecret_path: s
         jwtsecret_path: Path to JWT secret file
         cl_rest_port: CL REST port
         cl_p2p_port: CL P2P port
-        cl_p2p_port_2: CL secondary P2P port
+        cl_p2p_port_2: CL QUIC port (UDP)
         cl_max_peer_count: CL max peer count
         fee_parameters: Optional fee recipient parameters
         mev_parameters: Optional MEV relay parameters
@@ -47,6 +47,7 @@ def generate_prysm_bn_service(eth_network: str, sync_url: str, jwtsecret_path: s
         f"--datadir={BASE_DATA_DIR}/prysm",
         f"--p2p-tcp-port={cl_p2p_port}",
         f"--p2p-udp-port={cl_p2p_port}",
+        f"--p2p-quic-port={cl_p2p_port_2}",
         f"--p2p-max-peers={cl_max_peer_count}",
         "--rpc-host=127.0.0.1",
         "--rpc-port=4000",

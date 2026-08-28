@@ -190,7 +190,7 @@ def test_lodestar_prepare_prerelease_flags(tmp_path: Path) -> None:
         fs,
         "consensus",
         generate_lodestar_bn_service(
-            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
             mev_parameters="--builder --builder.urls http://127.0.0.1:18550",
         ),
     )
@@ -271,7 +271,7 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
         fs,
         "consensus",
         generate_lodestar_bn_service(
-            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
             mev_parameters="--builder --builder.urls http://127.0.0.1:18550",
         ),
     )
@@ -317,7 +317,7 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
         (
             "Nimbus",
             generate_nimbus_bn_service(
-                "mainnet", JWT, "5052", "9000", "100",
+                "mainnet", JWT, "5052", "9000", "9001", "100",
                 mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
             ),
             generate_nimbus_vc_service(
