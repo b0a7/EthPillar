@@ -44,7 +44,17 @@ write_charon_service() {
   local endpoint="${1:-http://127.0.0.1:5052}"
   cat > "$CHARON_SERVICE_FILE" <<EOF
 [Service]
-ExecStart=/usr/local/bin/charon run --beacon-node-endpoints=${endpoint} --validator-api-address=127.0.0.1:3600
+ExecStart=/usr/local/bin/charon run --beacon-node-endpoints=${endpoint} --validator-api-address=127.0.0.1:3600 --builder-api
+EOF
+}
+
+write_lighthouse_validator_service() {
+  cat > "$VALIDATOR_SERVICE_FILE" <<EOF
+[Unit]
+Description=Lighthouse Validator Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/lighthouse validator_client --beacon-nodes=http://127.0.0.1:5052
 EOF
 }
 
@@ -85,6 +95,36 @@ EOF
   write_grandine_integrated_consensus
   run getValidatorClient
   [ "$output" = "Grandine" ]
+}
+
+# ── epbsTuiSupported ───────────────────────────────────────────────────────────
+
+@test "epbsTuiSupported is true for Prysm VC" {
+  write_prysm_validator_service
+  run epbsTuiSupported
+  [ "$status" -eq 0 ]
+}
+
+@test "epbsTuiSupported is false when no VC is installed" {
+  rm -f "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE"
+  export CONSENSUS_SERVICE_FILE="/nonexistent/consensus.service"
+  export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  run epbsTuiSupported
+  [ "$status" -ne 0 ]
+}
+
+@test "epbsTuiSupported is false for Lighthouse VC" {
+  write_lighthouse_validator_service
+  run epbsTuiSupported
+  [ "$status" -ne 0 ]
+}
+
+@test "epbsTuiSupported is false for Grandine integrated VC" {
+  rm -f "$VALIDATOR_SERVICE_FILE"
+  export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  write_grandine_integrated_consensus
+  run epbsTuiSupported
+  [ "$status" -ne 0 ]
 }
 
 # ── getBeaconNodeEndpoint ──────────────────────────────────────────────────────

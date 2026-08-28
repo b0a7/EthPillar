@@ -82,6 +82,14 @@ switch_tests = [
     ("Switch-Reth-Lighthouse-to-Besu-Nimbus", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-switching"),
 ]
 
+# Post-install ePBS migration cases (Prysm empty-wallet VC start).
+epbs_tests = [
+    (
+        "Prysm-Reth-ePBS-Migration-SEPOLIA",
+        f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config 'Custom Setup' --test-epbs",
+    ),
+]
+
 def parse_clients_from_cmd(cmd: str) -> Tuple[Optional[str], Optional[str]]:
     """Extract execution and consensus client names from a deploy command."""
     ec_match = re.search(r"--ec\s+(\S+)", cmd)
@@ -225,7 +233,9 @@ def generate_tests():
         tests.append(TestTask(label, cmd, "Upgrade"))
     for label, cmd in switch_tests:
         tests.append(TestTask(label, cmd, "Switch"))
-        
+    for label, cmd in epbs_tests:
+        tests.append(TestTask(label, cmd, "ePBS"))
+
     return tests
 
 def tail_file(filepath, lines=20):
