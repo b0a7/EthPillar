@@ -148,16 +148,14 @@ check_mevboost_version() {
 
 check_charon_version() {
   [[ -f /etc/systemd/system/charon.service ]] || return 0
-  local installed version
+  local version
   INSTALLED_COMMIT=""
-  installed=$(charon version 2>/dev/null || true)
-  version=$(parse_charon_version "$installed")
-  INSTALLED_COMMIT=$(parse_charon_commit "$installed")
-  if [[ -z "$version" ]]; then
-    echo "❌ Charon version parse failed: ${installed:-empty}"
+  if ! getCharonCurrentVersion; then
+    echo "❌ Charon version parse failed: ${VERSION:-empty}"
     fail=1
     return 0
   fi
+  version=$VERSION
   echo "✅ Charon version: ${version}"
   assert_matches_latest "Charon" "charon" "$version"
 }

@@ -158,6 +158,26 @@ parse_charon_commit() {
   sed -nE 's/.*git_commit_hash=([a-fA-F0-9]+).*/\1/p' <<< "$output" | head -1 || true
 }
 
+# Sets VERSION (and INSTALLED_COMMIT when known) from the installed Charon binary.
+getCharonCurrentVersion() {
+  local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+  local bin output
+  VERSION=""
+  INSTALLED_COMMIT=""
+  bin=$(get_systemd_exec_path "$charon_svc" "/usr/local/bin/charon")
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    VERSION="Unable to query Charon version from binary."
+    return 1
+  fi
+  output=$("$bin" version 2>/dev/null || true)
+  VERSION=$(parse_charon_version "$output")
+  INSTALLED_COMMIT=$(parse_charon_commit "$output")
+  if [[ -z "$VERSION" ]]; then
+    VERSION="Unable to query Charon version from binary."
+    return 1
+  fi
+}
+
 # Sets VERSION (and INSTALLED_COMMIT when known) from the installed execution client binary.
 getExecutionCurrentVersion() {
   local el="${1:-$EL}"

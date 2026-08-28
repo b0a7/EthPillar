@@ -118,8 +118,8 @@ function printInstalledVersions() {
   fi
 
   if [[ -f "$charon_svc" ]]; then
-    _ch_version=$(parse_charon_version "$(charon version 2>/dev/null || true)")
-    _CH="Charon: ${_ch_version:-unknown}"
+    getCharonCurrentVersion || true
+    _CH="Charon: ${VERSION:-unknown}"
   else
     _CH=""
   fi

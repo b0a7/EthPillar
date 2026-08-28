@@ -19,16 +19,8 @@ _platform=$(get_platform)
 _arch=$(get_arch)
 
 function getCurrentVersion(){
-    local raw
-    INSTALLED_COMMIT=""
-    raw=$(charon version 2>/dev/null || true)
-    if [[ -n $raw ]] ; then
-        VERSION=$(parse_charon_version "$raw")
-        INSTALLED_COMMIT=$(parse_charon_commit "$raw")
-        if [[ -z $VERSION ]]; then
-            VERSION="unknown"
-        fi
-    else
+    getCharonCurrentVersion || true
+    if [[ -z "$VERSION" ]]; then
         VERSION="Client not installed."
     fi
 }
