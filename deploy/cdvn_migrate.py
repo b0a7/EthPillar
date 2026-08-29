@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from deploy.charon import (
+    charon_cluster_copy_only,
     copy_charon_cluster,
     import_cdvn_env_to_service,
     parse_dotenv,
     resolve_cdvn_checkout,
     rewrite_endpoint_list,
+    sync_charon_keyshares_to_vc,
 )
 from deploy.orchestrator import lodestar_bn_vc_incompatibility_message
 from deploy.common import BASE_DATA_DIR
@@ -47,6 +49,16 @@ VC_PROFILE_MAP: Dict[str, str] = {
 }
 MEV_LOCAL = frozenset({"mev-mevboost"})
 MEV_NONE = frozenset({"mev-none", "none", ""})
+# CDVN VC datadirs merged (not moved wholesale); keys come from .charon/validator_keys.
+VC_DATADIR_RELS = frozenset({
+    "data/vc-teku",
+    "data/vc-nimbus",
+    "data/vc-prysm",
+    "data/lodestar",
+})
+VC_DATADIR_SKIP_NAMES = frozenset({"logs", "run.sh"})
+VC_DATADIR_SKIP_SUFFIXES = (".log",)
+VC_DATADIR_SKIP_FILES = frozenset({".log_rotate_audit.json"})
 
 # Relative CDVN ./data path → (EthPillar datadir under BASE_DATA_DIR, systemd user)
 DATADIR_MOVES: Dict[str, Tuple[str, str]] = {
@@ -112,6 +124,8 @@ class CdvnMigrationPlan:
     has_keyshares: bool
     compose_file: Optional[str]
     docker_running: bool
+    charon_link: Optional[str] = None
+    charon_is_symlink: bool = False
     datadir_moves: List[DatadirMove] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     el_profile: str = ""
@@ -134,6 +148,16 @@ class CdvnMigrationPlan:
             f"  MEV profile:  {self.mev_profile or '(unset)'} "
             f"(local_mevboost={self.with_mevboost}, builder_api={self.with_builder_api})",
             f"  Charon:       {self.with_charon} (lock={self.has_lock}, keys={self.has_keyshares})",
+            (
+                f"  Charon path:  {self.charon_link} → {self.charon_dir}"
+                if self.charon_is_symlink and self.charon_link and self.charon_dir
+                else f"  Charon path:  {self.charon_dir or '(none)'}"
+            ),
+            (
+                f"  Key shares:   auto-sync to {self.vc_name} on migrate"
+                if self.has_keyshares and self.vc_name
+                else "  Key shares:   (none)"
+            ),
             f"  BN address:   {self.bn_address or '(local via EthPillar CC)'}",
             f"  Grafana port: {self.grafana_port or '(EthPillar default 3000)'}",
             f"  Compose:      {self.compose_file or '(none)'}",
@@ -321,6 +345,51 @@ def apply_cdvn_monitoring_from_env(env_path: str) -> Optional[int]:
     return port
 
 
+def _vc_datadir_useful_entries(src: str) -> List[str]:
+    """Top-level CDVN VC datadir entries worth merging into EthPillar."""
+    if not os.path.isdir(src):
+        return []
+    useful: List[str] = []
+    for name in os.listdir(src):
+        if name in VC_DATADIR_SKIP_NAMES or name in VC_DATADIR_SKIP_FILES:
+            continue
+        if any(name.endswith(suffix) for suffix in VC_DATADIR_SKIP_SUFFIXES):
+            continue
+        if os.path.exists(os.path.join(src, name)):
+            useful.append(name)
+    return useful
+
+
+def _vc_datadir_skip_reason(src: str) -> str:
+    """Skip reason for CDVN VC datadir when there is nothing useful to merge."""
+    if not os.path.isdir(src):
+        return "source empty or missing"
+    useful = _vc_datadir_useful_entries(src)
+    if not useful:
+        return "only logs present (keys synced from .charon/validator_keys on migrate)"
+    return ""
+
+
+def merge_cdvn_vc_datadir(src: str, dest: str, owner: str) -> List[str]:
+    """Merge useful CDVN VC datadir entries into EthPillar's VC data path."""
+    merged: List[str] = []
+    if not os.path.isdir(src):
+        return merged
+    subprocess.run(["sudo", "mkdir", "-p", dest], check=True)
+    for name in _vc_datadir_useful_entries(src):
+        s_item = os.path.join(src, name)
+        d_item = os.path.join(dest, name)
+        if os.path.isdir(s_item):
+            subprocess.run(["sudo", "rm", "-rf", d_item], check=False)
+            subprocess.run(["sudo", "cp", "-a", s_item, d_item], check=True)
+        else:
+            subprocess.run(["sudo", "cp", "-a", s_item, d_item], check=True)
+        merged.append(name)
+    if merged:
+        subprocess.run(["sudo", "chown", "-R", f"{owner}:{owner}", dest], check=True)
+    return merged
+
+
 def _dir_nonempty(path: str) -> bool:
     if not os.path.isdir(path):
         return False
@@ -426,6 +495,8 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         role = "Custom Setup"
 
     charon_dir = info.get("charon_dir")
+    charon_link = info.get("charon_link")
+    charon_is_symlink = bool(info.get("charon_is_symlink"))
     has_lock = bool(info.get("has_lock"))
     has_keyshares = bool(info.get("has_keyshares"))
     if not charon_dir and not has_lock:
@@ -496,7 +567,9 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         src = os.path.join(root, rel.replace("/", os.sep))
         dest = os.path.join(BASE_DATA_DIR, dest_name)
         skip = ""
-        if not _dir_nonempty(src):
+        if rel in VC_DATADIR_RELS:
+            skip = _vc_datadir_skip_reason(src)
+        elif not _dir_nonempty(src):
             skip = "source empty or missing"
         elif _dest_has_data(dest):
             skip = f"destination already has data ({dest}); clear it manually to move"
@@ -539,6 +612,8 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         with_builder_api=with_builder_api,
         bn_address=bn_address,
         charon_dir=str(charon_dir) if charon_dir else None,
+        charon_link=str(charon_link) if charon_link else None,
+        charon_is_symlink=charon_is_symlink,
         has_lock=has_lock,
         has_keyshares=has_keyshares,
         compose_file=str(compose_file) if compose_file else None,
@@ -589,6 +664,11 @@ def apply_datadir_moves(plan: CdvnMigrationPlan, selected: Optional[Sequence[str
         if allow is not None and move.relative_src not in allow:
             continue
         if not move.will_move:
+            continue
+        if move.relative_src in VC_DATADIR_RELS:
+            merged = merge_cdvn_vc_datadir(move.src, move.dest, move.owner)
+            if merged:
+                done.append(move.relative_src)
             continue
         move_client_datadir(move.src, move.dest, move.owner)
         done.append(move.relative_src)
@@ -665,24 +745,47 @@ def run_migration(
         dest = os.path.join(BASE_DATA_DIR, "charon", ".charon")
         dest_lock = os.path.join(dest, "cluster-lock.json")
         if not os.path.isfile(dest_lock):
-            try:
-                subprocess.run(["sudo", "mkdir", "-p", os.path.dirname(dest)], check=True)
-                if os.path.exists(dest) and not _dir_nonempty(dest):
-                    subprocess.run(["sudo", "rmdir", dest], check=False)
-                if not os.path.exists(dest):
-                    subprocess.run(["sudo", "mv", plan.charon_dir, dest], check=True)
-                    subprocess.run(
-                        ["sudo", "chown", "-R", "charon:charon", os.path.dirname(dest)],
-                        check=False,
-                    )
-                    print(f"Moved {plan.charon_dir} → {dest}")
-                else:
-                    copy_charon_cluster(plan.charon_dir, force=False)
-            except (OSError, subprocess.CalledProcessError):
-                print("Charon move failed; falling back to copy.")
+            copy_only = charon_cluster_copy_only(plan.root, plan.charon_dir)
+            if copy_only:
                 copy_charon_cluster(plan.charon_dir, force=False)
+                print(f"Copied {plan.charon_dir} → {dest} (.charon symlink/outside checkout)")
+            else:
+                try:
+                    subprocess.run(["sudo", "mkdir", "-p", os.path.dirname(dest)], check=True)
+                    if os.path.exists(dest) and not _dir_nonempty(dest):
+                        subprocess.run(["sudo", "rmdir", dest], check=False)
+                    if not os.path.exists(dest):
+                        subprocess.run(["sudo", "mv", plan.charon_dir, dest], check=True)
+                        subprocess.run(
+                            ["sudo", "chown", "-R", "charon:charon", os.path.dirname(dest)],
+                            check=False,
+                        )
+                        print(f"Moved {plan.charon_dir} → {dest}")
+                    else:
+                        copy_charon_cluster(plan.charon_dir, force=False)
+                except (OSError, subprocess.CalledProcessError):
+                    print("Charon move failed; falling back to copy.")
+                    copy_charon_cluster(plan.charon_dir, force=False)
     if plan.env_path and not skip_charon_overlay:
         import_cdvn_env_to_service(plan.env_path, apply=True)
+
+    if plan.vc_name and plan.has_keyshares and not skip_charon_overlay:
+        sync = sync_charon_keyshares_to_vc(plan.vc_name)
+        if sync.get("status") == "copied":
+            print(
+                f"Synced {sync.get('count', 0)} key share(s) from .charon/validator_keys "
+                f"→ {sync.get('dest')}"
+            )
+        elif sync.get("status") == "skipped":
+            print(f"Key share sync skipped: {sync.get('reason')}")
+        elif sync.get("status") == "failed":
+            print(f"Key share sync failed: {sync.get('reason')}")
+            print("  Fallback: Validator → Import Obol Charon key shares")
+        elif sync.get("status") == "unsupported":
+            print(
+                f"Key shares present; auto-sync not implemented for {plan.vc_name}. "
+                "Use Validator → Import Obol Charon key shares."
+            )
 
     return plan
 

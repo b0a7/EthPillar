@@ -32,6 +32,80 @@ def _write_cdvn(tmp_path: Path, env: str, *, with_lock: bool = True, data_dirs: 
     return root
 
 
+def test_plan_lodestar_datadir_merges_state(tmp_path: Path):
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=el-none\n"
+        "CL=cl-none\n"
+        "VC=vc-lodestar\n"
+        "MEV=mev-none\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
+    )
+    base = root / "data" / "lodestar"
+    (base / "keystores").mkdir(parents=True)
+    (base / "keystores" / "keystore-0.json").write_text("{}", encoding="utf-8")
+    (base / "validator-db").mkdir()
+    (base / "validator-db" / "db").write_text("x", encoding="utf-8")
+    (base / "validator-2026-08-28.log").write_text("log", encoding="utf-8")
+
+    plan = plan_cdvn_migration(str(root))
+    move = next(m for m in plan.datadir_moves if m.relative_src == "data/lodestar")
+    assert move.will_move
+    assert "auto-sync to Lodestar" in plan.summary()
+
+
+def test_plan_vc_teku_logs_only_skips_datadir_move(tmp_path: Path):
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=rp-external\n"
+        "CL=rp-external\n"
+        "VC=vc-teku\n"
+        "MEV=rp-external\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://100.116.116.75:5052\n",
+    )
+    logs = root / "data" / "vc-teku" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "teku.log").write_text("x", encoding="utf-8")
+
+    plan = plan_cdvn_migration(str(root))
+    vc_move = next(m for m in plan.datadir_moves if m.relative_src == "data/vc-teku")
+    assert not vc_move.will_move
+    assert "only logs present" in vc_move.skip_reason
+    assert plan.has_keyshares is True
+    assert "auto-sync to Teku" in plan.summary()
+
+
+def test_plan_symlink_charon(tmp_path: Path):
+    real = tmp_path / "node2"
+    real.mkdir()
+    (real / "cluster-lock.json").write_text("{}", encoding="utf-8")
+    keys = real / "validator_keys"
+    keys.mkdir()
+    (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
+
+    root = tmp_path / "cdvn"
+    root.mkdir()
+    (root / ".env").write_text(
+        "NETWORK=mainnet\n"
+        "EL=rp-external\n"
+        "CL=rp-external\n"
+        "VC=vc-teku\n"
+        "MEV=rp-external\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://100.116.116.75:5052\n",
+        encoding="utf-8",
+    )
+    (root / ".charon").symlink_to(real, target_is_directory=True)
+
+    plan = plan_cdvn_migration(str(root))
+    assert plan.charon_is_symlink is True
+    assert plan.charon_dir == str(real.resolve())
+    assert "→" in plan.summary()
+    charon_move = next(m for m in plan.datadir_moves if m.relative_src == ".charon")
+    assert charon_move.src == str(real.resolve())
+
+
 def test_plan_validator_only_external_bn(tmp_path: Path):
     root = _write_cdvn(
         tmp_path,

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 import pytest
@@ -199,6 +200,97 @@ def test_resolve_cdvn_checkout_from_env_file(tmp_path):
     assert info["root"] == str(root)
     assert info["env_path"] == str(env)
     assert info["charon_dir"] is None
+
+
+def test_resolve_cdvn_checkout_follows_charon_symlink(tmp_path):
+    from deploy.charon import resolve_cdvn_checkout
+
+    real = tmp_path / "node2"
+    real.mkdir()
+    (real / "cluster-lock.json").write_text("{}", encoding="utf-8")
+    keys = real / "validator_keys"
+    keys.mkdir()
+    (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
+
+    root = tmp_path / "cdvn"
+    root.mkdir()
+    (root / ".env").write_text("NETWORK=mainnet\n", encoding="utf-8")
+    (root / ".charon").symlink_to(real, target_is_directory=True)
+
+    info = resolve_cdvn_checkout(str(root))
+    assert info["charon_is_symlink"] is True
+    assert info["charon_dir"] == str(real.resolve())
+    assert info["has_lock"] is True
+    assert info["has_keyshares"] is True
+
+
+def test_sync_charon_keyshares_lodestar_import(tmp_path, monkeypatch):
+    from deploy import charon as charon_mod
+    from deploy.charon import sync_charon_keyshares_to_vc
+
+    keys = tmp_path / "validator_keys"
+    keys.mkdir()
+    (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
+    (keys / "keystore-0.txt").write_text("password\n", encoding="utf-8")
+    dest = tmp_path / "lodestar_validator"
+    monkeypatch.setattr(charon_mod, "BASE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_IMPORT_DATA_DIRS",
+        {"Lodestar": str(dest)},
+    )
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
+
+    result = sync_charon_keyshares_to_vc("Lodestar", keys_dir=str(keys))
+    assert result["status"] == "copied"
+    assert result["method"] == "import"
+    assert any("lodestar" in str(c) and "validator" in str(c) and "import" in str(c) for c in calls)
+
+
+def test_vc_already_has_keys_after_lodestar_merge(tmp_path, monkeypatch):
+    from deploy import charon as charon_mod
+    from deploy.charon import _vc_already_has_keys
+
+    base = tmp_path / "lodestar_validator"
+    (base / "keystores").mkdir(parents=True)
+    (base / "keystores" / "x.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_IMPORT_DATA_DIRS",
+        {"Lodestar": str(base)},
+    )
+    assert _vc_already_has_keys("Lodestar") is True
+
+
+def test_sync_charon_keyshares_to_teku(tmp_path, monkeypatch):
+    from deploy import charon as charon_mod
+    from deploy.charon import sync_charon_keyshares_to_vc
+
+    keys = tmp_path / "validator_keys"
+    keys.mkdir()
+    (keys / "keystore-0.json").write_text('{"crypto":{}}', encoding="utf-8")
+    (keys / "keystore-0.txt").write_text("password\n", encoding="utf-8")
+    dest = tmp_path / "teku_validator" / "validator_keys"
+    monkeypatch.setattr(charon_mod, "BASE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_COPY_KEY_DIRS",
+        {"Teku": str(dest)},
+    )
+    monkeypatch.setattr(charon_mod, "_chown_vc_tree", lambda *_a, **_k: None)
+
+    result = sync_charon_keyshares_to_vc("Teku", keys_dir=str(keys))
+    assert result["status"] == "copied"
+    assert result["count"] == 1
+    assert result["dest"] == str(dest)
+    assert (dest / "keystore-0.json").is_file()
+    assert (dest / "keystore-0.txt").is_file()
 
 
 def test_copy_charon_cluster_and_skip(tmp_path):

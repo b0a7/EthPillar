@@ -924,12 +924,16 @@ PY
         [[ -n "$_grafana_port" ]] && ohai "Grafana http_port set to ${_grafana_port} (from CDVN .env)"
     fi
 
-    if [[ -d /var/lib/charon/.charon/validator_keys ]] \
-        && compgen -G "/var/lib/charon/.charon/validator_keys/keystore-*.json" >/dev/null; then
+    # Key shares: auto-synced during deploy.cdvn_migrate run (see sync_charon_keyshares_to_vc).
+    if [[ -f /etc/systemd/system/validator.service ]] \
+        && [[ -d /var/lib/charon/.charon/validator_keys ]] \
+        && compgen -G "/var/lib/charon/.charon/validator_keys/keystore-*.json" >/dev/null \
+        && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
+        && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1; then
         if whiptail --title "Import key shares" --yesno \
-"Key shares are present under /var/lib/charon/.charon/validator_keys.
+"Key shares are under /var/lib/charon/.charon/validator_keys but were not copied into the validator client.
 
-Import them into the validator client now?" 11 70; then
+Import them now?" 12 70; then
             runScript manage_validator_keys.sh charon-import
         fi
     fi
