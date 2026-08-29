@@ -55,7 +55,7 @@ After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks kee
 
 - Stops and disables MEV-Boost (the service file stays on disk).
 - Removes the beacon-node setting that pointed at local MEV-Boost (`127.0.0.1:18550`). Other builder URLs are left alone.
-- With **Obol Charon** installed, also removes `charon.service` `--builder-api` — see [Obol Charon DV](#obol-charon-dv) below.
+- With **Obol Charon** installed, also removes `charon.service` `--builder-api` — see [Obol Charon DV](#obol-charon-dv) below and [docs/charon.md](charon.md) for install/migrate.
 - Leaves any validator relay config from the first step in place.
 
 Restart order after complete when Charon is present: **consensus → charon → validator**.

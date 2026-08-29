@@ -614,7 +614,7 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
             print('     • Nimbus BN: Charon needs --feature-set-enable=json_requests')
             print('       (add to charon.service on this machine if upstream BN is Nimbus)')
             print('     • Teku BN: --validators-graffiti-client-append-format=DISABLED')
-        print('     See README.md (Obol Charon DV) for CDVN migration and BN notes.\n')
+        print('     See docs/charon.md for CDVN migration and BN notes.\n')
         # Wire Charon into existing Grafana/Prometheus when monitoring is already installed
         try:
             from manage.charon_monitoring import provision_charon_monitoring

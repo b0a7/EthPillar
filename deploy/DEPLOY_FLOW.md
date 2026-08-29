@@ -56,3 +56,5 @@ graph TD
     *   `common.finish_install()`: Service reload and completion report. Charon is enabled on boot but not started until `/var/lib/charon/.charon/cluster-lock.json` exists. When monitoring is already present, `manage.charon_monitoring` adds a Prometheus scrape for `:3620` and provisions the Charon Overview Grafana dashboard (also run when monitoring is installed later if `charon.service` exists).
 
 Runtime: `getValidatorMode()` stays `none | separate | integrated_grandine`. Detect Charon via `isCharonEnabled()` (`charon.service`). After a CC switch, `patchValidatorBeaconEndpoint` updates Charon’s `--beacon-node-endpoints` (VC stays on `:3600`), then Charon is `try-restart`ed. Full-stack CDVN migrate: `ethpillar --migrate_cdvn` / TUI **Migrate from CDVN (full stack)** (`deploy.cdvn_migrate` + `migrateCdvnFull`) detects EL/CL/VC/MEV, deploys the matching role, moves datadirs, overlays `.charon` + `.env` → systemd, and provisions fresh EthPillar monitoring.
+
+Operator guide: [docs/charon.md](../docs/charon.md).
