@@ -7,9 +7,10 @@
 # Made for home and solo stakers 🏠🥩
 
 function promptYesNo(){
-    if whiptail --title "Uninstall Staking Node" --defaultno --yesno "This will remove all data and files related to this staking node.\nAre you sure you want to remove all files?\n(consensus/execution/validator/mevboost)" 9 78; then
+    if whiptail --title "Uninstall Staking Node" --defaultno --yesno "This will remove all data and files related to this staking node.\nAre you sure you want to remove all files?\n(consensus/execution/validator/charon/mevboost)" 9 78; then
   		uninstallCL
   		uninstallEL
+  		uninstallCharon
   		uninstallVC
   		uninstallMevboost
 		cleanupMisc
@@ -153,6 +154,17 @@ function uninstallEL(){
 		sudo rm -rf /var/lib/ethrex
 
 		sudo userdel execution
+	fi
+}
+
+function uninstallCharon(){
+	if [[ -f /etc/systemd/system/charon.service ]]; then
+		sudo systemctl stop charon
+		sudo systemctl disable charon
+		sudo rm /etc/systemd/system/charon.service
+		sudo rm -f /usr/local/bin/charon
+		sudo rm -rf /var/lib/charon
+		sudo userdel charon 2>/dev/null || true
 	fi
 }
 

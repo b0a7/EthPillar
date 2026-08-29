@@ -290,10 +290,11 @@ print_node_info() {
   execution_status=$(if systemctl is-active --quiet execution ; then printf "Online" ; elif [ -f /etc/systemd/system/execution.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
   [[ $EL == "Erigon-Caplin" ]] && consensus_status=$execution_status
   validator_status=$(if systemctl is-active --quiet validator ; then printf "Online" ; elif [ -f /etc/systemd/system/validator.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
+  charon_status=$(if systemctl is-active --quiet charon ; then printf "Online" ; elif [ -f /etc/systemd/system/charon.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
   mevboost_status=$(if systemctl is-active --quiet mevboost ; then printf "Online" ; elif [ -f /etc/systemd/system/mevboost.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
   ethpillar_commit=$(git -C "${BASE_DIR}" rev-parse HEAD)
   ethpillar_version=$(grep ^EP_VERSION= $BASE_DIR/ethpillar.sh | sed 's/EP_VERSION=//g')
-  SERVICES=(execution consensus validator mevboost)
+  SERVICES=(execution consensus validator charon mevboost)
   autostart_status=()
   for UNIT in ${SERVICES[@]}
       do
@@ -313,6 +314,7 @@ Chrony           :  $chrony_status
 Consensus Status :  $consensus_status
 Execution Status :  $execution_status
 Validator Status :  $validator_status
+Charon Status    :  $charon_status
 Mevboost Status  :  $mevboost_status
 Autostart at Boot:  ${autostart_status[@]}
 
@@ -627,6 +629,51 @@ getCharonP2pPort(){
     if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
         echo "$port"
     fi
+}
+
+# Stop validator → charon → consensus before BN maintenance (update/resync).
+stopConsensusStackForUpdate(){
+    test -f /etc/systemd/system/validator.service && sudo systemctl stop validator 2>/dev/null || true
+    isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+    test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus 2>/dev/null || true
+}
+
+# Start consensus → charon → validator after BN maintenance.
+startConsensusStackAfterUpdate(){
+    test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus 2>/dev/null || true
+    isCharonEnabled && sudo systemctl start charon 2>/dev/null || true
+    test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
+}
+
+# Stop validator (and Charon when DVT) before VC binary update.
+stopValidatorStackForUpdate(){
+    test -f /etc/systemd/system/validator.service && sudo systemctl stop validator 2>/dev/null || true
+    isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+}
+
+# Start charon → validator after VC binary update.
+startValidatorStackAfterUpdate(){
+    isCharonEnabled && sudo systemctl start charon 2>/dev/null || true
+    test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
+}
+
+# Ensure Charon is up before starting the VC (key import / loadKeys).
+ensureCharonBeforeValidator(){
+    isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || sudo systemctl start charon 2>/dev/null || true
+}
+
+# Reload systemd units after .env.overrides edits (Charon + core stack).
+reloadEnvOverridesAndMaybeRestart(){
+    sudo systemctl daemon-reload
+    if ! whiptail --title "Reload Environment values" --yesno \
+        "Reload systemd and restart affected services?\n\n(execution, consensus, charon, validator, mevboost — whichever is installed)" 10 78; then
+        return 0
+    fi
+    test -f /etc/systemd/system/execution.service && sudo systemctl try-restart execution 2>/dev/null || true
+    test -f /etc/systemd/system/consensus.service && sudo systemctl try-restart consensus 2>/dev/null || true
+    test -f /etc/systemd/system/mevboost.service && sudo systemctl try-restart mevboost 2>/dev/null || true
+    isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || true
+    test -f /etc/systemd/system/validator.service && sudo systemctl try-restart validator 2>/dev/null || true
 }
 
 # Allow inbound TCP on Charon P2P port in UFW (no-op when Charon not installed).
@@ -2089,6 +2136,7 @@ function get_user_input() {
     test -f /etc/systemd/system/execution.service && OPTIONS+=("execution" "")
     test -f /etc/systemd/system/consensus.service && OPTIONS+=("consensus" "")
     test -f /etc/systemd/system/validator.service && OPTIONS+=("validator" "")
+    test -f /etc/systemd/system/charon.service && OPTIONS+=("charon" "")
     test -f /etc/systemd/system/mevboost.service && OPTIONS+=("mevboost" "" )
     test -f /etc/systemd/system/csm_nimbusvalidator.service && OPTIONS+=("csm_nimbusvalidator" "")
     service=$(whiptail --title "Export journalctl service logs" --menu \
@@ -2260,6 +2308,7 @@ compareSystemdDefaults() {
     if [[ ! -f /etc/systemd/system/execution.service \
        && ! -f /etc/systemd/system/consensus.service \
        && ! -f /etc/systemd/system/validator.service \
+       && ! -f /etc/systemd/system/charon.service \
        && ! -f /etc/systemd/system/mevboost.service ]]; then
         whiptail --title "Compare systemd configs" --msgbox \
             "No EthPillar systemd units found.\n\nInstall a node first." 10 70

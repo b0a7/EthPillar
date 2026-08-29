@@ -394,6 +394,8 @@ warn_if_unit_missing_checkpoint_flag() {
 # Destructive resync implementations
 # ---------------------------------------------------------------------------
 stop_consensus() {
+	test -f /etc/systemd/system/validator.service && sudo systemctl stop validator 2>/dev/null || true
+	isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
 	ohai "Stopping consensus service..."
 	sudo systemctl stop consensus || true
 }
@@ -401,6 +403,8 @@ stop_consensus() {
 start_consensus() {
 	ohai "Starting consensus service..."
 	sudo systemctl restart consensus
+	isCharonEnabled && sudo systemctl start charon 2>/dev/null || true
+	test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
 }
 
 wipe_beacon_datadir() {

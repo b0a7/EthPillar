@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 
 import config
 import deploy.besu as besu
+import deploy.charon as charon
 import deploy.erigon as erigon
 import deploy.ethrex as ethrex
 import deploy.geth as geth
@@ -185,7 +186,7 @@ def _resolve_context(env: Dict[str, str], paths: Dict[str, str]) -> Dict[str, ob
         contents[key] = raw
 
     network = ""
-    for key in ("consensus", "execution", "validator", "mevboost"):
+    for key in ("consensus", "execution", "validator", "charon", "mevboost"):
         if key in contents:
             network = parse_unit(contents[key]).network
             if network:
@@ -247,8 +248,11 @@ def _resolve_context(env: Dict[str, str], paths: Dict[str, str]) -> Dict[str, ob
     if "validator" in contents and vc_client in BEACON_FLAG_BY_VC:
         bn_endpoint = scrape_beacon_endpoint(contents["validator"], vc_client) or ""
     if not bn_endpoint:
-        cl_ip = env.get("CL_IP_ADDRESS", "127.0.0.1")
-        bn_endpoint = f"http://{cl_ip}:{cl_rest}"
+        if "charon" in paths:
+            bn_endpoint = charon.DEFAULT_VALIDATOR_API_URL
+        else:
+            cl_ip = env.get("CL_IP_ADDRESS", "127.0.0.1")
+            bn_endpoint = f"http://{cl_ip}:{cl_rest}"
 
     is_integrated_grandine = (
         cl_client == "Grandine"
@@ -422,6 +426,31 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
                 beacon_rpc_provider=beacon_rpc,
             )
         raise RuntimeError(f"Unsupported validator client for compare: {vc!r}")
+
+    if service_key == "charon":
+        ch_content = str(ctx["contents"].get("charon", ""))
+        ch_args = parse_unit(ch_content).exec_args if ch_content else []
+        cl_rest = str(ctx["cl_rest"])
+        beacon = charon.scrape_beacon_endpoints(ch_content) or ""
+        if not beacon:
+            cl_ip = os.environ.get("CL_IP_ADDRESS", "127.0.0.1")
+            beacon = f"http://{cl_ip}:{cl_rest}"
+        return charon.generate_charon_service(
+            network,
+            beacon,
+            builder_api=has_flag(ch_args, "--builder-api"),
+            p2p_external_ip=get_flag_value(ch_args, "--p2p-external-ip"),
+            validator_api_address=get_flag_value(
+                ch_args, "--validator-api-address", default=charon.DEFAULT_VALIDATOR_API_ADDRESS
+            ),
+            monitoring_address=get_flag_value(
+                ch_args, "--monitoring-address", default=charon.DEFAULT_MONITORING_ADDRESS
+            ),
+            p2p_tcp_address=get_flag_value(
+                ch_args, "--p2p-tcp-address", default=charon.DEFAULT_P2P_TCP_ADDRESS
+            ),
+            feature_set_enable=get_flag_value(ch_args, "--feature-set-enable"),
+        )
 
     raise RuntimeError(f"Unknown service key: {service_key!r}")
 

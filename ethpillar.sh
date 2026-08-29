@@ -943,6 +943,7 @@ while true; do
         "${EDITOR}" .env.overrides
         # Reload environment variables overrides
         [[ -f ./.env.overrides ]] && source ./.env.overrides
+        reloadEnvOverridesAndMaybeRestart
         ;;
       📝)
         compareSystemdDefaults

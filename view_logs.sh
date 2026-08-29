@@ -82,6 +82,12 @@ if grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/sy
 isGrandineIntegrated=false
 if grep -q 'keystore-dir' /etc/systemd/system/consensus.service 2>/dev/null; then isGrandineIntegrated=true; fi
 
+hasCharon=false
+isCharonEnabled && hasCharon=true
+VC_LOG_CMD='journalctl -fu validator --no-hostname | ccze -A'
+[[ ${hasCharon} == "true" ]] && VC_LOG_CMD='journalctl -fu validator -u charon --no-hostname | ccze -A'
+CHARON_LOG_CMD='journalctl -fu charon --no-hostname | ccze -A'
+
 # Portrait view for narrow terminals <= 80 col
 if [[ $cols -lt 81 ]]; then
    if [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]] && [[ -f /etc/systemd/system/validator.service ]]; then
@@ -89,7 +95,7 @@ if [[ $cols -lt 81 ]]; then
       tmux new-session -d -s logs \; \
            send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
            split-window -v \; \
-           send-keys 'journalctl -fu validator --no-hostname | ccze -A' C-m \; \
+           send-keys "${VC_LOG_CMD}" C-m \; \
            select-pane -t 0 \; \
            split-window -v \; \
            send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
@@ -108,7 +114,7 @@ if [[ $cols -lt 81 ]]; then
            send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
            split-window -h \; \
            select-pane -t 1 \; \
-           send-keys 'journalctl -fu validator --no-hostname | ccze -A' C-m \; \
+           send-keys "${VC_LOG_CMD}" C-m \; \
            select-layout even-vertical \;
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]]; then
       # Full Node Only
@@ -128,26 +134,46 @@ if [[ $cols -lt 81 ]]; then
            select-layout even-vertical \;
    elif [[ -f /etc/systemd/system/validator.service ]]; then
       # Validator Client Only
+      if [[ ${hasCharon} == "true" ]]; then
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu validator --no-hostname | ccze -A' C-m \; \
+           send-keys "${VC_LOG_CMD}" C-m \; \
+           split-window -h \; \
+           send-keys "${CHARON_LOG_CMD}" C-m \; \
+           select-layout even-vertical \;
+      else
+      tmux new-session -d -s logs \; \
+           send-keys "${VC_LOG_CMD}" C-m \; \
            split-window -h \; \
            select-pane -t 1 \; \
            send-keys 'btop --utf-force' C-m \; \
            select-layout even-vertical \;
+      fi
    fi
 else
    # Create full screen panes for validator node or non-staking node
    if [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]] && [[ -f /etc/systemd/system/validator.service ]]; then
       # Solo Staking Node
+      if [[ ${hasCharon} == "true" ]]; then
+      tmux new-session -d -s logs \; \
+           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           split-window -h \; \
+           send-keys "${CHARON_LOG_CMD}" C-m \; \
+           split-window -v \; \
+           send-keys "${VC_LOG_CMD}" C-m \; \
+           select-pane -t 0 \; \
+           split-window -v \; \
+           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \;
+      else
       tmux new-session -d -s logs \; \
            send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
            split-window -h \; \
            send-keys 'btop --utf-force' C-m \; \
            split-window -v \; \
-           send-keys 'journalctl -fu validator --no-hostname | ccze -A' C-m \; \
+           send-keys "${VC_LOG_CMD}" C-m \; \
            select-pane -t 0 \; \
            split-window -v \; \
            send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \;
+      fi
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]] && [[ ${isGrandineIntegrated} == "true" ]]; then
       # Grandine integrated: consensus carries BN+VC, show it alongside execution and btop
       tmux new-session -d -s logs \; \
@@ -165,7 +191,7 @@ else
            split-window -h \; \
            send-keys 'btop --utf-force' C-m \; \
            select-pane -t 1 \; \
-           send-keys 'journalctl -fu validator --no-hostname | ccze -A' C-m \;
+           send-keys "${VC_LOG_CMD}" C-m \;
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]]; then
       # Full Node Only
       tmux new-session -d -s logs \; \
@@ -185,12 +211,23 @@ else
            select-layout even-vertical \;
    elif [[ -f /etc/systemd/system/validator.service ]]; then
       # Validator Client Only
+      if [[ ${hasCharon} == "true" ]]; then
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu validator --no-hostname | ccze -A' C-m \; \
+           send-keys "${VC_LOG_CMD}" C-m \; \
+           split-window -h \; \
+           send-keys "${CHARON_LOG_CMD}" C-m \; \
+           select-pane -t 1 \; \
+           split-window -v \; \
+           send-keys 'btop --utf-force' C-m \; \
+           select-layout even-vertical \;
+      else
+      tmux new-session -d -s logs \; \
+           send-keys "${VC_LOG_CMD}" C-m \; \
            split-window -h \; \
            select-pane -t 1 \; \
            send-keys 'btop --utf-force' C-m \; \
            select-layout even-vertical \;
+      fi
    fi
 fi
 

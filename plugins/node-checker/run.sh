@@ -43,6 +43,7 @@ client_github_url['Erigon']='https://api.github.com/repos/erigontech/erigon/rele
 client_github_url['Geth']='https://api.github.com/repos/ethereum/go-ethereum/releases/latest'
 client_github_url['Reth']='https://api.github.com/repos/paradigmxyz/reth/releases/latest'
 client_github_url['mev-boost']='https://api.github.com/repos/flashbots/mev-boost/releases/latest'
+client_github_url['Charon']='https://api.github.com/repos/ObolNetwork/charon/releases/latest'
 
 # Load environment variables overrides
 if [[ -f "$SOURCE_DIR"/../../.env.overrides ]]; then
@@ -696,6 +697,28 @@ check_mevboost_version() {
     fi
 }
 
+check_charon_version() {
+    ((total_checks++))
+    if ! isCharonEnabled; then
+        return 0
+    fi
+    if getCharonCurrentVersion; then
+        TAG_URL=${client_github_url["Charon"]}
+        LATEST_VERSION=$(curl -s "$TAG_URL" | jq -r .tag_name 2>/dev/null || true)
+        if [[ -n "$LATEST_VERSION" && "${VERSION}" == "${LATEST_VERSION}" ]]; then
+            print_check_result "PASS" "Charon version: ${VERSION} (latest)"
+        elif [[ -n "$LATEST_VERSION" ]]; then
+            print_check_result "WARN" "Charon version: ${VERSION} (latest: ${LATEST_VERSION})"
+            ((warning_checks++))
+        else
+            print_check_result "PASS" "Charon version: ${VERSION}"
+        fi
+    else
+        print_check_result "FAIL" "Charon installed but unable to query version"
+        ((failed_checks++))
+    fi
+}
+
 check_noatime() {
     ((total_checks++))
     if grep -q "noatime" /etc/fstab; then
@@ -797,6 +820,7 @@ print_section_header "Client Version Checks"
 check_execution_version
 check_consensus_version
 check_validator_version
+check_charon_version
 check_mevboost_version
 
 print_section_header "Performance Checks"

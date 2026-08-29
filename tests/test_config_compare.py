@@ -105,3 +105,65 @@ def test_prepare_workdir_no_diff_when_identical(tmp_path, monkeypatch):
 
 def test_exit_no_diff_constant():
     assert EXIT_NO_DIFF == 2
+
+
+def test_generate_default_charon_matches_installed_flags():
+    import deploy.charon as charon_mod
+
+    installed = charon_mod.generate_charon_service(
+        "mainnet",
+        "http://100.116.116.75:5052",
+        builder_api=True,
+        p2p_tcp_address="0.0.0.0:3812",
+        feature_set_enable="json_requests",
+    )
+    ctx = {
+        "network": "mainnet",
+        "el_client": "",
+        "cl_client": "",
+        "vc_client": "Teku",
+        "fee_recipient": "0xabc",
+        "graffiti": "test",
+        "jwtsecret": "/secrets/jwtsecret",
+        "sync_url": "",
+        "el_p2p": "30303",
+        "el_p2p_2": "30304",
+        "el_rpc": "8545",
+        "el_peers": "50",
+        "cl_p2p": "9000",
+        "cl_p2p_2": "9001",
+        "cl_rest": "5052",
+        "cl_peers": "100",
+        "mev_min_bid": "0.006",
+        "mev_enabled": False,
+        "bn_endpoint": "http://127.0.0.1:3600",
+        "is_integrated_grandine": False,
+        "contents": {"charon": installed},
+    }
+    generated = generate_default_unit("charon", ctx)
+    assert semantic_equal(generated, installed)
+
+
+def test_resolve_context_bn_endpoint_falls_back_to_charon_api(monkeypatch, tmp_path):
+    """VC-only + Charon: default BN endpoint is Charon :3600, not CL REST."""
+    from manage.config_compare import _resolve_context
+
+    charon_svc = tmp_path / "charon.service"
+    charon_svc.write_text("[Service]\nExecStart=/usr/local/bin/charon run\n", encoding="utf-8")
+    validator_svc = tmp_path / "validator.service"
+    validator_svc.write_text(
+        "[Service]\nExecStart=/usr/local/bin/teku validator-client\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "manage.config_compare.installed_service_paths",
+        lambda: {"charon": str(charon_svc), "validator": str(validator_svc)},
+    )
+    monkeypatch.setattr(
+        "manage.config_compare.read_text_file",
+        lambda path: Path(path).read_text(encoding="utf-8"),
+    )
+
+    ctx = _resolve_context({}, {"charon": str(charon_svc), "validator": str(validator_svc)})
+    assert ctx["bn_endpoint"] == "http://127.0.0.1:3600"

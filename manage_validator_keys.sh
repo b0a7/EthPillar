@@ -460,6 +460,7 @@ function loadKeys(){
 
    ohai "Starting validator"
    if [[ $1 == "default" ]]; then
+        ensureCharonBeforeValidator
         if [[ "$VC" == "Grandine" ]]; then
             sudo systemctl start consensus
         else

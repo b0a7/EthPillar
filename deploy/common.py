@@ -647,6 +647,10 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                 subprocess.run(['sudo', 'systemctl', 'start'] + services, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if mevboost_enabled:
                 subprocess.run(['sudo', 'systemctl', 'start', 'mevboost'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if charon_enabled:
+                from deploy.charon import CHARON_LOCK_FILE
+                if os.path.isfile(CHARON_LOCK_FILE):
+                    subprocess.run(['sudo', 'systemctl', 'start', 'charon'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     # Prompt to enable autostart services
     if not skip_prompts:
