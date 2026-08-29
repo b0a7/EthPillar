@@ -245,6 +245,12 @@ def _fee_recipient_from_cdvn(env: Dict[str, str], charon_dir: Optional[str]) -> 
                 val = item.get(key)
                 if isinstance(val, str) and val.lower().startswith("0x") and len(val) == 42:
                     return val
+            creds = item.get("withdrawal_credentials") or item.get("withdrawalCredentials")
+            if isinstance(creds, str):
+                creds = creds.strip().lower()
+                # 0x01-type withdrawal credential embeds the execution address (20 bytes).
+                if creds.startswith("0x01") and len(creds) == 66:
+                    return "0x" + creds[-40:]
     except (OSError, json.JSONDecodeError, TypeError):
         return ""
     return ""
