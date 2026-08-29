@@ -355,6 +355,28 @@ def test_run_migration_applies_charon_overlay_with_empty_moves(tmp_path, monkeyp
     assert overlay_calls == [str(root)]
 
 
+def test_runtime_path_exists_uses_sudo_for_root_owned_file(tmp_path, monkeypatch):
+    target = tmp_path / "cluster-lock.json"
+    target.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("deploy.cdvn_migrate.os.path.isfile", lambda _path: False)
+
+    def fake_run(args, **kwargs):
+        check = kwargs.get("check", True)
+        rc = 0 if args[:3] == ["sudo", "test", "-f"] else 1
+        class _Result:
+            returncode = rc
+
+        result = _Result()
+        if check and rc != 0:
+            raise subprocess.CalledProcessError(rc, args)
+        return result
+
+    monkeypatch.setattr("deploy.cdvn_migrate.subprocess.run", fake_run)
+    from deploy.cdvn_migrate import _runtime_path_exists
+
+    assert _runtime_path_exists(str(target)) is True
+
+
 def test_grafana_port_from_env():
     assert grafana_port_from_env({"MONITORING_PORT_GRAFANA": "3701"}) == 3701
     assert grafana_port_from_env({}) is None

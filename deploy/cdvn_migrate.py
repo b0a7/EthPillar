@@ -989,26 +989,66 @@ def run_migration(
     return plan
 
 
+def _runtime_path_exists(path: str, *, directory: bool = False) -> bool:
+    """Return True when *path* exists, including root-owned Charon datadir paths."""
+    if directory:
+        if os.path.isdir(path):
+            return True
+        flag = "-d"
+    else:
+        if os.path.isfile(path):
+            return True
+        flag = "-f"
+    return subprocess.run(["sudo", "test", flag, path], check=False).returncode == 0
+
+
+def _sudo_keystore_count(keys_dir: str) -> int:
+    """Count ``keystore-*.json`` files under *keys_dir* (sudo when needed)."""
+    if _runtime_path_exists(keys_dir, directory=True):
+        try:
+            names = os.listdir(keys_dir)
+        except OSError:
+            names = []
+        else:
+            return sum(
+                1 for name in names if name.startswith("keystore-") and name.endswith(".json")
+            )
+    result = subprocess.run(
+        ["sudo", "find", keys_dir, "-maxdepth", "1", "-name", "keystore-*.json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return 0
+    return len([line for line in result.stdout.splitlines() if line.strip()])
+
+
 def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False) -> None:
     """Copy or move CDVN ``.charon`` into EthPillar's Charon datadir.
 
     Always runs when the plan has a cluster lock. Optional Docker ``data/``
     moves (--moves) do not control this step.
     """
-    if skip or not plan.charon_dir or not plan.has_lock:
-        if skip:
-            print("Charon cluster overlay: skipped (skip_charon_overlay)")
-        elif not plan.charon_dir:
-            print("Charon cluster overlay: skipped (no .charon path in plan)")
-        elif not plan.has_lock:
-            print("Charon cluster overlay: skipped (no cluster-lock.json in CDVN .charon)")
-        return
-
     dest = os.path.join(BASE_DATA_DIR, "charon", ".charon")
     dest_lock = os.path.join(dest, "cluster-lock.json")
-    if os.path.isfile(dest_lock):
-        print(f"Charon cluster overlay: already present at {dest_lock}")
+
+    if skip:
+        print("Charon cluster overlay: skipped (skip_charon_overlay)")
         return
+
+    if _runtime_path_exists(dest_lock):
+        key_count = _sudo_keystore_count(os.path.join(dest, "validator_keys"))
+        print(f"Charon cluster overlay: already present at {dest_lock}")
+        print(f"Charon cluster overlay OK: {dest_lock} ({key_count} key share file(s))")
+        return
+
+    if not plan.charon_dir or not plan.has_lock:
+        raise RuntimeError(
+            f"Charon cluster overlay required but {dest_lock} is missing and "
+            "no .charon cluster was found in the CDVN checkout. "
+            "Restore .charon from your tarball, or copy it back into the checkout."
+        )
 
     copy_only = charon_cluster_copy_only(plan.root, plan.charon_dir)
     if copy_only:
@@ -1038,19 +1078,13 @@ def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False
         raise RuntimeError(
             f"Charon cluster overlay failed: {result.get('reason', 'skipped')}"
         )
-    if not os.path.isfile(dest_lock):
+    if not _runtime_path_exists(dest_lock):
         raise RuntimeError(
             f"Charon cluster overlay did not produce {dest_lock}. "
             "Check migration log for copy/move errors."
         )
     keys_dir = os.path.join(dest, "validator_keys")
-    key_count = 0
-    if os.path.isdir(keys_dir):
-        key_count = sum(
-            1
-            for name in os.listdir(keys_dir)
-            if name.startswith("keystore-") and name.endswith(".json")
-        )
+    key_count = _sudo_keystore_count(keys_dir)
     print(f"Charon cluster overlay OK: {dest_lock} ({key_count} key share file(s))")
 
 
