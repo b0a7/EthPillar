@@ -32,11 +32,16 @@ CDVN_GRAFANA_DASHBOARDS = (
     "node_overview_dashboard.json",
     "logs_dashboard.json",
 )
-CHARON_SCRAPE_JOB = (
-    "   - job_name: 'charon'\n"
-    "     static_configs:\n"
-    "       - targets: ['localhost:3620']\n"
-)
+def charon_scrape_job(port: int = 3620) -> str:
+    """Return a Prometheus scrape job targeting Charon metrics on *port*."""
+    return (
+        "   - job_name: 'charon'\n"
+        "     static_configs:\n"
+        f"       - targets: ['localhost:{int(port)}']\n"
+    )
+
+
+CHARON_SCRAPE_JOB = charon_scrape_job(3620)
 DEFAULT_PROMETHEUS_YML = Path("/etc/prometheus/prometheus.yml")
 DEFAULT_GRAFANA_DASHBOARDS = Path("/etc/grafana/provisioning/dashboards")
 DEFAULT_DATASOURCES_YML = Path("/etc/grafana/provisioning/datasources/datasources.yml")
@@ -120,19 +125,44 @@ def _write_bytes(path: Path, data: Union[str, bytes]) -> None:
             pass
 
 
-def ensure_charon_scrape(prometheus_yml: Path) -> bool:
-    """Append a Charon scrape job if missing.
+def _charon_metrics_port() -> int:
+    """Read Charon ``--monitoring-address`` port from charon.service, default 3620."""
+    try:
+        from deploy.charon import parse_monitoring_port
+
+        return parse_monitoring_port()
+    except Exception:
+        return 3620
+
+
+def ensure_charon_scrape(prometheus_yml: Path, metrics_port: Optional[int] = None) -> bool:
+    """Append or update a Charon scrape job.
+
+    Args:
+        prometheus_yml: Prometheus config path.
+        metrics_port: Charon metrics port. When omitted, read from charon.service.
 
     Returns:
         True if the file was modified; False if unchanged or missing.
     """
     if not prometheus_yml.is_file():
         return False
+    port = metrics_port if metrics_port is not None else _charon_metrics_port()
+    job = charon_scrape_job(port)
     text = prometheus_yml.read_text(encoding="utf-8")
     if has_charon_scrape(text):
-        return False
+        updated, count = re.subn(
+            r"(job_name:\s*['\"]charon['\"][\s\S]*?targets:\s*\[')localhost:\d+('\])",
+            rf"\1localhost:{port}\2",
+            text,
+            count=1,
+        )
+        if not count or updated == text:
+            return False
+        _write_bytes(prometheus_yml, updated)
+        return True
     suffix = "" if text.endswith("\n") else "\n"
-    _write_bytes(prometheus_yml, text + suffix + CHARON_SCRAPE_JOB)
+    _write_bytes(prometheus_yml, text + suffix + job)
     return True
 
 

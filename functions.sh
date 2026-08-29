@@ -874,6 +874,17 @@ lodestarValidatorKeysPresent(){
     [[ "$(sudo find /var/lib/lodestar_validator/keystores -maxdepth 1 -name 'keystore-*.json' 2>/dev/null | wc -l)" -gt 0 ]]
 }
 
+# Return 0 when the installed EthPillar VC already has imported keystores (any client).
+_ethpillarVcHasImportedKeys(){
+    PYTHONPATH="${BASE_DIR}" python3 - <<'PY'
+from deploy.charon import _vc_already_has_keys
+from deploy.cdvn_migrate import detect_ethpillar_vc_name
+
+vc = detect_ethpillar_vc_name()
+raise SystemExit(0 if vc and _vc_already_has_keys(vc) else 1)
+PY
+}
+
 # Append a timestamped line to the active CDVN migration log (if set).
 _migrateCdvnLog(){
     [[ -n "${_migrate_log:-}" ]] || return 0
@@ -931,12 +942,14 @@ Continue?" 20 78; then
     set -e
     if [[ $rc -eq 2 ]]; then
         whiptail --title "Migrate from CDVN — abort" --msgbox \
-"Docker Compose still has running services.
+"CDVN Docker is still running, or its status could not be verified
+(missing docker/docker-compose, permission denied, or timeout).
 
-Stop CDVN first:
+Stop CDVN first, then re-run:
   cd <cdvn-root> && docker compose down
+  # or: docker-compose down
 
-Then re-run ethpillar --migrate_cdvn" 14 70
+Then: ethpillar --migrate_cdvn" 16 72
         rm -f "$plan_file"
         return 1
     fi
@@ -976,9 +989,7 @@ Optional Docker data/ moves are confirmed next.
         || [[ -f /etc/systemd/system/charon.service ]] \
         || [[ -f /etc/systemd/system/validator.service ]]; then
         local _fresh_default="--defaultno"
-        if charonKeysharesPresent && ! lodestarValidatorKeysPresent \
-            && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
-            && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1; then
+        if charonKeysharesPresent && ! _ethpillarVcHasImportedKeys; then
             _fresh_default=""
         fi
         if whiptail --title "Fresh migration" "${_fresh_default}" --yesno \
@@ -1059,22 +1070,13 @@ ${_migrate_log}" 12 78
     # Key shares: auto-synced during deploy.cdvn_migrate run; retry if still missing.
     if [[ -f /etc/systemd/system/validator.service ]] \
         && charonKeysharesPresent \
-        && ! lodestarValidatorKeysPresent \
-        && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
-        && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1; then
+        && ! _ethpillarVcHasImportedKeys; then
         ohai "Importing Obol Charon key shares into validator client…"
         PYTHONPATH="${BASE_DIR}" python3 - <<'PY' 2>&1 | tee -a "$_migrate_log"
-import re
-from pathlib import Path
-
 from deploy.charon import sync_charon_keyshares_to_vc
+from deploy.cdvn_migrate import detect_ethpillar_vc_name
 
-svc = Path("/etc/systemd/system/validator.service").read_text(encoding="utf-8")
-vc = "Lodestar"
-for name in ("Lodestar", "Lighthouse", "Teku", "Nimbus", "Prysm", "Grandine"):
-    if re.search(rf"{name.lower()}", svc, re.I):
-        vc = name
-        break
+vc = detect_ethpillar_vc_name() or "Lodestar"
 result = sync_charon_keyshares_to_vc(vc, force=True)
 print(result)
 if result.get("status") == "failed":

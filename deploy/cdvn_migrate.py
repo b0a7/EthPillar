@@ -11,9 +11,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -25,6 +27,7 @@ from deploy.charon import (
     copy_charon_cluster,
     count_charon_keystores,
     import_cdvn_env_to_service,
+    list_dir_basenames,
     parse_dotenv,
     path_exists,
     resolve_cdvn_checkout,
@@ -53,6 +56,7 @@ CL_PROFILE_MAP: Dict[str, str] = {
 }
 VC_PROFILE_MAP: Dict[str, str] = {
     "vc-lodestar": "Lodestar",
+    "vc-lighthouse": "Lighthouse",
     "vc-teku": "Teku",
     "vc-prysm": "Prysm",
     "vc-nimbus": "Nimbus",
@@ -64,6 +68,7 @@ VC_DATADIR_RELS = frozenset({
     "data/vc-teku",
     "data/vc-nimbus",
     "data/vc-prysm",
+    "data/vc-lighthouse",
     "data/lodestar",
 })
 VC_DATADIR_SKIP_NAMES = frozenset({"logs", "run.sh"})
@@ -84,6 +89,7 @@ DATADIR_MOVES: Dict[str, Tuple[str, str]] = {
     "data/vc-teku": ("teku_validator", "validator"),
     "data/vc-nimbus": ("nimbus_validator", "validator"),
     "data/vc-prysm": ("prysm_validator", "validator"),
+    "data/vc-lighthouse": ("lighthouse_validator", "validator"),
 }
 
 # Soft-warn dirs when profile is *-none but data still exists.
@@ -135,6 +141,7 @@ class CdvnMigrationPlan:
     has_keyshares: bool
     compose_file: Optional[str]
     docker_running: bool
+    docker_check_error: str = ""
     charon_link: Optional[str] = None
     charon_is_symlink: bool = False
     datadir_moves: List[DatadirMove] = field(default_factory=list)
@@ -174,7 +181,8 @@ class CdvnMigrationPlan:
             f"  Fee recipient:{(' ' + self.fee_recipient) if self.fee_recipient else ' (unset)'}",
             f"  Grafana port: {self.grafana_port or '(EthPillar default 3000)'}",
             f"  Compose:      {self.compose_file or '(none)'}",
-            f"  Docker up:    {self.docker_running}",
+            f"  Docker up:    {self.docker_running}"
+            + (f" ({self.docker_check_error})" if self.docker_check_error else ""),
             "",
             "Optional datadir moves (EL/CL/VC Docker data/):",
         ]
@@ -267,7 +275,7 @@ def _fee_recipient_from_cluster_lock(charon_dir: str) -> str:
         for validator in cluster_def.get("validators") or []:
             if not isinstance(validator, dict):
                 continue
-            for key in ("fee_recipient_address", "fee_recipient", "withdrawal_address"):
+            for key in ("fee_recipient_address", "fee_recipient"):
                 addr = _valid_eth_address(validator.get(key))
                 if addr:
                     return addr
@@ -316,16 +324,9 @@ def _fee_recipient_from_cdvn(env: Dict[str, str], charon_dir: Optional[str]) -> 
         for item in items:
             if not isinstance(item, dict):
                 continue
-            for key in ("fee_recipient", "withdrawal_address", "withdrawalAddress"):
-                addr = _valid_eth_address(item.get(key))
-                if addr:
-                    return addr
-            creds = item.get("withdrawal_credentials") or item.get("withdrawalCredentials")
-            if isinstance(creds, str):
-                creds = creds.strip().lower()
-                # 0x01-type withdrawal credential embeds the execution address (20 bytes).
-                if creds.startswith("0x01") and len(creds) == 66:
-                    return "0x" + creds[-40:]
+            addr = _valid_eth_address(item.get("fee_recipient"))
+            if addr:
+                return addr
     except (OSError, json.JSONDecodeError, TypeError):
         return ""
     return ""
@@ -450,9 +451,16 @@ def apply_grafana_http_port(port: int) -> bool:
     except OSError:
         return False
 
-    tmp = Path("/tmp/ethpillar-grafana.ini")
-    tmp.write_text(_grafana_ini_with_http_port(content, port), encoding="utf-8")
-    subprocess.run(["sudo", "cp", str(tmp), str(ini)], check=True)
+    fd, tmp_name = tempfile.mkstemp(prefix="ethpillar-grafana-", suffix=".ini")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(_grafana_ini_with_http_port(content, port))
+        subprocess.run(["sudo", "cp", tmp_name, str(ini)], check=True)
+    finally:
+        try:
+            os.remove(tmp_name)
+        except OSError:
+            pass
     subprocess.run(
         ["sudo", "systemctl", "try-restart", "grafana-server"],
         check=False,
@@ -524,7 +532,7 @@ def _vc_datadir_useful_entries(src: str) -> List[str]:
     if not os.path.isdir(src):
         return []
     useful: List[str] = []
-    for name in os.listdir(src):
+    for name in list_dir_basenames(src):
         if name in VC_DATADIR_SKIP_NAMES or name in VC_DATADIR_SKIP_FILES:
             continue
         if any(name.endswith(suffix) for suffix in VC_DATADIR_SKIP_SUFFIXES):
@@ -586,7 +594,13 @@ def merge_cdvn_vc_datadir(src: str, dest: str, owner: str) -> List[str]:
 
 
 def _dir_nonempty(path: str) -> bool:
-    """Return True when *path* is a directory with at least one entry."""
+    """Return True when *path* is a directory with at least one entry.
+
+    Uses sudo listing when the path is not readable as the current user (Docker
+    volumes are often root- or container-uid-owned).
+    """
+    if path_exists(path, directory=True):
+        return bool(list_dir_basenames(path))
     if not os.path.isdir(path):
         return False
     try:
@@ -597,9 +611,10 @@ def _dir_nonempty(path: str) -> bool:
 
 def _dest_has_data(path: str) -> bool:
     """True when destination already looks occupied (skip move)."""
+    if path_exists(path, directory=True):
+        return bool(list_dir_basenames(path))
     if not os.path.isdir(path):
         return False
-    # Ignore empty dirs created by setup_client_user_and_dir
     try:
         entries = list(os.scandir(path))
     except OSError:
@@ -607,30 +622,64 @@ def _dest_has_data(path: str) -> bool:
     return len(entries) > 0
 
 
-def detect_docker_compose_running(compose_file: Optional[str], root: str) -> bool:
-    """Return True if ``docker compose`` reports running services for this CDVN.
+def detect_docker_compose_status(
+    compose_file: Optional[str], root: str
+) -> Tuple[bool, str]:
+    """Check whether CDVN Docker Compose still has running services.
 
     Args:
-        compose_file: Path to ``docker-compose.yml`` (or None to skip check).
+        compose_file: Path to ``docker-compose.yml`` (or None).
         root: CDVN checkout directory used as compose working directory.
 
     Returns:
-        True when at least one service is running.
+        ``(running, error)``. ``error`` is set when the check could not be
+        performed (missing CLI, permission denied, timeout). Callers must
+        treat a non-empty *error* as unsafe to migrate (same as running).
     """
-    if not compose_file or not shutil.which("docker"):
-        return False
-    try:
-        result = subprocess.run(
-            ["docker", "compose", "-f", compose_file, "ps", "--status", "running", "-q"],
-            cwd=root,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
+    if not compose_file:
+        return False, ""
+
+    commands: List[List[str]] = []
+    if shutil.which("docker"):
+        commands.append(
+            ["docker", "compose", "-f", compose_file, "ps", "--status", "running", "-q"]
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return bool(result.stdout.strip())
+    if shutil.which("docker-compose"):
+        commands.append(
+            ["docker-compose", "-f", compose_file, "ps", "-q"]
+        )
+    if not commands:
+        return False, (
+            "Neither 'docker' nor 'docker-compose' is on PATH; "
+            "cannot verify CDVN is stopped"
+        )
+
+    last_err = ""
+    for cmd in commands:
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            last_err = f"{' '.join(cmd)} failed: {exc}"
+            continue
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip() or f"exit {result.returncode}"
+            last_err = f"{' '.join(cmd)}: {err}"
+            continue
+        return bool(result.stdout.strip()), ""
+    return False, last_err or "docker compose status check failed"
+
+
+def detect_docker_compose_running(compose_file: Optional[str], root: str) -> bool:
+    """Return True if compose reports running services (False when unknown/absent)."""
+    running, _err = detect_docker_compose_status(compose_file, root)
+    return running
 
 
 def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigrationPlan:
@@ -733,7 +782,7 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
     grafana_port = grafana_port_from_env(env)
 
     compose_file = info.get("compose_file")
-    docker_running = detect_docker_compose_running(
+    docker_running, docker_check_error = detect_docker_compose_status(
         str(compose_file) if compose_file else None, root
     )
 
@@ -771,6 +820,8 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         active_rels.append("data/cl-grandine")
     if vc_name == "Lodestar":
         active_rels.append("data/lodestar")
+    elif vc_name == "Lighthouse":
+        active_rels.append("data/vc-lighthouse")
     elif vc_name == "Teku":
         active_rels.append("data/vc-teku")
     elif vc_name == "Nimbus":
@@ -825,6 +876,7 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         has_keyshares=has_keyshares,
         compose_file=str(compose_file) if compose_file else None,
         docker_running=docker_running,
+        docker_check_error=docker_check_error,
         datadir_moves=datadir_moves,
         warnings=warnings,
         el_profile=el_raw,
@@ -842,7 +894,7 @@ def move_client_datadir(src: str, dest: str, owner: str) -> None:
         raise FileNotFoundError(src)
     subprocess.run(["sudo", "mkdir", "-p", dest], check=True)
     # Move children into dest (dest may already exist empty from setup)
-    for name in os.listdir(src):
+    for name in list_dir_basenames(src):
         s_item = os.path.join(src, name)
         d_item = os.path.join(dest, name)
         subprocess.run(["sudo", "mv", s_item, d_item], check=True)
@@ -888,6 +940,26 @@ def apply_datadir_moves(plan: CdvnMigrationPlan, selected: Optional[Sequence[str
         move_client_datadir(move.src, move.dest, move.owner)
         done.append(move.relative_src)
     return done
+
+
+def detect_ethpillar_vc_name(service_path: str = "/etc/systemd/system/validator.service") -> Optional[str]:
+    """Return the EthPillar VC name from ``validator.service`` Description/ExecStart."""
+    try:
+        text = Path(service_path).read_text(encoding="utf-8")
+    except OSError:
+        result = subprocess.run(
+            ["sudo", "cat", service_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0 or not result.stdout:
+            return None
+        text = result.stdout
+    for name in ("Lodestar", "Lighthouse", "Teku", "Nimbus", "Prysm", "Grandine"):
+        if re.search(rf"{name.lower()}", text, re.I):
+            return name
+    return None
 
 
 def _repo_root() -> str:
@@ -1009,6 +1081,12 @@ def run_migration(
             f"Docker Compose still has running services for {plan.root}. "
             "Stop CDVN (`docker compose down`) before migrating."
         )
+    if plan.docker_check_error:
+        raise RuntimeError(
+            f"Could not verify CDVN Docker is stopped ({plan.docker_check_error}). "
+            "Install docker/docker-compose, fix permissions, then re-run, "
+            "or stop CDVN manually (`docker compose down` / `docker-compose down`)."
+        )
     print(plan.summary())
     if dry_run:
         return plan
@@ -1025,7 +1103,11 @@ def run_migration(
 
     _apply_charon_cluster_overlay(plan, skip=skip_charon_overlay, force=fresh)
     if plan.env_path and not skip_charon_overlay:
-        import_cdvn_env_to_service(plan.env_path, apply=True)
+        import_cdvn_env_to_service(
+            plan.env_path,
+            apply=True,
+            preserve_beacon_endpoints=bool(plan.cc_name),
+        )
 
     if plan.vc_name and plan.has_keyshares and not skip_charon_overlay:
         sync = sync_charon_keyshares_to_vc(plan.vc_name, force=fresh)
@@ -1048,7 +1130,31 @@ def run_migration(
                 "Use Validator → Import Obol Charon key shares."
             )
 
+    enable_migrated_units(plan)
     return plan
+
+
+def enable_migrated_units(plan: CdvnMigrationPlan) -> None:
+    """Enable systemd units so the migrated stack survives reboot."""
+    units: List[str] = []
+    if plan.ec_name:
+        units.append("execution")
+    if plan.cc_name:
+        units.append("consensus")
+    if plan.with_mevboost:
+        units.append("mevboost")
+    units.append("charon")
+    if plan.vc_name:
+        units.append("validator")
+    for unit in units:
+        svc = f"/etc/systemd/system/{unit}.service"
+        if path_exists(svc):
+            subprocess.run(
+                ["sudo", "systemctl", "enable", unit],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
 
 def _apply_charon_cluster_overlay(
@@ -1147,6 +1253,11 @@ def main(argv: Optional[list] = None) -> int:
         action="store_true",
         help="Stop Charon/VC and clear migrated cluster + VC keys before running",
     )
+    p_run.add_argument(
+        "--skip-charon-overlay",
+        action="store_true",
+        help="Skip .charon copy, charon.service import, and key sync (advanced)",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -1160,6 +1271,13 @@ def main(argv: Optional[list] = None) -> int:
             if plan.docker_running:
                 print("\nERROR: Docker Compose is running — migrate will abort.", file=sys.stderr)
                 return 2
+            if plan.docker_check_error:
+                print(
+                    f"\nERROR: Cannot verify CDVN Docker is stopped ({plan.docker_check_error}). "
+                    "Migrate will abort.",
+                    file=sys.stderr,
+                )
+                return 2
             return 0
         if args.cmd == "run":
             if args.moves is None:
@@ -1171,6 +1289,7 @@ def main(argv: Optional[list] = None) -> int:
                 dry_run=args.dry_run,
                 apply_moves=moves,
                 skip_deploy=args.skip_deploy,
+                skip_charon_overlay=args.skip_charon_overlay,
                 fresh=args.fresh,
             )
             return 0

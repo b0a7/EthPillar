@@ -32,7 +32,6 @@ CHARON_PRIVATE_KEY_FILE = f"{CHARON_CLUSTER_DIR}/charon-enr-private-key"
 CHARON_VALIDATOR_KEYS_DIR = f"{CHARON_CLUSTER_DIR}/validator_keys"
 CHARON_SERVICE_PATH = "/etc/systemd/system/charon.service"
 VC_RUN_USER = "validator"
-CHARON_KEY_IMPORT_STAGING = "/tmp/ethpillar-charon-key-import"
 
 
 def path_exists(path: str, *, directory: bool = False) -> bool:
@@ -73,12 +72,12 @@ def _stage_charon_keys_for_vc(keys_dir: str) -> str:
     """Stage Charon key shares where the VC service user can read them.
 
     Charon cluster data under ``/var/lib/charon/.charon`` is ``charon:charon`` mode
-    ``700``, so VCs cannot traverse it directly for import.
+    ``700``, so VCs cannot traverse it directly for import. Uses a unique
+    ``mkdtemp`` directory (mode ``700``) rather than a predictable ``/tmp`` path.
     """
     src = os.path.abspath(keys_dir)
-    staging = CHARON_KEY_IMPORT_STAGING
-    subprocess.run(["sudo", "rm", "-rf", staging], check=False)
-    subprocess.run(["sudo", "mkdir", "-p", staging], check=True)
+    staging = tempfile.mkdtemp(prefix="ethpillar-charon-key-import-")
+    os.chmod(staging, 0o700)
     subprocess.run(["sudo", "cp", "-a", f"{src}/.", f"{staging}/"], check=True)
     subprocess.run(["sudo", "chown", "-R", f"{VC_RUN_USER}:{VC_RUN_USER}", staging], check=True)
     subprocess.run(["sudo", "chmod", "-R", "700", staging], check=True)
@@ -106,6 +105,7 @@ DEFAULT_P2P_TCP_PORT = 3610
 DEFAULT_VALIDATOR_API_URL = f"http://{DEFAULT_VALIDATOR_API_ADDRESS}"
 
 _P2P_TCP_ADDRESS_RE = re.compile(r"--p2p-tcp-address=(?P<bind>[^\s\\]+)")
+_MONITORING_ADDRESS_RE = re.compile(r"--monitoring-address=(?P<bind>[^\s\\]+)")
 
 
 def parse_p2p_tcp_port(
@@ -132,6 +132,49 @@ def parse_p2p_tcp_port(
         except OSError:
             return default
     match = _P2P_TCP_ADDRESS_RE.search(content)
+    if not match:
+        return default
+    bind = match.group("bind")
+    port_part = bind.rsplit(":", 1)[-1]
+    try:
+        port = int(port_part)
+    except ValueError:
+        return default
+    return port if 1 <= port <= 65535 else default
+
+
+def parse_monitoring_port(
+    service_content: str = "",
+    *,
+    service_path: str = CHARON_SERVICE_PATH,
+    default: int = 3620,
+) -> int:
+    """Return Charon metrics port from ``--monitoring-address=host:port``.
+
+    Args:
+        service_content: Optional unit body; when empty, reads ``service_path``.
+        service_path: Systemd unit to read when ``service_content`` is empty.
+        default: Port when the flag is missing or invalid.
+
+    Returns:
+        Metrics port (1–65535), else *default* (``3620``).
+    """
+    content = service_content
+    if not content:
+        try:
+            with open(service_path, encoding="utf-8") as handle:
+                content = handle.read()
+        except OSError:
+            result = subprocess.run(
+                ["sudo", "cat", service_path],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            content = result.stdout if result.returncode == 0 else ""
+            if not content:
+                return default
+    match = _MONITORING_ADDRESS_RE.search(content)
     if not match:
         return default
     bind = match.group("bind")
@@ -688,6 +731,7 @@ def import_cdvn_env_to_service(
     prefer_localhost_binds: bool = True,
     local_host: str = "127.0.0.1",
     apply: bool = False,
+    preserve_beacon_endpoints: bool = False,
 ) -> CharonEnvImportPlan:
     """Parse a CDVN ``.env`` and optionally write ``charon.service``.
 
@@ -697,6 +741,9 @@ def import_cdvn_env_to_service(
         prefer_localhost_binds: Remap ``0.0.0.0`` VC/metrics binds to loopback.
         local_host: Host used when rewriting Docker Compose DNS names.
         apply: When True, write the unit (and ``daemon-reload`` for /etc paths).
+        preserve_beacon_endpoints: Keep ``--beacon-node-endpoints`` already on
+            *service_path* (EthPillar local CL REST URL) instead of rewriting
+            from CDVN ``CHARON_BEACON_NODE_ENDPOINTS`` / ``CL=:5052`` defaults.
 
     Returns:
         The import plan (always), whether or not ``apply`` was set.
@@ -705,6 +752,7 @@ def import_cdvn_env_to_service(
         raise FileNotFoundError(f"CDVN .env not found: {env_path}")
 
     fallback_network = "mainnet"
+    existing = ""
     if os.path.isfile(service_path):
         with open(service_path, encoding="utf-8") as handle:
             existing = handle.read()
@@ -719,6 +767,14 @@ def import_cdvn_env_to_service(
         local_host=local_host,
         prefer_localhost_binds=prefer_localhost_binds,
     )
+    if preserve_beacon_endpoints and existing:
+        current_bn = scrape_beacon_endpoints(existing)
+        if current_bn:
+            plan.beacon_node_endpoints = current_bn
+            plan.warnings.append(
+                f"Preserved existing --beacon-node-endpoints={current_bn} "
+                "(local EthPillar CL REST URL)"
+            )
 
     if apply:
         content = plan.service_content()
@@ -913,19 +969,49 @@ def _find_passphrase_file(keys_dir: str) -> Optional[str]:
 
 def _dir_has_keystore_json(path: str) -> bool:
     """Return True when *path* contains at least one ``keystore-*.json`` file."""
-    if not os.path.isdir(path):
+    if not path_exists(path, directory=True):
         return False
-    try:
-        return any(
-            name.startswith("keystore-") and name.endswith(".json")
-            for name in os.listdir(path)
-        )
-    except OSError:
-        return False
+    return any(
+        name.startswith("keystore-") and name.endswith(".json")
+        for name in list_dir_basenames(path)
+    )
+
+
+def _lighthouse_has_imported_keys(base: str) -> bool:
+    """True when Lighthouse has imported keystores (not merely an empty datadir)."""
+    for sub in ("validators", "accounts"):
+        root = os.path.join(base, sub)
+        if _dir_has_keystore_json(root):
+            return True
+        for name in list_dir_basenames(root):
+            child = os.path.join(root, name)
+            if name.endswith("keystore.json") or name.endswith("voting-keystore.json"):
+                return True
+            if path_exists(os.path.join(child, "voting-keystore.json")):
+                return True
+            if path_exists(os.path.join(child, "keystore.json")):
+                return True
+    return False
+
+
+def _nimbus_has_imported_keys(base: str) -> bool:
+    """True when Nimbus has imported validator key material (not slashing-only)."""
+    validators = os.path.join(base, "validators")
+    for name in list_dir_basenames(validators):
+        if name.startswith("keystore-") and name.endswith(".json"):
+            return True
+        child = os.path.join(validators, name)
+        if path_exists(os.path.join(child, "keystore.json")):
+            return True
+    return False
 
 
 def _vc_already_has_keys(vc_name: str) -> bool:
-    """Return True when the EthPillar VC datadir already holds imported key material.
+    """Return True when the EthPillar VC datadir already holds imported keystores.
+
+    Slashing / state dirs (Lodestar ``validator-db``, Nimbus ``secrets`` alone,
+    an empty Lighthouse datadir) do **not** count — those are created by a CDVN
+    datadir merge and must not skip ``.charon`` key-share import.
 
     Args:
         vc_name: EthPillar validator client name.
@@ -936,32 +1022,20 @@ def _vc_already_has_keys(vc_name: str) -> bool:
     if vc_name in VC_COPY_KEY_DIRS:
         return _dir_has_keystore_json(VC_COPY_KEY_DIRS[vc_name])
     if vc_name == "Lighthouse":
-        base = VC_IMPORT_DATA_DIRS["Lighthouse"]
-        for sub in ("validators", "accounts"):
-            if _dir_has_keystore_json(os.path.join(base, sub)) or _dir_nonempty(
-                os.path.join(base, sub)
-            ):
-                return True
-        return _dir_nonempty(base)
+        return _lighthouse_has_imported_keys(VC_IMPORT_DATA_DIRS["Lighthouse"])
     if vc_name == "Lodestar":
         base = VC_IMPORT_DATA_DIRS["Lodestar"]
-        return _dir_nonempty(os.path.join(base, "keystores")) or _dir_nonempty(
-            os.path.join(base, "validator-db")
-        )
+        return _dir_has_keystore_json(os.path.join(base, "keystores"))
     if vc_name == "Nimbus":
-        base = VC_IMPORT_DATA_DIRS["Nimbus"]
-        return _dir_nonempty(os.path.join(base, "validators")) or _dir_nonempty(
-            os.path.join(base, "secrets")
-        )
+        return _nimbus_has_imported_keys(VC_IMPORT_DATA_DIRS["Nimbus"])
     if vc_name == "Prysm":
         wallet = os.path.join(VC_IMPORT_DATA_DIRS["Prysm"], "validator_keys")
-        if not os.path.isdir(wallet):
+        if not path_exists(wallet, directory=True):
             return False
-        try:
-            entries = os.listdir(wallet)
-        except OSError:
-            return False
-        return any(name.endswith(".json") and not name.startswith("direct") for name in entries)
+        return any(
+            name.endswith(".json") and not name.startswith("direct")
+            for name in list_dir_basenames(wallet)
+        )
     return False
 
 
@@ -1070,10 +1144,21 @@ def _sync_import_keyshares(
             "count": len(keystores),
         }
 
+    passphrase_src = _find_passphrase_file(src)
     import_dir = _stage_charon_keys_for_vc(src)
     subprocess.run(["sudo", "mkdir", "-p", data_dir], check=True)
+    passphrase = (
+        os.path.join(import_dir, os.path.basename(passphrase_src))
+        if passphrase_src
+        else None
+    )
     try:
         if vc_name == "Lighthouse":
+            if not passphrase:
+                return {
+                    "status": "skipped",
+                    "reason": "Lighthouse import needs keystore-*.txt passphrase files in .charon/validator_keys",
+                }
             subprocess.run(
                 [
                     "sudo",
@@ -1086,11 +1171,11 @@ def _sync_import_keyshares(
                     f"--datadir={data_dir}",
                     f"--directory={import_dir}",
                     "--reuse-password",
+                    f"--password-file={passphrase}",
                 ],
                 check=True,
             )
         elif vc_name == "Lodestar":
-            passphrase = _find_passphrase_file(import_dir)
             if not passphrase:
                 return {
                     "status": "skipped",
@@ -1111,15 +1196,22 @@ def _sync_import_keyshares(
                 check=True,
             )
         elif vc_name == "Nimbus":
+            if not passphrase:
+                return {
+                    "status": "skipped",
+                    "reason": "Nimbus import needs keystore-*.txt passphrase files in .charon/validator_keys",
+                }
             nimbus_bin = f"{INSTALL_DIR}/nimbus_validator_client"
             if not path_exists(nimbus_bin):
                 nimbus_bin = f"{INSTALL_DIR}/nimbus_beacon_node"
+            # Adjacent keystore-*.txt files in import_dir are the DKG passphrases.
             subprocess.run(
                 [
                     "sudo",
                     "-u",
                     VC_RUN_USER,
                     nimbus_bin,
+                    "--non-interactive",
                     "deposits",
                     "import",
                     f"--data-dir={data_dir}",
@@ -1128,6 +1220,11 @@ def _sync_import_keyshares(
                 check=True,
             )
         elif vc_name == "Prysm":
+            if not passphrase:
+                return {
+                    "status": "skipped",
+                    "reason": "Prysm import needs keystore-*.txt passphrase files in .charon/validator_keys",
+                }
             wallet_dir = f"{BASE_DATA_DIR}/prysm_validator/validator_keys"
             subprocess.run(
                 [
@@ -1140,6 +1237,8 @@ def _sync_import_keyshares(
                     "--accept-terms-of-use",
                     f"--wallet-dir={wallet_dir}",
                     f"--keys-dir={import_dir}",
+                    f"--account-password-file={passphrase}",
+                    f"--wallet-password-file={passphrase}",
                 ],
                 check=True,
             )

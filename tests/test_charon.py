@@ -13,6 +13,7 @@ from deploy.charon import (
     generate_charon_service,
     import_cdvn_env_to_service,
     parse_dotenv,
+    parse_monitoring_port,
     parse_p2p_tcp_port,
     patch_beacon_endpoints,
     plan_cdvn_env_import,
@@ -83,6 +84,16 @@ def test_parse_p2p_tcp_port_from_service_content():
     assert parse_p2p_tcp_port(unit) == 3812
     assert parse_p2p_tcp_port("") == 3610
     assert parse_p2p_tcp_port("[Service]\nExecStart=charon run", default=3610) == 3610
+
+
+def test_parse_monitoring_port_from_service_content():
+    unit = generate_charon_service(
+        "mainnet",
+        "http://127.0.0.1:5052",
+        monitoring_address="127.0.0.1:3700",
+    )
+    assert parse_monitoring_port(unit) == 3700
+    assert parse_monitoring_port("[Service]\nExecStart=charon run") == 3620
 
 
 def test_plan_cdvn_env_import_maps_core_flags():
@@ -256,6 +267,39 @@ def test_sync_charon_keyshares_lodestar_import(tmp_path, monkeypatch):
     assert result["status"] == "copied"
     assert result["method"] == "import"
     assert any("lodestar" in str(c) and "validator" in str(c) and "import" in str(c) for c in calls)
+    assert any("--passphraseFile=" in str(c) for c in calls)
+
+
+def test_sync_charon_keyshares_lighthouse_uses_password_file(tmp_path, monkeypatch):
+    from deploy import charon as charon_mod
+    from deploy.charon import sync_charon_keyshares_to_vc
+
+    keys = tmp_path / "validator_keys"
+    keys.mkdir()
+    (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
+    (keys / "keystore-0.txt").write_text("password\n", encoding="utf-8")
+    dest = tmp_path / "lighthouse_validator"
+    monkeypatch.setattr(charon_mod, "BASE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_IMPORT_DATA_DIRS",
+        {"Lighthouse": str(dest)},
+    )
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "find":
+            names = ""
+            if "validator_keys" in cmd[2] or "charon-key-import" in cmd[2]:
+                names = "keystore-0.json\nkeystore-0.txt\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=names)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
+    result = sync_charon_keyshares_to_vc("Lighthouse", keys_dir=str(keys))
+    assert result["status"] == "copied"
+    assert any("--password-file=" in str(c) for c in calls)
 
 
 def test_vc_already_has_keys_after_lodestar_merge(tmp_path, monkeypatch):
@@ -264,13 +308,65 @@ def test_vc_already_has_keys_after_lodestar_merge(tmp_path, monkeypatch):
 
     base = tmp_path / "lodestar_validator"
     (base / "keystores").mkdir(parents=True)
-    (base / "keystores" / "x.json").write_text("{}", encoding="utf-8")
+    (base / "keystores" / "keystore-0.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         charon_mod,
         "VC_IMPORT_DATA_DIRS",
         {"Lodestar": str(base)},
     )
     assert _vc_already_has_keys("Lodestar") is True
+
+
+def test_vc_already_has_keys_ignores_lodestar_validator_db(tmp_path, monkeypatch):
+    from deploy import charon as charon_mod
+    from deploy.charon import _vc_already_has_keys
+
+    base = tmp_path / "lodestar_validator"
+    (base / "validator-db").mkdir(parents=True)
+    (base / "validator-db" / "db").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_IMPORT_DATA_DIRS",
+        {"Lodestar": str(base)},
+    )
+    assert _vc_already_has_keys("Lodestar") is False
+
+
+def test_vc_already_has_keys_ignores_empty_lighthouse_datadir(tmp_path, monkeypatch):
+    from deploy import charon as charon_mod
+    from deploy.charon import _vc_already_has_keys
+
+    base = tmp_path / "lighthouse_validator"
+    (base / "validators").mkdir(parents=True)
+    (base / "junk.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_IMPORT_DATA_DIRS",
+        {"Lighthouse": str(base)},
+    )
+    assert _vc_already_has_keys("Lighthouse") is False
+
+
+def test_import_cdvn_env_preserves_existing_beacon_endpoints(tmp_path):
+    env = tmp_path / ".env"
+    env.write_text(
+        "NETWORK=mainnet\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://lighthouse:5052\n",
+        encoding="utf-8",
+    )
+    unit = tmp_path / "charon.service"
+    unit.write_text(
+        generate_charon_service("mainnet", "http://127.0.0.1:5053"),
+        encoding="utf-8",
+    )
+    plan = import_cdvn_env_to_service(
+        str(env),
+        service_path=str(unit),
+        apply=True,
+        preserve_beacon_endpoints=True,
+    )
+    assert plan.beacon_node_endpoints == "http://127.0.0.1:5053"
+    assert "5053" in unit.read_text(encoding="utf-8")
 
 
 def test_sync_charon_keyshares_to_teku(tmp_path, monkeypatch):

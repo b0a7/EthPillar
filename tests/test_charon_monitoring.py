@@ -6,6 +6,7 @@ from unittest.mock import patch
 from manage.charon_monitoring import (
     CDVN_GRAFANA_DASHBOARDS,
     CHARON_SCRAPE_JOB,
+    charon_scrape_job,
     ensure_charon_scrape,
     has_charon_scrape,
     provision_cdvn_grafana_dashboards,
@@ -41,13 +42,24 @@ def test_ensure_charon_scrape_appends_once(tmp_path: Path):
     yml = tmp_path / "prometheus.yml"
     yml.write_text(_BASE_YML, encoding="utf-8")
 
-    assert ensure_charon_scrape(yml) is True
+    assert ensure_charon_scrape(yml, metrics_port=3620) is True
     text = yml.read_text(encoding="utf-8")
     assert "job_name: 'charon'" in text
     assert "localhost:3620" in text
 
-    assert ensure_charon_scrape(yml) is False
+    assert ensure_charon_scrape(yml, metrics_port=3620) is False
     assert yml.read_text(encoding="utf-8").count("job_name: 'charon'") == 1
+
+
+def test_ensure_charon_scrape_custom_port(tmp_path: Path):
+    yml = tmp_path / "prometheus.yml"
+    yml.write_text(_BASE_YML, encoding="utf-8")
+    assert ensure_charon_scrape(yml, metrics_port=3700) is True
+    text = yml.read_text(encoding="utf-8")
+    assert "localhost:3700" in text
+    assert charon_scrape_job(3700) in text
+    assert ensure_charon_scrape(yml, metrics_port=3800) is True
+    assert "localhost:3800" in yml.read_text(encoding="utf-8")
 
 
 def test_ensure_charon_scrape_missing_file(tmp_path: Path):

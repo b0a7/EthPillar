@@ -8,8 +8,11 @@ import pytest
 
 from deploy.cdvn_migrate import (
     DATADIR_MOVES,
+    VC_PROFILE_MAP,
     _fee_recipient_from_cdvn,
     _grafana_ini_with_http_port,
+    detect_docker_compose_status,
+    detect_ethpillar_vc_name,
     grafana_port_from_env,
     plan_cdvn_migration,
 )
@@ -167,7 +170,7 @@ def test_fee_recipient_from_cluster_lock(tmp_path: Path):
     assert argv[argv.index("--fee_address") + 1].lower() == fee.lower()
 
 
-def test_fee_recipient_from_deposit_data_withdrawal_credentials(tmp_path: Path):
+def test_fee_recipient_ignores_withdrawal_credentials(tmp_path: Path):
     root = _write_cdvn(
         tmp_path,
         "NETWORK=mainnet\n"
@@ -179,14 +182,28 @@ def test_fee_recipient_from_deposit_data_withdrawal_credentials(tmp_path: Path):
     fee = "0x388C818CA8B9251b393131C08a736A67ccB19297"
     creds = "0x01" + "0" * 22 + fee[2:].lower()
     (root / ".charon" / "deposit-data.json").write_text(
-        f'[{{"withdrawal_credentials": "{creds}"}}]',
+        f'[{{"withdrawal_credentials": "{creds}", "withdrawal_address": "{fee}"}}]',
         encoding="utf-8",
     )
     plan = plan_cdvn_migration(str(root))
-    assert plan.fee_recipient.lower() == fee.lower()
-    argv = plan.deploy_argv()
-    assert "--fee_address" in argv
-    assert argv[argv.index("--fee_address") + 1].lower() == fee.lower()
+    assert plan.fee_recipient == ""
+    assert any("Fee recipient unset" in w for w in plan.warnings)
+    assert "--fee_address" not in plan.deploy_argv()
+
+
+def test_plan_vc_lighthouse(tmp_path: Path):
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=el-none\n"
+        "CL=cl-none\n"
+        "VC=vc-lighthouse\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
+    )
+    plan = plan_cdvn_migration(str(root))
+    assert plan.vc_name == "Lighthouse"
+    assert "--vc" in plan.deploy_argv()
+    assert plan.deploy_argv()[plan.deploy_argv().index("--vc") + 1] == "Lighthouse"
 
 
 def test_plan_full_stack_with_local_mev(tmp_path: Path):
@@ -325,6 +342,46 @@ def test_datadir_map_covers_stock_clients():
     assert "data/nethermind" in DATADIR_MOVES
     assert "data/reth" in DATADIR_MOVES
     assert DATADIR_MOVES["data/lodestar"][0] == "lodestar_validator"
+    assert DATADIR_MOVES["data/vc-lighthouse"][0] == "lighthouse_validator"
+    assert VC_PROFILE_MAP["vc-lighthouse"] == "Lighthouse"
+
+
+def test_plan_docker_unknown_when_compose_present(tmp_path: Path, monkeypatch):
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=el-none\n"
+        "CL=cl-none\n"
+        "VC=vc-lodestar\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
+    )
+    (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr("deploy.cdvn_migrate.shutil.which", lambda _name: None)
+    plan = plan_cdvn_migration(str(root))
+    assert plan.docker_running is False
+    assert plan.docker_check_error
+    with pytest.raises(RuntimeError, match="Could not verify CDVN Docker"):
+        from deploy.cdvn_migrate import run_migration
+
+        run_migration(str(root), dry_run=True)
+
+
+def test_detect_docker_compose_unknown_without_cli(tmp_path: Path, monkeypatch):
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services: {}\n", encoding="utf-8")
+    monkeypatch.setattr("deploy.cdvn_migrate.shutil.which", lambda _name: None)
+    running, err = detect_docker_compose_status(str(compose), str(tmp_path))
+    assert running is False
+    assert "cannot verify" in err
+
+
+def test_detect_ethpillar_vc_name(tmp_path: Path):
+    svc = tmp_path / "validator.service"
+    svc.write_text(
+        "[Unit]\nDescription=Nimbus Validator Client service for MAINNET\n",
+        encoding="utf-8",
+    )
+    assert detect_ethpillar_vc_name(str(svc)) == "Nimbus"
 
 
 def test_run_migration_fresh_resets_before_overlay(tmp_path, monkeypatch):
@@ -353,6 +410,7 @@ def test_run_migration_fresh_resets_before_overlay(tmp_path, monkeypatch):
         lambda *a, **k: {"status": "copied", "count": 1, "dest": "/var/lib/lodestar_validator"},
     )
     monkeypatch.setattr("deploy.cdvn_migrate.reset_cdvn_migration_state", fake_reset)
+    monkeypatch.setattr("deploy.cdvn_migrate.enable_migrated_units", lambda _plan: None)
 
     from deploy.cdvn_migrate import run_migration
 
@@ -382,6 +440,7 @@ def test_run_migration_applies_charon_overlay_with_empty_moves(tmp_path, monkeyp
         "deploy.cdvn_migrate.sync_charon_keyshares_to_vc",
         lambda *a, **k: {"status": "skipped", "reason": "destination already has keystores (/var/lib/lodestar_validator/keystores)"},
     )
+    monkeypatch.setattr("deploy.cdvn_migrate.enable_migrated_units", lambda _plan: None)
 
     from deploy.cdvn_migrate import run_migration
 

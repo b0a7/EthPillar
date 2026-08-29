@@ -177,21 +177,67 @@ Copy your CDVN (or DKG) .charon folder first:
 Then import the key shares into the validator client." 18 78
         return
     fi
+    getClientVC
+    if [[ -z "${VC:-}" ]]; then
+        getValidatorClient >/dev/null 2>&1 || true
+        VC="${VALIDATOR_CLIENT:-}"
+    fi
+    if [[ -z "${VC:-}" ]]; then
+        whiptail --title "Obol Charon key shares" --msgbox \
+"Could not detect the validator client from validator.service.
+Install a signer VC first, then retry." 10 70
+        return 1
+    fi
     if ! whiptail --title "Import Obol Charon key shares" --yesno \
 "Import EIP-2335 key shares from:
 ${CHARON_KEYS}
 
-These are cluster key shares (not full solo keys). After import, start Charon then the validator client.
+Signer VC: ${VC}
 
-Continue?" 16 78; then
+These are cluster key shares (not full solo keys). Import uses DKG
+keystore-*.txt passphrases (no password prompt). After import, Charon
+is started, then the validator client.
+
+Continue?" 18 78; then
         return
     fi
-    KEYFOLDER="$CHARON_KEYS"
-    _getNetwork
-    if [ -z "$NETWORK" ]; then return; fi
-    setConfig
-    _KEYSTOREPASSWORD=""
-    loadKeys "default"
+    ohai "Importing Obol Charon key shares into ${VC}…"
+    if [[ "$VC" == "Grandine" ]]; then
+        sudo systemctl stop consensus 2>/dev/null || true
+    else
+        sudo systemctl stop validator 2>/dev/null || true
+    fi
+    set +e
+    PYTHONPATH="${BASE_DIR}" python3 - <<PY
+from deploy.charon import sync_charon_keyshares_to_vc
+result = sync_charon_keyshares_to_vc("${VC}", force=True)
+print(result)
+status = result.get("status")
+if status == "failed":
+    raise SystemExit(1)
+if status == "skipped" and not str(result.get("reason", "")).startswith("destination already has"):
+    raise SystemExit(1)
+if status == "unsupported":
+    raise SystemExit(1)
+PY
+    local rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Obol Charon key shares" --msgbox \
+"Key share import into ${VC} failed. Check the terminal output.
+Do not use solo-key Import (loadKeys) for Charon shares." 12 70
+        return 1
+    fi
+    ensureCharonBeforeValidator
+    if [[ "$VC" == "Grandine" ]]; then
+        sudo systemctl start consensus
+    else
+        sudo systemctl start validator
+    fi
+    whiptail --title "Obol Charon key shares" --msgbox \
+"Imported Charon key shares into ${VC}.
+Start order: Charon, then the validator client." 10 70
+    promptViewLogs "default"
 }
 
 function importValidatorKeys(){
