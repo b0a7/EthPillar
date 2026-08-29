@@ -170,7 +170,7 @@ def _with_dvt_params(extra_params: str, vc_name: Optional[str], charon_enabled: 
 
     Per Obol client configuration + CDVN:
       - Lighthouse / Nimbus / Prysm: ``--distributed``
-      - Lodestar: ``--distributed`` and ``--slotSkip false`` (CDVN / Obol docs)
+      - Lodestar: ``--distributed`` (disables slot skip by default in Lodestar v1.37+)
       - Teku: ``--Xobol-dvt-integration-enabled=true`` and
         ``--Xvalidator-client-beacon-api-executor-threads=50`` (CDVN PR #480;
         default pool is too small for Charon API load)
@@ -181,7 +181,7 @@ def _with_dvt_params(extra_params: str, vc_name: Optional[str], charon_enabled: 
         return extra_params
     dvt_by_vc = {
         "Lighthouse": "--distributed",
-        "Lodestar": "--distributed --slotSkip false",
+        "Lodestar": "--distributed",
         "Nimbus": "--distributed",
         "Prysm": "--distributed",
         "Teku": (

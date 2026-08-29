@@ -51,7 +51,7 @@ graph TD
     *   Consensus Client installation.
     *   MEV-Boost installation.
     *   Charon installation (`deploy/charon.py`) when `flags['charon']`: upstream BN REST → Charon; VC beacon flag → `http://127.0.0.1:3600`. Nimbus BN → Charon `--feature-set-enable=json_requests`. Teku BN → `--validators-graffiti-client-append-format=DISABLED`.
-    *   Validator Client installation when Charon is on: `--distributed` for Lighthouse/Nimbus/Prysm; `--distributed --slotSkip false` for Lodestar VC; `--Xobol-dvt-integration-enabled=true` and `--Xvalidator-client-beacon-api-executor-threads=50` for Teku.
+    *   Validator Client installation when Charon is on: `--distributed` for Lighthouse/Nimbus/Prysm/Lodestar; `--Xobol-dvt-integration-enabled=true` and `--Xvalidator-client-beacon-api-executor-threads=50` for Teku.
     *   **Lodestar BN warning**: Charon v1.11+ marks Lodestar BN + Lighthouse/Nimbus/Prysm VC as duties may fail (client-side). EthPillar warns at install/migrate; prefer Lodestar or Teku VC, or a different BN.
     *   `common.finish_install()`: Service reload and completion report. Charon is enabled on boot but not started until `/var/lib/charon/.charon/cluster-lock.json` exists. When monitoring is already present, `manage.charon_monitoring` adds a Prometheus scrape for `:3620` and provisions the Charon Overview Grafana dashboard (also run when monitoring is installed later if `charon.service` exists).
 

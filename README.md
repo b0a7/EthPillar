@@ -214,7 +214,7 @@ PYTHONPATH=. python3 -m deploy.cdvn_migrate run --path ~/charon-distributed-vali
 
 Lower-level Charon-only helpers (`.charon` copy / `.env` import) remain available via `python3 -m deploy.charon …`.
 
-Docker beacon hostnames (`lighthouse`, `host.docker.internal`, …) are rewritten to `127.0.0.1`. Behind Charon, Lighthouse/Nimbus/Prysm VCs get `--distributed`; Lodestar VC gets `--distributed --slotSkip false`; Teku gets `--Xobol-dvt-integration-enabled=true` and `--Xvalidator-client-beacon-api-executor-threads=50`. Grandine (integrated) is not supported behind Charon.
+Docker beacon hostnames (`lighthouse`, `host.docker.internal`, …) are rewritten to `127.0.0.1`. Behind Charon, Lighthouse/Nimbus/Prysm/Lodestar VCs get `--distributed`; Teku gets `--Xobol-dvt-integration-enabled=true` and `--Xvalidator-client-beacon-api-executor-threads=50`. Grandine (integrated) is not supported behind Charon.
 
 ### Beacon node notes (Obol)
 
@@ -223,7 +223,7 @@ On a full EthPillar stack these are applied automatically:
 - **Nimbus BN** → Charon gets `--feature-set-enable=json_requests`
 - **Teku BN** → consensus unit gets `--validators-graffiti-client-append-format=DISABLED`
 - **Lodestar BN + Lighthouse/Nimbus/Prysm VC** → install/migrate warns (Charon v1.11+ 🟠 matrix; client-side bug — use Lodestar/Teku VC or another BN until patched)
-- **Lodestar VC behind Charon** → `--distributed --slotSkip false` (Obol/CDVN DVT tuning)
+- **Lodestar VC behind Charon** → `--distributed` (Lodestar disables slot skip automatically when distributed)
 
 For **VC-only + Charon**, configure the remote BN yourself (or add the Charon feature flag locally if the upstream BN is Nimbus).
 

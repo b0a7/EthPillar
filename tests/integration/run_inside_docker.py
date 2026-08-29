@@ -872,7 +872,7 @@ def verify(args: Any):
                     "--Xobol-dvt-integration-enabled=true",
                     "--Xvalidator-client-beacon-api-executor-threads=50",
                 ],
-                "lodestar": ["--distributed", "--slotSkip false"],
+                "lodestar": ["--distributed"],
             }.get(vc_name, [])
             dvt_ok = True
             for dvt_flag in dvt_flags:

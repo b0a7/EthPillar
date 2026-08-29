@@ -141,10 +141,10 @@ class TestCustomClientMenuLogic:
         assert not is_charon_vc_choice("Lodestar")
 
     def test_with_dvt_params_appends_client_specific_flags(self):
-        assert _with_dvt_params("--builder", "Lodestar", True) == "--builder --distributed --slotSkip false"
+        assert _with_dvt_params("--builder", "Lodestar", True) == "--builder --distributed"
         assert _with_dvt_params("", "Lighthouse", True) == "--distributed"
         assert _with_dvt_params("", "Nimbus", True) == "--distributed"
-        assert _with_dvt_params("", "Lodestar", True) == "--distributed --slotSkip false"
+        assert _with_dvt_params("", "Lodestar", True) == "--distributed"
         assert _with_dvt_params("--enable-builder", "Prysm", True) == "--enable-builder --distributed"
         assert (
             _with_dvt_params("--validators-builder-registration-default-enabled=true", "Teku", True)
@@ -409,7 +409,7 @@ class TestRunInstallRouting:
         assert "3600" in bn_arg
         extra_params = mocks['ls_vc'].call_args.args[6]
         assert "--distributed" in extra_params
-        assert "--slotSkip false" in extra_params
+        assert "slotSkip" not in extra_params
         assert mocks['charon'].call_args.kwargs.get("builder_api") is True
 
     def test_charon_nimbus_bn_enables_json_requests(self):
