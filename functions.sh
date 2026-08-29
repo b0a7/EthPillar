@@ -828,6 +828,17 @@ patchValidatorBeaconEndpoint(){
 }
 
 # Start Charon + validator after CDVN migration (before optional monitoring install).
+_migrateCdvnStartValidatorStack(){
+    [[ -f /etc/systemd/system/charon.service ]] \
+        || [[ -f /etc/systemd/system/validator.service ]] || return 0
+    ohai "Starting Charon and validator services…"
+    [[ -f /etc/systemd/system/charon.service ]] \
+        && sudo systemctl start charon 2>/dev/null || true
+    [[ -f /etc/systemd/system/validator.service ]] \
+        && sudo systemctl start validator 2>/dev/null || true
+}
+
+# Legacy prompt wrapper (unused by migrate; kept for manual use).
 _migrateCdvnPromptStartValidatorStack(){
     [[ -f /etc/systemd/system/charon.service ]] \
         || [[ -f /etc/systemd/system/validator.service ]] || return 0
@@ -835,10 +846,7 @@ _migrateCdvnPromptStartValidatorStack(){
 "Start Charon (and validator if installed) now?" 9 70; then
         return 0
     fi
-    [[ -f /etc/systemd/system/charon.service ]] \
-        && sudo systemctl start charon 2>/dev/null || true
-    [[ -f /etc/systemd/system/validator.service ]] \
-        && sudo systemctl start validator 2>/dev/null || true
+    _migrateCdvnStartValidatorStack
 }
 
 # Start Grafana/Prometheus stack after monitoring is installed during CDVN migration.
@@ -963,6 +971,26 @@ Optional Docker data/ moves are confirmed next.
         return 0
     fi
 
+    local _migrate_fresh=0
+    if sudo test -f /var/lib/charon/.charon/cluster-lock.json 2>/dev/null \
+        || [[ -f /etc/systemd/system/charon.service ]] \
+        || [[ -f /etc/systemd/system/validator.service ]]; then
+        local _fresh_default="--defaultno"
+        if charonKeysharesPresent && ! lodestarValidatorKeysPresent \
+            && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
+            && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1; then
+            _fresh_default=""
+        fi
+        if whiptail --title "Fresh migration" "${_fresh_default}" --yesno \
+"Previous EthPillar Charon/VC state detected.
+
+Reset Charon cluster + VC keys and run a clean end-to-end migration?
+
+(Stops charon/validator, clears /var/lib/charon/.charon and VC keystores)" 14 78; then
+            _migrate_fresh=1
+        fi
+    fi
+
     # Build checklist of movable datadirs
     selected_moves=""
     local prompted_moves=0
@@ -999,16 +1027,20 @@ PY
     rm -f "$moves_file" "$plan_file"
 
     # After checklist: pass explicit --moves (empty = none). If no prompt, omit = all eligible.
-    local moves_arg=()
+    local moves_arg=() fresh_arg=()
     if [[ "$prompted_moves" -eq 1 ]]; then
         moves_arg=(--moves "$selected_moves")
+    fi
+    if [[ "$_migrate_fresh" -eq 1 ]]; then
+        fresh_arg=(--fresh)
+        _migrateCdvnLog "fresh reset: enabled"
     fi
 
     ohai "Deploying EthPillar clients from CDVN plan…"
     _migrateCdvnLog "=== deploy.cdvn_migrate run ==="
     set +e
     PYTHONPATH="${BASE_DIR}" python3 -m deploy.cdvn_migrate run --path "$path_in" \
-        "${moves_arg[@]}" 2>&1 | tee -a "$_migrate_log"
+        "${moves_arg[@]}" "${fresh_arg[@]}" 2>&1 | tee -a "$_migrate_log"
     rc=${PIPESTATUS[0]}
     set -e
     _migrateCdvnLog "deploy.cdvn_migrate exit=${rc}"
@@ -1043,11 +1075,11 @@ for name in ("Lodestar", "Lighthouse", "Teku", "Nimbus", "Prysm", "Grandine"):
     if re.search(rf"{name.lower()}", svc, re.I):
         vc = name
         break
-result = sync_charon_keyshares_to_vc(vc)
+result = sync_charon_keyshares_to_vc(vc, force=True)
 print(result)
 if result.get("status") == "failed":
     raise SystemExit(1)
-if result.get("status") == "skipped" and "no validator_keys dir" in str(result.get("reason", "")):
+if result.get("status") == "skipped" and not str(result.get("reason", "")).startswith("destination already has"):
     raise SystemExit(1)
 PY
         rc=${PIPESTATUS[0]}
@@ -1059,22 +1091,8 @@ ${_migrate_log}" 12 78
         fi
     fi
 
-    # Legacy fallback prompt when auto-sync did not run (older branches).
-    if [[ -f /etc/systemd/system/validator.service ]] \
-        && charonKeysharesPresent \
-        && ! lodestarValidatorKeysPresent \
-        && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
-        && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1; then
-        if whiptail --title "Import key shares" --yesno \
-"Key shares are under /var/lib/charon/.charon/validator_keys but were not copied into the validator client.
-
-Import them now?" 12 70; then
-            runScript manage_validator_keys.sh charon-import
-        fi
-    fi
-
     # Start Charon/VC before optional monitoring (monitoring install can block on log prompts).
-    _migrateCdvnPromptStartValidatorStack
+    _migrateCdvnStartValidatorStack
 
     # Fresh EthPillar monitoring + Charon dashboard
     if [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then

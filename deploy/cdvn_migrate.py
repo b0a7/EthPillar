@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from deploy.charon import (
+    VC_COPY_KEY_DIRS,
+    VC_IMPORT_DATA_DIRS,
     charon_cluster_copy_only,
     copy_charon_cluster,
     count_charon_keystores,
@@ -892,6 +894,62 @@ def _repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _charon_cluster_dest() -> str:
+    return os.path.join(BASE_DATA_DIR, "charon", ".charon")
+
+
+def _vc_key_material_paths(vc_name: str) -> List[str]:
+    """Return EthPillar VC paths that hold imported key shares for *vc_name*."""
+    paths: List[str] = []
+    if vc_name in VC_COPY_KEY_DIRS:
+        paths.append(VC_COPY_KEY_DIRS[vc_name])
+    if vc_name in VC_IMPORT_DATA_DIRS:
+        base = VC_IMPORT_DATA_DIRS[vc_name]
+        if vc_name == "Lighthouse":
+            paths.extend(
+                [
+                    os.path.join(base, "validators"),
+                    os.path.join(base, "accounts"),
+                ]
+            )
+        elif vc_name == "Lodestar":
+            paths.extend(
+                [
+                    os.path.join(base, "keystores"),
+                    os.path.join(base, "secrets"),
+                    os.path.join(base, "validator-db"),
+                ]
+            )
+        elif vc_name == "Nimbus":
+            paths.extend(
+                [
+                    os.path.join(base, "validators"),
+                    os.path.join(base, "secrets"),
+                ]
+            )
+        elif vc_name == "Prysm":
+            paths.append(os.path.join(base, "validator_keys"))
+    return paths
+
+
+def reset_cdvn_migration_state(plan: CdvnMigrationPlan) -> None:
+    """Stop Charon/VC and clear migrated cluster + VC key material for a clean re-run."""
+    for unit in ("validator", "charon"):
+        subprocess.run(["sudo", "systemctl", "stop", unit], check=False)
+
+    cluster = _charon_cluster_dest()
+    if path_exists(cluster, directory=True) or os.path.lexists(cluster):
+        print(f"Reset: removing Charon cluster at {cluster}")
+        subprocess.run(["sudo", "rm", "-rf", cluster], check=True)
+
+    if not plan.vc_name:
+        return
+    for path in _vc_key_material_paths(plan.vc_name):
+        if path_exists(path, directory=True) or path_exists(path):
+            print(f"Reset: removing VC key material at {path}")
+            subprocess.run(["sudo", "rm", "-rf", path], check=False)
+
+
 def run_deploy(plan: CdvnMigrationPlan, *, dry_run: bool = False) -> int:
     """Invoke ``deploy/install-node.sh`` with the plan's argv."""
     root = _repo_root()
@@ -926,6 +984,7 @@ def run_migration(
     apply_moves: Optional[Sequence[str]] = None,
     skip_deploy: bool = False,
     skip_charon_overlay: bool = False,
+    fresh: bool = False,
 ) -> CdvnMigrationPlan:
     """Execute CDVN → EthPillar migration (or dry-run plan only).
 
@@ -935,6 +994,7 @@ def run_migration(
         apply_moves: Subset of datadir ``relative_src`` to move/merge; ``None`` = all.
         skip_deploy: Skip ``deploy/install-node.sh`` (datadir/charon overlay only).
         skip_charon_overlay: Skip ``.charon`` copy, ``charon.service`` import, and key sync.
+        fresh: Stop Charon/VC and clear migrated cluster + VC keys before running.
 
     Returns:
         The migration plan (same object whether or not ``dry_run``).
@@ -953,6 +1013,9 @@ def run_migration(
     if dry_run:
         return plan
 
+    if fresh:
+        reset_cdvn_migration_state(plan)
+
     if not skip_deploy:
         rc = run_deploy(plan, dry_run=False)
         if rc != 0:
@@ -960,12 +1023,12 @@ def run_migration(
 
     apply_datadir_moves(plan, selected=apply_moves)
 
-    _apply_charon_cluster_overlay(plan, skip=skip_charon_overlay)
+    _apply_charon_cluster_overlay(plan, skip=skip_charon_overlay, force=fresh)
     if plan.env_path and not skip_charon_overlay:
         import_cdvn_env_to_service(plan.env_path, apply=True)
 
     if plan.vc_name and plan.has_keyshares and not skip_charon_overlay:
-        sync = sync_charon_keyshares_to_vc(plan.vc_name)
+        sync = sync_charon_keyshares_to_vc(plan.vc_name, force=fresh)
         if sync.get("status") == "copied":
             print(
                 f"Synced {sync.get('count', 0)} key share(s) from .charon/validator_keys "
@@ -988,24 +1051,36 @@ def run_migration(
     return plan
 
 
-def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False) -> None:
+def _apply_charon_cluster_overlay(
+    plan: CdvnMigrationPlan,
+    *,
+    skip: bool = False,
+    force: bool = False,
+) -> None:
     """Copy or move CDVN ``.charon`` into EthPillar's Charon datadir.
 
     Always runs when the plan has a cluster lock. Optional Docker ``data/``
     moves (--moves) do not control this step.
     """
-    dest = os.path.join(BASE_DATA_DIR, "charon", ".charon")
+    dest = _charon_cluster_dest()
     dest_lock = os.path.join(dest, "cluster-lock.json")
 
     if skip:
         print("Charon cluster overlay: skipped (skip_charon_overlay)")
         return
 
-    if path_exists(dest_lock):
-        key_count = count_charon_keystores(os.path.join(dest, "validator_keys"))
-        print(f"Charon cluster overlay: already present at {dest_lock}")
-        print(f"Charon cluster overlay OK: {dest_lock} ({key_count} key share file(s))")
-        return
+    if path_exists(dest_lock) and not force:
+        keys_dir = os.path.join(dest, "validator_keys")
+        key_count = count_charon_keystores(keys_dir)
+        if key_count > 0 or not plan.has_keyshares:
+            print(f"Charon cluster overlay: already present at {dest_lock}")
+            print(f"Charon cluster overlay OK: {dest_lock} ({key_count} key share file(s))")
+            return
+        print(
+            f"Charon cluster overlay: {dest_lock} present but no key shares; "
+            "re-copying from CDVN checkout"
+        )
+        force = True
 
     if not plan.charon_dir or not plan.has_lock:
         raise RuntimeError(
@@ -1020,7 +1095,7 @@ def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False
     subprocess.run(["sudo", "mkdir", "-p", os.path.dirname(dest)], check=True)
     if os.path.exists(dest) and not _dir_nonempty(dest):
         subprocess.run(["sudo", "rmdir", dest], check=False)
-    result = copy_charon_cluster(plan.charon_dir, force=False)
+    result = copy_charon_cluster(plan.charon_dir, force=force)
     if copy_only:
         print(f"Copied {plan.charon_dir} → {dest} (.charon symlink/outside checkout)")
     else:
@@ -1067,6 +1142,11 @@ def main(argv: Optional[list] = None) -> int:
         "Omit for all eligible; pass empty string for none. "
         "Does not affect mandatory .charon cluster overlay.",
     )
+    p_run.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Stop Charon/VC and clear migrated cluster + VC keys before running",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -1091,6 +1171,7 @@ def main(argv: Optional[list] = None) -> int:
                 dry_run=args.dry_run,
                 apply_moves=moves,
                 skip_deploy=args.skip_deploy,
+                fresh=args.fresh,
             )
             return 0
     except (OSError, ValueError, RuntimeError) as exc:

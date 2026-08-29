@@ -327,6 +327,39 @@ def test_datadir_map_covers_stock_clients():
     assert DATADIR_MOVES["data/lodestar"][0] == "lodestar_validator"
 
 
+def test_run_migration_fresh_resets_before_overlay(tmp_path, monkeypatch):
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=el-none\n"
+        "CL=cl-none\n"
+        "VC=vc-lodestar\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
+    )
+    reset_calls: list[str] = []
+
+    def fake_reset(plan):
+        reset_calls.append(plan.root)
+
+    monkeypatch.setattr("deploy.cdvn_migrate.run_deploy", lambda *a, **k: 0)
+    monkeypatch.setattr("deploy.cdvn_migrate.apply_datadir_moves", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "deploy.cdvn_migrate._apply_charon_cluster_overlay",
+        lambda plan, **k: None,
+    )
+    monkeypatch.setattr("deploy.cdvn_migrate.import_cdvn_env_to_service", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "deploy.cdvn_migrate.sync_charon_keyshares_to_vc",
+        lambda *a, **k: {"status": "copied", "count": 1, "dest": "/var/lib/lodestar_validator"},
+    )
+    monkeypatch.setattr("deploy.cdvn_migrate.reset_cdvn_migration_state", fake_reset)
+
+    from deploy.cdvn_migrate import run_migration
+
+    run_migration(str(root), skip_deploy=True, apply_moves=[], fresh=True)
+    assert reset_calls == [str(root)]
+
+
 def test_run_migration_applies_charon_overlay_with_empty_moves(tmp_path, monkeypatch):
     root = _write_cdvn(
         tmp_path,
@@ -338,7 +371,7 @@ def test_run_migration_applies_charon_overlay_with_empty_moves(tmp_path, monkeyp
     )
     overlay_calls: list[str] = []
 
-    def fake_overlay(plan, *, skip=False):
+    def fake_overlay(plan, *, skip=False, force=False):
         overlay_calls.append(plan.root)
 
     monkeypatch.setattr("deploy.cdvn_migrate.run_deploy", lambda *a, **k: 0)
