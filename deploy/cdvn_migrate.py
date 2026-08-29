@@ -140,6 +140,7 @@ class CdvnMigrationPlan:
     vc_profile: str = ""
     mev_profile: str = ""
     grafana_port: Optional[int] = None
+    fee_recipient: str = ""
 
     def summary(self) -> str:
         """Human-readable plan for confirmation / dry-run."""
@@ -166,6 +167,7 @@ class CdvnMigrationPlan:
                 else "  Key shares:   (none)"
             ),
             f"  BN address:   {self.bn_address or '(local via EthPillar CC)'}",
+            f"  Fee recipient:{(' ' + self.fee_recipient) if self.fee_recipient else ' (unset)'}",
             f"  Grafana port: {self.grafana_port or '(EthPillar default 3000)'}",
             f"  Compose:      {self.compose_file or '(none)'}",
             f"  Docker up:    {self.docker_running}",
@@ -214,7 +216,38 @@ class CdvnMigrationPlan:
             argv.append("--with_builder_api")
         if self.role == "Validator Client Only" and self.bn_address:
             argv.extend(["--vc_only_bn_address", self.bn_address])
+        if self.fee_recipient:
+            argv.extend(["--fee_address", self.fee_recipient])
         return argv
+
+
+def _fee_recipient_from_cdvn(env: Dict[str, str], charon_dir: Optional[str]) -> str:
+    """Resolve fee recipient from CDVN ``.env`` or ``.charon/deposit-data.json``."""
+    for key in ("FEE_RECIPIENT_ADDRESS", "FEE_RECIPIENT", "CHARON_FEE_RECIPIENT"):
+        val = (env.get(key) or "").strip().strip('"')
+        if val.lower().startswith("0x") and len(val) == 42:
+            return val
+    if not charon_dir:
+        return ""
+    dep_path = os.path.join(charon_dir, "deposit-data.json")
+    if not os.path.isfile(dep_path):
+        return ""
+    try:
+        import json
+
+        with open(dep_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in ("fee_recipient", "withdrawal_address", "withdrawalAddress"):
+                val = item.get(key)
+                if isinstance(val, str) and val.lower().startswith("0x") and len(val) == 42:
+                    return val
+    except (OSError, json.JSONDecodeError, TypeError):
+        return ""
+    return ""
 
 
 def _norm_profile(value: str) -> str:
@@ -701,6 +734,13 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
             )
         )
 
+    fee_recipient = _fee_recipient_from_cdvn(env, str(charon_dir) if charon_dir else None)
+    if not fee_recipient and vc_name:
+        warnings.append(
+            "Fee recipient unset in CDVN .env and deposit-data.json; "
+            "deploy will prompt unless FEE_RECIPIENT_ADDRESS is set in .env.overrides."
+        )
+
     return CdvnMigrationPlan(
         root=root,
         env_path=str(env_path),
@@ -727,6 +767,7 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         vc_profile=vc_raw,
         mev_profile=mev_raw,
         grafana_port=grafana_port,
+        fee_recipient=fee_recipient,
     )
 
 

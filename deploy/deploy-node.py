@@ -323,6 +323,14 @@ _cc_needs_fee = cc_name in ['Nimbus', 'Teku', 'Lodestar', 'Grandine']
 _vc_needs_fee = flags['validator'] and vc_name not in ['Grandine (integrated)', None]
 if (_cc_needs_fee or _vc_needs_fee) and not FEE_RECIPIENT_ADDRESS:
     if "Lido CSM" not in role:
+        if skip_prompts:
+            print(
+                "ERROR: Fee recipient address is required. Set FEE_RECIPIENT_ADDRESS in "
+                "env / .env.overrides, pass --fee_address 0x..., or include it in CDVN "
+                "deposit-data.json.",
+                file=sys.stderr,
+            )
+            exit(1)
         FEE_RECIPIENT_ADDRESS = input("What is your fee recipient address? (0x...): ").strip()
 
 # Sync URL
