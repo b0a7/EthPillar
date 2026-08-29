@@ -462,6 +462,13 @@ def _required_ports(service_name: str, has_caplin: bool = False) -> List[int]:
         return [9000]
     if service_name == "mevboost":
         return [18550]
+    if service_name == "charon":
+        try:
+            from deploy.charon import parse_p2p_tcp_port
+
+            return [parse_p2p_tcp_port()]
+        except Exception:
+            return [3610]
     return []
 
 

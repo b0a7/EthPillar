@@ -612,6 +612,31 @@ isCharonEnabled(){
     [[ -f "$charon_svc" ]]
 }
 
+# Charon libp2p TCP port from charon.service (--p2p-tcp-address=host:port).
+# Prints nothing when Charon is not installed.
+getCharonP2pPort(){
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+    local bind="" port=""
+    [[ -f "$charon_svc" ]] || return 0
+    bind=$(grep -oE '--p2p-tcp-address=[^ \\]+' "$charon_svc" 2>/dev/null | head -1 | cut -d= -f2-)
+    if [[ -n "$bind" ]]; then
+        port="${bind##*:}"
+    else
+        port="3610"
+    fi
+    if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
+        echo "$port"
+    fi
+}
+
+# Open Charon P2P in UFW when charon.service is present.
+ufwAllowCharonP2p(){
+    local port
+    port=$(getCharonP2pPort)
+    [[ -n "$port" ]] || return 0
+    sudo ufw allow "${port}/tcp" comment 'Allow Charon P2P port'
+}
+
 # Classify how this node runs validator duties.
 # Returns: none | separate | integrated_grandine
 getValidatorMode(){
@@ -1104,14 +1129,22 @@ viewPubkeyAndIndices(){
 # Checks for open ports. Diagnose peering/router/port-forwarding issues.
 checkOpenPorts(){
     clear
-    if ! systemctl is-active --quiet execution ; then echo "${tty_red}WARNING: Execution client service not running. Ports will appear NOT open. Start service, then check ports."; fi
-    if ! systemctl is-active --quiet consensus ; then echo "${tty_red}WARNING: Consensus client service not running. Ports will appear NOT open. Start service, then check ports."; fi
+    [[ -f /etc/systemd/system/execution.service ]] \
+        && ! systemctl is-active --quiet execution \
+        && echo "${tty_red}WARNING: Execution client service not running. EL port may appear NOT open."
+    [[ -f /etc/systemd/system/consensus.service ]] \
+        && ! systemctl is-active --quiet consensus \
+        && echo "${tty_red}WARNING: Consensus client service not running. CL port may appear NOT open."
+    isCharonEnabled \
+        && ! systemctl is-active --quiet charon \
+        && echo "${tty_red}WARNING: Charon service not running. Charon P2P port may appear NOT open."
     ohai "Checking for Open Ports:"
     ohai "- Properly configuring open ports will improve validator performance and network health."
-    ohai "- Test if ports (e.g. 30303, 9000) are accessible from the Internet."
+    ohai "- Test if ports (e.g. 30303, 9000, Charon P2P) are accessible from the Internet."
     ohai "- Test if port forwarding and/or firewalls are properly configured."
-    ohai "- Replace 30303 and 9000 with custom or client-specific port numbers as needed."
+    ohai "- Replace defaults with custom or client-specific port numbers as needed."
 
+    local CL_PORT EL_PORT CHARON_PORT CHECK_PORTS
     # Read the ports from user input
     read -r -p "Enter your Consensus Client's P2P port (press Enter to use default 9000): " CL_PORT
     CL_PORT=${CL_PORT:-9000}
@@ -1119,10 +1152,18 @@ checkOpenPorts(){
     read -r -p "Enter your Execution Client's P2P port (press Enter to use default 30303): " EL_PORT
     EL_PORT=${EL_PORT:-30303}
     ohai "Using port ${EL_PORT} for Execution Client's P2P port."
+    CHECK_PORTS="${EL_PORT},${CL_PORT}"
+    if isCharonEnabled; then
+        CHARON_PORT=$(getCharonP2pPort)
+        if [[ -n "$CHARON_PORT" ]]; then
+            CHECK_PORTS="${CHECK_PORTS},${CHARON_PORT}"
+            ohai "Including Charon P2P port ${CHARON_PORT} (TCP only)."
+        fi
+    fi
 
     # Call port checker
-    ohai "Calling https://eth2-client-port-checker.vercel.app/api/checker?ports=$EL_PORT,$CL_PORT"
-    json=$(curl -s https://eth2-client-port-checker.vercel.app/api/checker?ports=$EL_PORT,$CL_PORT)
+    ohai "Calling https://eth2-client-port-checker.vercel.app/api/checker?ports=${CHECK_PORTS}"
+    json=$(curl -s "https://eth2-client-port-checker.vercel.app/api/checker?ports=${CHECK_PORTS}")
 
     # Parse JSON using jq and print requester IP
     ohai "Your IP: $(echo "$json" | jq -r .requester_ip)"

@@ -35,7 +35,37 @@ CHARON_SERVICE_PATH = "/etc/systemd/system/charon.service"
 DEFAULT_VALIDATOR_API_ADDRESS = "127.0.0.1:3600"
 DEFAULT_MONITORING_ADDRESS = "127.0.0.1:3620"
 DEFAULT_P2P_TCP_ADDRESS = "0.0.0.0:3610"
+DEFAULT_P2P_TCP_PORT = 3610
 DEFAULT_VALIDATOR_API_URL = f"http://{DEFAULT_VALIDATOR_API_ADDRESS}"
+
+_P2P_TCP_ADDRESS_RE = re.compile(r"--p2p-tcp-address=(?P<bind>[^\s\\]+)")
+
+
+def parse_p2p_tcp_port(
+    service_content: str = "",
+    *,
+    service_path: str = CHARON_SERVICE_PATH,
+    default: int = DEFAULT_P2P_TCP_PORT,
+) -> int:
+    """Return Charon libp2p TCP port from a unit file or ExecStart text."""
+    content = service_content
+    if not content:
+        try:
+            with open(service_path, encoding="utf-8") as handle:
+                content = handle.read()
+        except OSError:
+            return default
+    match = _P2P_TCP_ADDRESS_RE.search(content)
+    if not match:
+        return default
+    bind = match.group("bind")
+    port_part = bind.rsplit(":", 1)[-1]
+    try:
+        port = int(port_part)
+    except ValueError:
+        return default
+    return port if 1 <= port <= 65535 else default
+
 
 _BEACON_ENDPOINTS_RE = re.compile(
     r"--beacon-node-endpoints=(?P<url>https?://[^\s\\]+(?:,https?://[^\s\\]+)*)"

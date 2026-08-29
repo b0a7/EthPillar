@@ -599,7 +599,16 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         print(f'  3. Import key shares from {CHARON_VALIDATOR_KEYS_DIR}')
         print('     EthPillar → Validator → Generate / Import Validator Keys → Import Obol Charon key shares')
         print('  4. sudo systemctl start validator')
-        print('  5. Open TCP 3610 on your firewall; set CHARON_P2P_EXTERNAL_IP if peers cannot use relays')
+        try:
+            from deploy.charon import parse_p2p_tcp_port
+
+            _charon_p2p = parse_p2p_tcp_port()
+        except Exception:
+            _charon_p2p = 3610
+        print(
+            f'  5. Open TCP {_charon_p2p} on your firewall; '
+            'set CHARON_P2P_EXTERNAL_IP if peers cannot use relays'
+        )
         if validator_only:
             print('  6. Remote beacon node requirements (configure on the BN host):')
             print('     • Nimbus BN: Charon needs --feature-set-enable=json_requests')

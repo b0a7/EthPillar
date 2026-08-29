@@ -42,9 +42,10 @@ EOF
 
 write_charon_service() {
   local endpoint="${1:-http://127.0.0.1:5052}"
+  local p2p_port="${2:-3610}"
   cat > "$CHARON_SERVICE_FILE" <<EOF
 [Service]
-ExecStart=/usr/local/bin/charon run --beacon-node-endpoints=${endpoint} --validator-api-address=127.0.0.1:3600 --builder-api
+ExecStart=/usr/local/bin/charon run --beacon-node-endpoints=${endpoint} --validator-api-address=127.0.0.1:3600 --p2p-tcp-address=0.0.0.0:${p2p_port} --builder-api
 EOF
 }
 
@@ -212,6 +213,21 @@ EOF
   write_charon_service
   run isCharonEnabled
   [ "$status" -eq 0 ]
+}
+
+@test "getCharonP2pPort reads p2p-tcp-address from charon.service" {
+  write_charon_service "http://127.0.0.1:5052" 3812
+  run getCharonP2pPort
+  [ "$status" -eq 0 ]
+  [ "$output" = "3812" ]
+}
+
+@test "getCharonP2pPort is empty when charon.service is missing" {
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  run getCharonP2pPort
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 @test "patchValidatorBeaconEndpoint updates Charon upstream and leaves VC on :3600" {

@@ -159,9 +159,11 @@ def default_port_expectations(
     cl_p2p_port: int = 9000,
     cl_rest_port: int = 5052,
     engine_port: int = 8551,
+    charon_p2p_port: int = 3610,
     has_execution: bool = False,
     has_consensus: bool = False,
     has_caplin: bool = False,
+    has_charon: bool = False,
 ) -> List[PortExpectation]:
     """Build default bind expectations for a deployed node."""
     expectations: List[PortExpectation] = []
@@ -186,6 +188,10 @@ def default_port_expectations(
                 PortExpectation(cl_p2p_port, "public", ("tcp", "udp"), "Caplin P2P"),
                 PortExpectation(cl_rest_port, "localhost", ("tcp",), "Caplin REST"),
             ]
+        )
+    if has_charon:
+        expectations.append(
+            PortExpectation(charon_p2p_port, "public", ("tcp",), "Charon P2P")
         )
     return expectations
 
@@ -225,12 +231,15 @@ def read_env_ports(env_path: str) -> Dict[str, int]:
         "el_rpc": 8545,
         "cl_p2p": 9000,
         "cl_rest": 5052,
+        "charon_p2p": 3610,
     }
     mapping = {
         "EL_P2P_PORT": "el_p2p",
         "EL_RPC_PORT": "el_rpc",
         "CL_P2P_PORT": "cl_p2p",
         "CL_REST_PORT": "cl_rest",
+        "CHARON_P2P_PORT": "charon_p2p",
+        "CHARON_PORT_P2P_TCP": "charon_p2p",
     }
     ports = dict(defaults)
     try:

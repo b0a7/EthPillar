@@ -8,11 +8,26 @@
 # Made for home and solo stakers 🏠🥩
 
 SOURCE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ETHPILLAR_ROOT="$(cd "${SOURCE_DIR}/../.." && pwd)"
+# shellcheck disable=SC1091
+source "${ETHPILLAR_ROOT}/functions.sh"
 
 # Node configuration
 p2p_ports=("9000" "30303")
-p2p_processes=("geth" "besu" "teku" "lighthouse" "prysm" "nimbus_beacon_node" "nimbus_validator" "lodestar" "erigon" "nethermind" "reth" "mev-boost")
+p2p_processes=("geth" "besu" "teku" "lighthouse" "prysm" "nimbus_beacon_node" "nimbus_validator" "lodestar" "erigon" "nethermind" "reth" "mev-boost" "charon")
 services=("consensus" "execution" "validator" "mevboost")
+tcp_check_ports="9000,30303"
+udp_check_ports="9000,30303"
+charon_p2p_port=""
+
+if isCharonEnabled; then
+    charon_p2p_port="$(getCharonP2pPort)"
+    if [[ -n "$charon_p2p_port" ]]; then
+        p2p_ports+=("$charon_p2p_port")
+        tcp_check_ports="${tcp_check_ports},${charon_p2p_port}"
+    fi
+    services+=("charon")
+fi
 API_BN_ENDPOINT="http://localhost:5052"
 EL_RPC_ENDPOINT="http://localhost:8545"
 
@@ -385,6 +400,24 @@ check_chrony() {
     fi
 }
 
+check_charon_listening_port() {
+    [[ -n "$charon_p2p_port" ]] || return 0
+    ((total_checks+=1))
+    if sudo ss -lnt | grep -qE "tcp.*:${charon_p2p_port}"; then
+        print_check_result "PASS" "Detected TCP service on Charon P2P port ${charon_p2p_port}"
+        if [ "$EUID" -eq 0 ]; then
+            pid=$(sudo ss -lntup "sport = :${charon_p2p_port}" | awk -Fpid= '/users:/ {print $2}' | cut -d, -f1 | head -1)
+            if [ -n "$pid" ]; then
+                process=$(ps -p "$pid" -o comm=)
+                echo -e "${YELLOW}          Process: ${process} (PID ${pid})${NC}"
+            fi
+        fi
+    else
+        print_check_result "FAIL" "Charon P2P port ${charon_p2p_port} (TCP) not listening"
+        ((failed_checks++))
+    fi
+}
+
 check_elcl_listening_ports() {
     ((total_checks+=2))
     detected=0
@@ -421,6 +454,7 @@ check_elcl_listening_ports() {
         print_check_result "FAIL" "No execution & consensus services detected on expected ports"
         ((failed_checks++))
     fi
+    check_charon_listening_port
 }
 
 check_elcl_processes() {
@@ -448,8 +482,8 @@ check_open_ports() {
     open_ports=0
     concat_ports=""
 
-    tcp_ports="9000,30303"
-    udp_ports="9000,30303"
+    tcp_ports="$tcp_check_ports"
+    udp_ports="$udp_check_ports"
 
     # Check TCP ports
     checker_url="https://eth2-client-port-checker.vercel.app/api/checker?ports="

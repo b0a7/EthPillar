@@ -1172,10 +1172,11 @@ while true; do
       6 "EC RPC Node: Allow local network access to RPC port 8545"
       7 "CC RPC Node: Allow local network access to RPC port 5052"
       8 "Monitoring: Allow local network access to Grafana port 3000"
-      9 "Disable firewall"
-      10 "Reset firewall rules: Delete all rules"
+      9 "Charon: Allow Charon P2P port (from charon.service)"
+      10 "Disable firewall"
+      11 "Reset firewall rules: Delete all rules"
       - ""
-      11 "Whitelist an IP address: Allow full access to this node"
+      12 "Whitelist an IP address: Allow full access to this node"
       - ""
       99 "Back to main menu"
     )
@@ -1252,6 +1253,7 @@ while true; do
         [[ $EL == "Reth" ]] && sudo ufw allow 30304/udp comment 'Allow reth discv5 port'
         [[ $EL =~ "Erigon" ]] && sudo ufw allow 42069 comment 'Allow erigon torrent port'
         [[ $EL =~ "Erigon" ]] && sudo ufw allow 30304 comment 'Allow erigon p2p port'
+        ufwAllowCharonP2p
         sudo ufw enable
         sudo ufw status numbered
         ohai "UFW firewall enabled."
@@ -1273,17 +1275,26 @@ while true; do
         sleep 2
         ;;
       9)
+        if isCharonEnabled; then
+            ufwAllowCharonP2p
+            ohai "Charon P2P port $(getCharonP2pPort) allowed (TCP)."
+        else
+            whiptail --title "Charon" --msgbox "charon.service is not installed.\nInstall Charon first, or use option 2 to allow a port manually." 10 70
+        fi
+        sleep 2
+        ;;
+      10)
         sudo ufw disable
         ohai "UFW firewall disabled."
         sleep 2
         ;;
-      10)
+      11)
         sudo ufw disable
         sudo ufw --force reset
         ohai "UFW firewall reset."
         sleep 2
         ;;
-      11)
+      12)
         read -p "Enter the IP address to whitelist: " ip_whitelist
         sudo ufw allow from $ip_whitelist
         ohai "IP address whitelisted."

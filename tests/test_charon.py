@@ -12,6 +12,7 @@ from deploy.charon import (
     generate_charon_service,
     import_cdvn_env_to_service,
     parse_dotenv,
+    parse_p2p_tcp_port,
     patch_beacon_endpoints,
     plan_cdvn_env_import,
     rewrite_docker_url,
@@ -70,6 +71,17 @@ def test_rewrite_docker_url():
     url2, warn2 = rewrite_docker_url("http://192.168.1.8:5052")
     assert url2 == "http://192.168.1.8:5052"
     assert warn2 is None
+
+
+def test_parse_p2p_tcp_port_from_service_content():
+    unit = generate_charon_service(
+        "mainnet",
+        "http://127.0.0.1:5052",
+        p2p_tcp_address="0.0.0.0:3812",
+    )
+    assert parse_p2p_tcp_port(unit) == 3812
+    assert parse_p2p_tcp_port("") == 3610
+    assert parse_p2p_tcp_port("[Service]\nExecStart=charon run", default=3610) == 3610
 
 
 def test_plan_cdvn_env_import_maps_core_flags():
