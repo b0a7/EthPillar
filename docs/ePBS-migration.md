@@ -55,7 +55,7 @@ After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks kee
 
 - Stops and disables MEV-Boost (the service file stays on disk).
 - Removes the beacon-node setting that pointed at local MEV-Boost (`127.0.0.1:18550`). Other builder URLs are left alone.
-- With **Obol Charon** installed, also removes `charon.service` `--builder-api` (the MEV-Boost builder proxy between VC and BN). Obol has not shipped a stable Charon ePBS release yet — watch [Charon releases](https://github.com/ObolNetwork/charon/releases).
+- With **Obol Charon** installed, also removes `charon.service` `--builder-api` — see [Obol Charon DV](#obol-charon-dv) below.
 - Leaves any validator relay config from the first step in place.
 
 Restart order after complete when Charon is present: **consensus → charon → validator**.
@@ -63,6 +63,19 @@ Restart order after complete when Charon is present: **consensus → charon → 
 If you skipped the first step, **Complete is refused** so you do not drop MEV-Boost with no VC relay replacement.
 
 If you ran Complete too early: restore `consensus.service` from the newest `consensus.service.bak.epbs.*`, then `sudo systemctl enable --now mevboost` and restart consensus (`sudo systemctl daemon-reload && sudo systemctl restart consensus`).
+
+### Obol Charon DV
+
+Charon sits between your validator client and beacon node and proxies builder/MEV traffic. On the pre-Gloas path that means `charon.service` runs with **`--builder-api`** (MEV-Boost builder proxy).
+
+| Step | Charon behavior |
+|------|-----------------|
+| **Before Gloas (prepare)** | Keeps `--builder-api`; MEV-Boost sidecar path unchanged |
+| **After Gloas (complete)** | Removes `--builder-api` from `charon.service` |
+
+After **complete**, restart in order: **consensus → charon → validator**.
+
+**Upstream:** Obol has not shipped a stable Charon ePBS/Gloas release yet. EthPillar strips the MEV-Boost proxy flag on complete so your node matches the post-fork sidecar-off layout; confirm Charon versions against [Charon releases](https://github.com/ObolNetwork/charon/releases) before relying on Gloas block production through Charon.
 
 ### Safety
 

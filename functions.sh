@@ -606,14 +606,14 @@ getClient(){
 
 # ── Validator mode helpers (used by CC switch, update_validator.sh, TUI) ──
 
-# True when Obol Charon middleware is installed.
+# Return whether Obol Charon middleware is installed (charon.service present).
 isCharonEnabled(){
     local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
     [[ -f "$charon_svc" ]]
 }
 
-# Charon libp2p TCP port from charon.service (--p2p-tcp-address=host:port).
-# Prints nothing when Charon is not installed.
+# Parse Charon libp2p TCP port from charon.service (--p2p-tcp-address=host:port).
+# Prints nothing when charon.service is missing; defaults to 3610 when flag absent.
 getCharonP2pPort(){
     local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
     local bind="" port=""
@@ -629,7 +629,7 @@ getCharonP2pPort(){
     fi
 }
 
-# Open Charon P2P in UFW when charon.service is present.
+# Allow inbound TCP on Charon P2P port in UFW (no-op when Charon not installed).
 ufwAllowCharonP2p(){
     local port
     port=$(getCharonP2pPort)

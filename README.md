@@ -89,9 +89,7 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 
 When Gloas lands, builder relays move from the MEV-Boost sidecar onto the validator client. EthPillar splits that into **prepare** (copy relays to the VC, keep MEV-Boost running) and **complete** (stop MEV-Boost and drop the BN sidecar URL after the fork).
 
-See **[docs/ePBS-migration.md](docs/ePBS-migration.md)** for the TUI/CLI steps, what each client changes, and when it is safe to complete.
-
-With **Obol Charon**, complete also removes `charon.service` `--builder-api` (the MEV-Boost builder proxy). Obol has not shipped a stable Charon ePBS release yet — watch [Charon releases](https://github.com/ObolNetwork/charon/releases).
+See **[docs/ePBS-migration.md](docs/ePBS-migration.md)** for the TUI/CLI steps, what each client changes, Obol Charon notes, and when it is safe to complete.
 
 ---
 

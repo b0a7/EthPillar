@@ -1,4 +1,10 @@
-"""Plan and run a CDVN → EthPillar full-stack migration."""
+"""Plan and run a CDVN → EthPillar full-stack migration.
+
+Detects EL/CL/VC/MEV profiles from CDVN ``.env``, maps them to EthPillar
+clients, moves or merges Docker datadirs, copies ``.charon`` (following
+symlinks), writes ``charon.service`` from ``CHARON_*`` env vars, syncs DKG key
+shares into the VC, and optionally preserves CDVN Grafana port.
+"""
 
 from __future__ import annotations
 
@@ -101,6 +107,7 @@ class DatadirMove:
 
     @property
     def will_move(self) -> bool:
+        """True when this datadir move is eligible and not skipped."""
         return not self.skip_reason
 
 
@@ -228,6 +235,12 @@ def _resolve_ec_name(el_raw: str) -> Tuple[Optional[str], List[str]]:
 
     Stock CDVN compose may list profiles EthPillar does not install locally;
     unmapped values are treated as external EL with a plan warning.
+
+    Args:
+        el_raw: Raw ``EL=`` value from CDVN ``.env``.
+
+    Returns:
+        ``(ec_name, warnings)`` — ``ec_name`` is None for external/unmapped profiles.
     """
     warnings: List[str] = []
     if _is_none_profile(el_raw, "el"):
@@ -243,7 +256,14 @@ def _resolve_ec_name(el_raw: str) -> Tuple[Optional[str], List[str]]:
 
 
 def _resolve_cc_name(cl_raw: str) -> Tuple[Optional[str], List[str]]:
-    """Map CDVN ``CL`` profile to a local EthPillar CC name, or none (external)."""
+    """Map CDVN ``CL`` profile to a local EthPillar CC name, or none (external).
+
+    Args:
+        cl_raw: Raw ``CL=`` value from CDVN ``.env``.
+
+    Returns:
+        ``(cc_name, warnings)`` — ``cc_name`` is None for external/unmapped profiles.
+    """
     warnings: List[str] = []
     if _is_none_profile(cl_raw, "cl"):
         return None, warnings
@@ -260,7 +280,16 @@ def _resolve_cc_name(cl_raw: str) -> Tuple[Optional[str], List[str]]:
 def _resolve_local_mevboost(
     mev_raw: str, *, has_local_el: bool, has_local_cl: bool
 ) -> Tuple[bool, List[str]]:
-    """Return whether to install local ``mevboost.service`` from the MEV profile."""
+    """Return whether to install local ``mevboost.service`` from the MEV profile.
+
+    Args:
+        mev_raw: Raw ``MEV=`` value from CDVN ``.env``.
+        has_local_el: Whether migrate plans a local execution client.
+        has_local_cl: Whether migrate plans a local consensus client.
+
+    Returns:
+        ``(with_mevboost, warnings)``.
+    """
     warnings: List[str] = []
     if mev_raw in MEV_LOCAL:
         return has_local_el and has_local_cl, warnings
@@ -274,7 +303,14 @@ def _resolve_local_mevboost(
 
 
 def grafana_port_from_env(env: Dict[str, str]) -> Optional[int]:
-    """Parse CDVN ``MONITORING_PORT_GRAFANA`` when set to a valid TCP port."""
+    """Parse CDVN ``MONITORING_PORT_GRAFANA`` when set to a valid TCP port.
+
+    Args:
+        env: Parsed CDVN ``.env`` key/value map.
+
+    Returns:
+        Port number 1–65535, or None when unset/invalid.
+    """
     raw = (env.get("MONITORING_PORT_GRAFANA") or "").strip()
     if not raw:
         return None
@@ -311,7 +347,15 @@ def apply_grafana_http_port(port: int) -> bool:
 
 
 def _grafana_ini_with_http_port(content: str, port: int) -> str:
-    """Return ``grafana.ini`` content with ``[server] http_port`` set."""
+    """Return ``grafana.ini`` content with ``[server] http_port`` set to *port*.
+
+    Args:
+        content: Existing ``grafana.ini`` text.
+        port: TCP port for Grafana HTTP UI.
+
+    Returns:
+        Updated ini text (inserts or replaces ``http_port`` under ``[server]``).
+    """
     new_line = f"http_port = {port}\n"
     out: List[str] = []
     in_server = False
@@ -336,7 +380,14 @@ def _grafana_ini_with_http_port(content: str, port: int) -> str:
 
 
 def apply_cdvn_monitoring_from_env(env_path: str) -> Optional[int]:
-    """Apply CDVN monitoring settings (Grafana port) after EthPillar monitoring install."""
+    """Apply CDVN monitoring settings (Grafana port) after EthPillar monitoring install.
+
+    Args:
+        env_path: Path to CDVN ``.env``.
+
+    Returns:
+        Grafana ``http_port`` when ``MONITORING_PORT_GRAFANA`` was applied, else None.
+    """
     env = parse_dotenv(env_path)
     port = grafana_port_from_env(env)
     if port is None:
@@ -346,7 +397,16 @@ def apply_cdvn_monitoring_from_env(env_path: str) -> Optional[int]:
 
 
 def _vc_datadir_useful_entries(src: str) -> List[str]:
-    """Top-level CDVN VC datadir entries worth merging into EthPillar."""
+    """Return top-level CDVN VC datadir entries worth merging into EthPillar.
+
+    Skips logs, ``run.sh``, ``*.log`` files, and log-rotate audit metadata.
+
+    Args:
+        src: CDVN ``data/vc-*`` or ``data/lodestar`` path.
+
+    Returns:
+        Basenames to copy (e.g. ``keystores``, ``validator-db``, ``validators``).
+    """
     if not os.path.isdir(src):
         return []
     useful: List[str] = []
@@ -361,7 +421,14 @@ def _vc_datadir_useful_entries(src: str) -> List[str]:
 
 
 def _vc_datadir_skip_reason(src: str) -> str:
-    """Skip reason for CDVN VC datadir when there is nothing useful to merge."""
+    """Return a skip reason when a CDVN VC datadir has nothing useful to merge.
+
+    Args:
+        src: CDVN VC datadir path.
+
+    Returns:
+        Empty string when merge should proceed; otherwise a human-readable reason.
+    """
     if not os.path.isdir(src):
         return "source empty or missing"
     useful = _vc_datadir_useful_entries(src)
@@ -371,7 +438,19 @@ def _vc_datadir_skip_reason(src: str) -> str:
 
 
 def merge_cdvn_vc_datadir(src: str, dest: str, owner: str) -> List[str]:
-    """Merge useful CDVN VC datadir entries into EthPillar's VC data path."""
+    """Merge useful CDVN VC datadir entries into EthPillar's VC data path.
+
+    Used for ``data/lodestar``, ``data/vc-nimbus``, etc. Keys still sync from
+    ``.charon/validator_keys`` when the VC datadir is logs-only (Teku).
+
+    Args:
+        src: CDVN VC datadir under the checkout.
+        dest: EthPillar path under ``/var/lib`` (e.g. ``lodestar_validator``).
+        owner: Systemd service user for ``chown`` (usually ``validator``).
+
+    Returns:
+        List of merged entry basenames (empty when *src* is missing or useless).
+    """
     merged: List[str] = []
     if not os.path.isdir(src):
         return merged
@@ -391,6 +470,7 @@ def merge_cdvn_vc_datadir(src: str, dest: str, owner: str) -> List[str]:
 
 
 def _dir_nonempty(path: str) -> bool:
+    """Return True when *path* is a directory with at least one entry."""
     if not os.path.isdir(path):
         return False
     try:
@@ -412,7 +492,15 @@ def _dest_has_data(path: str) -> bool:
 
 
 def detect_docker_compose_running(compose_file: Optional[str], root: str) -> bool:
-    """Return True if ``docker compose`` reports running services for this CDVN."""
+    """Return True if ``docker compose`` reports running services for this CDVN.
+
+    Args:
+        compose_file: Path to ``docker-compose.yml`` (or None to skip check).
+        root: CDVN checkout directory used as compose working directory.
+
+    Returns:
+        True when at least one service is running.
+    """
     if not compose_file or not shutil.which("docker"):
         return False
     try:
@@ -430,7 +518,19 @@ def detect_docker_compose_running(compose_file: Optional[str], root: str) -> boo
 
 
 def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigrationPlan:
-    """Build a migration plan from a CDVN checkout path or ``.env`` file."""
+    """Build a migration plan from a CDVN checkout path or ``.env`` file.
+
+    Args:
+        path: CDVN checkout directory or ``.env`` file path.
+        local_host: Host used when rewriting Docker Compose service URLs to loopback.
+
+    Returns:
+        :class:`CdvnMigrationPlan` with datadir moves, warnings, and deploy argv.
+
+    Raises:
+        ValueError: When ``.env``/profiles are missing or incompatible.
+        FileNotFoundError: When *path* does not exist.
+    """
     info = resolve_cdvn_checkout(path)
     root = str(info["root"])
     env_path = info.get("env_path")
@@ -647,14 +747,21 @@ def move_client_datadir(src: str, dest: str, owner: str) -> None:
 
 
 def apply_datadir_moves(plan: CdvnMigrationPlan, selected: Optional[Sequence[str]] = None) -> List[str]:
-    """Apply datadir moves.
+    """Apply planned CDVN datadir moves and VC merges.
 
     ``selected``:
       * ``None`` — move all eligible dirs
       * empty sequence — move none
       * otherwise — only listed ``relative_src`` values
 
-    ``.charon`` is handled separately by ``copy_charon_cluster`` / move in ``run_migration``.
+    ``.charon`` is handled separately by :func:`run_migration`.
+
+    Args:
+        plan: Plan from :func:`plan_cdvn_migration`.
+        selected: Optional subset of ``DatadirMove.relative_src`` values.
+
+    Returns:
+        ``relative_src`` values that were moved or merged.
     """
     done: List[str] = []
     allow: Optional[set] = None if selected is None else set(selected)
@@ -714,7 +821,22 @@ def run_migration(
     skip_deploy: bool = False,
     skip_charon_overlay: bool = False,
 ) -> CdvnMigrationPlan:
-    """Execute migration (or dry-run). Raises on hard failures including docker running."""
+    """Execute CDVN → EthPillar migration (or dry-run plan only).
+
+    Args:
+        path: CDVN checkout or ``.env`` path (same as :func:`plan_cdvn_migration`).
+        dry_run: When True, print the plan and return without writing the system.
+        apply_moves: Subset of datadir ``relative_src`` to move/merge; ``None`` = all.
+        skip_deploy: Skip ``deploy/install-node.sh`` (datadir/charon overlay only).
+        skip_charon_overlay: Skip ``.charon`` copy, ``charon.service`` import, and key sync.
+
+    Returns:
+        The migration plan (same object whether or not ``dry_run``).
+
+    Raises:
+        RuntimeError: When Docker Compose is still up or deploy fails.
+        ValueError: When the plan cannot be built (see :func:`plan_cdvn_migration`).
+    """
     plan = plan_cdvn_migration(path)
     if plan.docker_running:
         raise RuntimeError(

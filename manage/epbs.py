@@ -745,13 +745,24 @@ def strip_bn_sidecar(bn_content: str, bn_client: str) -> str:
 
 
 def charon_has_builder_api(charon_content: str) -> bool:
-    """Return True when ``charon.service`` ExecStart includes ``--builder-api``."""
+    """Return True when ``charon.service`` ExecStart includes ``--builder-api``.
+
+    Args:
+        charon_content: Full ``charon.service`` unit file body.
+    """
     args = normalize_cli_args(parse_unit(charon_content).exec_args)
     return has_flag(args, "--builder-api")
 
 
 def strip_charon_builder_api(charon_content: str) -> str:
-    """Remove ``--builder-api`` from Charon (MEV-Boost builder proxy until Gloas)."""
+    """Remove ``--builder-api`` from Charon (MEV-Boost builder proxy until Gloas).
+
+    Args:
+        charon_content: Full ``charon.service`` unit file body.
+
+    Returns:
+        Updated unit content with ``--builder-api`` removed from ``ExecStart``.
+    """
     unit = parse_unit(charon_content)
     args = normalize_cli_args(unit.exec_args)
     args = remove_flags(args, "--builder-api")
@@ -763,7 +774,13 @@ def _complete_charon_builder_api(
     plan: MigrationPlan,
     apply: bool,
 ) -> None:
-    """Strip Charon ``--builder-api`` on ePBS complete when charon.service exists."""
+    """Strip Charon ``--builder-api`` on ePBS complete when ``charon.service`` exists.
+
+    Args:
+        fs: Filesystem abstraction (production or test double).
+        plan: Migration plan to append actions to.
+        apply: When False, record planned changes only.
+    """
     charon_path = fs.unit_path("charon")
     if not fs.exists(charon_path):
         return

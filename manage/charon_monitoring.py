@@ -1,7 +1,8 @@
-"""Provision Charon Prometheus scrape + Grafana Overview dashboard.
+"""Provision Charon Prometheus scrape and CDVN Grafana dashboards.
 
 Used when Charon is installed and EthPillar monitoring (Prometheus/Grafana) is
-present — or when monitoring is installed while Charon already exists.
+present — or when monitoring is installed while Charon already exists. Downloads
+the same dashboard JSON bundle as upstream CDVN (Overview, Cluster, Node, Logs).
 """
 
 from __future__ import annotations
@@ -148,7 +149,12 @@ def provision_cdvn_grafana_dashboards(
     base_url: str = CDVN_DASHBOARDS_BASE,
     filenames: tuple[str, ...] = CDVN_GRAFANA_DASHBOARDS,
 ) -> int:
-    """Provision the same Grafana dashboards bundled with CDVN.
+    """Download and write the CDVN Charon Grafana dashboard bundle.
+
+    Args:
+        dashboards_dir: Grafana file-provisioning directory.
+        base_url: Raw GitHub base URL for CDVN dashboard JSON files.
+        filenames: Dashboard basenames to fetch (see :data:`CDVN_GRAFANA_DASHBOARDS`).
 
     Returns:
         Count of dashboard files written.
@@ -180,7 +186,12 @@ def provision_charon_dashboards(
     all_cdvn: bool = True,
     dashboard_url: str = CHARON_OVERVIEW_URL,
 ) -> bool:
-    """Write Charon Grafana dashboards (CDVN bundle or Overview-only).
+    """Write Charon Grafana dashboards (full CDVN bundle or Overview-only).
+
+    Args:
+        dashboards_dir: Grafana file-provisioning directory.
+        all_cdvn: When True, provision :data:`CDVN_GRAFANA_DASHBOARDS`; else Overview only.
+        dashboard_url: Overview JSON URL when ``all_cdvn`` is False.
 
     Returns:
         True if at least one dashboard file was written.
@@ -198,13 +209,21 @@ def provision_charon_monitoring(
     dashboard_url: str = CHARON_OVERVIEW_URL,
     all_cdvn_dashboards: bool = True,
 ) -> Dict[str, bool]:
-    """Ensure Charon scrape + Overview dashboard when monitoring is present.
+    """Ensure Charon scrape job and CDVN Grafana dashboards when monitoring exists.
 
     No-ops quietly when Prometheus/Grafana paths are absent (monitoring not
     installed yet).
 
+    Args:
+        prometheus_yml: Prometheus config path.
+        grafana_dashboards: Grafana dashboard provisioning directory.
+        datasources_yml: Grafana datasources provisioning file.
+        restart: Restart prometheus/grafana after changes.
+        dashboard_url: Overview-only JSON URL (when ``all_cdvn_dashboards`` is False).
+        all_cdvn_dashboards: When True, provision the full CDVN dashboard bundle.
+
     Returns:
-        Dict with ``scrape`` / ``dashboard`` / ``datasource`` booleans.
+        Dict with ``scrape``, ``dashboard``, and ``datasource`` booleans.
     """
     results = {"scrape": False, "dashboard": False, "datasource": False}
 

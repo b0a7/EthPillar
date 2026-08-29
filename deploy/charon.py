@@ -1,4 +1,4 @@
-"""Obol Charon DVT middleware: release lookup, systemd unit, and install."""
+"""Obol Charon DVT middleware: release lookup, systemd unit, install, and CDVN migrate helpers."""
 
 from __future__ import annotations
 
@@ -61,7 +61,16 @@ def parse_p2p_tcp_port(
     service_path: str = CHARON_SERVICE_PATH,
     default: int = DEFAULT_P2P_TCP_PORT,
 ) -> int:
-    """Return Charon libp2p TCP port from a unit file or ExecStart text."""
+    """Return Charon libp2p TCP port from a unit file or ExecStart text.
+
+    Args:
+        service_content: Optional unit body; when empty, reads ``service_path``.
+        service_path: Systemd unit to read when ``service_content`` is empty.
+        default: Port when the flag is missing or invalid.
+
+    Returns:
+        TCP port from ``--p2p-tcp-address=host:port`` (1–65535), else *default*.
+    """
     content = service_content
     if not content:
         try:
@@ -734,7 +743,15 @@ def copy_charon_cluster(
 
 
 def resolve_charon_cluster_dir(checkout_root: str) -> Dict[str, object]:
-    """Locate CDVN ``.charon`` (symlink or directory) and follow to the real cluster tree."""
+    """Locate CDVN ``.charon`` (symlink or directory) and follow to the real cluster tree.
+
+    Args:
+        checkout_root: CDVN checkout directory containing ``.charon``.
+
+    Returns:
+        Dict with ``link`` (checkout-relative path), ``resolved`` (realpath),
+        ``is_symlink``, ``has_lock``, and ``has_keyshares``.
+    """
     root = os.path.abspath(os.path.expanduser(checkout_root))
     link = os.path.join(root, ".charon")
     if not os.path.lexists(link):
@@ -769,7 +786,18 @@ def resolve_charon_cluster_dir(checkout_root: str) -> Dict[str, object]:
 
 
 def charon_cluster_copy_only(checkout_root: str, resolved_charon_dir: str) -> bool:
-    """True when ``.charon`` must be copied (not moved) — symlink or path outside checkout."""
+    """Return True when ``.charon`` must be copied, not moved, into EthPillar.
+
+    Copy is required when ``.charon`` is a symlink or resolves outside the CDVN
+    checkout (shared cluster dir on the host).
+
+    Args:
+        checkout_root: CDVN checkout root passed to migrate.
+        resolved_charon_dir: Real path from :func:`resolve_charon_cluster_dir`.
+
+    Returns:
+        True when migrate should call :func:`copy_charon_cluster` only.
+    """
     link = os.path.join(os.path.abspath(checkout_root), ".charon")
     if os.path.islink(link):
         return True
@@ -792,6 +820,16 @@ def sync_charon_keyshares_to_vc(
     Teku/Grandine: copy ``keystore-*`` files into the VC keystore directory.
     Lighthouse/Lodestar/Nimbus/Prysm: run the client import CLI (non-interactive
     when ``keystore-*.txt`` passphrase files are present).
+
+    Args:
+        vc_name: EthPillar validator client name (e.g. ``Teku``, ``Lodestar``).
+        keys_dir: Source directory (default EthPillar ``.charon/validator_keys``).
+        force: Re-import even when the destination already has keys.
+
+    Returns:
+        Result dict with ``status`` (``copied`` / ``skipped`` / ``failed`` /
+        ``unsupported``), optional ``reason``, ``dest``, ``count``, and
+        ``method`` (``copy`` or ``import``).
     """
     if vc_name in VC_COPY_KEY_DIRS:
         return _sync_copy_keyshares(vc_name, keys_dir=keys_dir, force=force)
@@ -801,6 +839,7 @@ def sync_charon_keyshares_to_vc(
 
 
 def _list_charon_keystores(keys_dir: str) -> List[str]:
+    """Return sorted ``keystore-*.json`` basenames under *keys_dir*."""
     src = os.path.abspath(keys_dir)
     if not os.path.isdir(src):
         return []
@@ -812,6 +851,9 @@ def _list_charon_keystores(keys_dir: str) -> List[str]:
 
 
 def _find_passphrase_file(keys_dir: str) -> Optional[str]:
+    """Return the first ``keystore-*.txt`` path under *keys_dir*, if any."""
+    if not os.path.isdir(keys_dir):
+        return None
     for name in sorted(os.listdir(keys_dir)):
         if name.startswith("keystore-") and name.endswith(".txt"):
             return os.path.join(keys_dir, name)
@@ -819,6 +861,7 @@ def _find_passphrase_file(keys_dir: str) -> Optional[str]:
 
 
 def _dir_has_keystore_json(path: str) -> bool:
+    """Return True when *path* contains at least one ``keystore-*.json`` file."""
     if not os.path.isdir(path):
         return False
     try:
@@ -831,7 +874,14 @@ def _dir_has_keystore_json(path: str) -> bool:
 
 
 def _vc_already_has_keys(vc_name: str) -> bool:
-    """True when the EthPillar VC datadir already holds imported key material."""
+    """Return True when the EthPillar VC datadir already holds imported key material.
+
+    Args:
+        vc_name: EthPillar validator client name.
+
+    Returns:
+        True when copy/import can be skipped (unless ``force=True`` on sync).
+    """
     if vc_name in VC_COPY_KEY_DIRS:
         return _dir_has_keystore_json(VC_COPY_KEY_DIRS[vc_name])
     if vc_name == "Lighthouse":
@@ -865,6 +915,7 @@ def _vc_already_has_keys(vc_name: str) -> bool:
 
 
 def _dir_nonempty(path: str) -> bool:
+    """Return True when *path* is a directory with at least one entry."""
     if not os.path.isdir(path):
         return False
     try:
@@ -874,6 +925,7 @@ def _dir_nonempty(path: str) -> bool:
 
 
 def _chown_vc_tree(vc_name: str, path: str) -> None:
+    """Best-effort ``chown``/``chmod`` on a VC datadir tree after migrate."""
     owner = "consensus" if vc_name == "Grandine" else "validator"
     subprocess.run(["sudo", "chown", "-R", f"{owner}:{owner}", path], check=False)
     subprocess.run(["sudo", "chmod", "-R", "700", path], check=False)
@@ -885,6 +937,16 @@ def _sync_copy_keyshares(
     keys_dir: str,
     force: bool,
 ) -> Dict[str, object]:
+    """Copy Charon key shares into a Teku/Grandine keystore directory.
+
+    Args:
+        vc_name: Must be a key in :data:`VC_COPY_KEY_DIRS`.
+        keys_dir: Source ``.charon/validator_keys`` directory.
+        force: Overwrite when destination already has keystores.
+
+    Returns:
+        Sync result dict (see :func:`sync_charon_keyshares_to_vc`).
+    """
     import shutil
 
     dest_dir = VC_COPY_KEY_DIRS[vc_name]
@@ -943,7 +1005,16 @@ def _sync_import_keyshares(
     keys_dir: str,
     force: bool,
 ) -> Dict[str, object]:
-    """Run client-native import for Lighthouse/Lodestar/Nimbus/Prysm."""
+    """Import Charon key shares via the VC client CLI.
+
+    Args:
+        vc_name: Lighthouse, Lodestar, Nimbus, or Prysm.
+        keys_dir: Source ``.charon/validator_keys`` directory.
+        force: Re-import when destination already has keys.
+
+    Returns:
+        Sync result dict (see :func:`sync_charon_keyshares_to_vc`).
+    """
     src = os.path.abspath(keys_dir)
     if not os.path.isdir(src):
         return {"status": "skipped", "reason": f"no validator_keys dir at {src}"}
@@ -1044,9 +1115,13 @@ def _sync_import_keyshares(
 def resolve_cdvn_checkout(path: str) -> Dict[str, object]:
     """Resolve a CDVN checkout path (directory or ``.env`` file) to migrate assets.
 
+    Args:
+        path: CDVN checkout directory or path to a ``.env`` file inside one.
+
     Returns:
-        Dict with ``root``, ``env_path``, ``charon_dir``, ``has_lock``,
-        ``has_keyshares``, ``compose_file``.
+        Dict with ``root``, ``env_path``, ``charon_dir`` (resolved realpath),
+        ``charon_link``, ``charon_is_symlink``, ``has_lock``, ``has_keyshares``,
+        and ``compose_file``.
     """
     raw = os.path.abspath(os.path.expanduser(path.strip()))
     if not os.path.exists(raw):
