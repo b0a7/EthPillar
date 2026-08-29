@@ -758,7 +758,7 @@ patchValidatorBeaconEndpoint(){
 # Full CDVN → EthPillar migration (CLI + TUI). Detects active EL/CL/VC/MEV.
 migrateCdvnFull(){
     local default_root path_in plan_file moves_file selected_moves line rel src dest
-    local docker_up=0
+    local docker_up=0 _cdvn_env _grafana_port=""
 
     default_root="${HOME}/charon-distributed-validator-node"
     [[ -d "$default_root" ]] || default_root="${HOME}/git/charon-distributed-validator-node"
@@ -887,6 +887,17 @@ PY
     if [[ -f /etc/prometheus/prometheus.yml ]] || [[ -d /etc/grafana ]]; then
         PYTHONPATH="${BASE_DIR}" python3 -m manage.charon_monitoring provision --restart >/dev/null 2>&1 || true
     fi
+    if [[ -d "$path_in" ]]; then
+        _cdvn_env="$path_in/.env"
+    else
+        _cdvn_env="$path_in"
+    fi
+    if [[ -f "$_cdvn_env" ]]; then
+        _grafana_port=$(PYTHONPATH="${BASE_DIR}" python3 -c \
+            "from deploy.cdvn_migrate import apply_cdvn_monitoring_from_env; import sys; p=apply_cdvn_monitoring_from_env(sys.argv[1]); print(p or '')" \
+            "$_cdvn_env")
+        [[ -n "$_grafana_port" ]] && ohai "Grafana http_port set to ${_grafana_port} (from CDVN .env)"
+    fi
 
     if [[ -d /var/lib/charon/.charon/validator_keys ]] \
         && compgen -G "/var/lib/charon/.charon/validator_keys/keystore-*.json" >/dev/null; then
@@ -906,12 +917,17 @@ Import them into the validator client now?" 11 70; then
         fi
     fi
 
+    local _grafana_url="http://127.0.0.1:3000/d/charon_overview/"
+    if [[ -n "${_grafana_port:-}" ]]; then
+        _grafana_url="http://127.0.0.1:${_grafana_port}/d/charon_overview/"
+    fi
+
     whiptail --title "Migrate from CDVN — done" --msgbox \
 "Reminders:
 • Keep CDVN Docker Charon/VC stopped
-• Open TCP 3610 if peers need direct P2P
+• Open your Charon P2P TCP port if peers need direct access (see charon.service)
 • Start order: EL → CL → Charon → VC (as installed)
-• Grafana: http://127.0.0.1:3000/d/charon_overview/ (if monitoring installed)" 14 70
+• Grafana: ${_grafana_url} (if monitoring installed)" 14 70
 }
 
 # Charon TUI menu + legacy alias

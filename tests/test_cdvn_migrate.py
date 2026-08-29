@@ -8,6 +8,8 @@ import pytest
 
 from deploy.cdvn_migrate import (
     DATADIR_MOVES,
+    _grafana_ini_with_http_port,
+    grafana_port_from_env,
     plan_cdvn_migration,
 )
 
@@ -108,7 +110,7 @@ def test_plan_rewrites_docker_bn(tmp_path: Path):
     assert any("Rewrote" in w or "lighthouse" in w for w in plan.warnings)
 
 
-def test_plan_unknown_el_fails(tmp_path: Path):
+def test_plan_unknown_el_treated_as_external(tmp_path: Path):
     root = _write_cdvn(
         tmp_path,
         "NETWORK=mainnet\n"
@@ -117,8 +119,35 @@ def test_plan_unknown_el_fails(tmp_path: Path):
         "VC=vc-lodestar\n"
         "MEV=mev-none\n",
     )
-    with pytest.raises(ValueError, match="Unsupported CDVN EL"):
+    with pytest.raises(ValueError, match="unsupported"):
         plan_cdvn_migration(str(root))
+
+
+def test_plan_custom_external_profiles_vc_only(tmp_path: Path):
+    """Unmapped EL/CL/MEV profiles → external stack (e.g. rp-external)."""
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=rp-external\n"
+        "CL=rp-external\n"
+        "VC=vc-teku\n"
+        "MEV=rp-external\n"
+        "BUILDER_API_ENABLED=true\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://100.116.116.75:5052\n"
+        "MONITORING_PORT_GRAFANA=3701\n",
+    )
+    plan = plan_cdvn_migration(str(root))
+    assert plan.role == "Validator Client Only"
+    assert plan.ec_name is None
+    assert plan.cc_name is None
+    assert plan.vc_name == "Teku"
+    assert plan.with_mevboost is False
+    assert plan.with_builder_api is True
+    assert plan.grafana_port == 3701
+    assert plan.bn_address == "http://100.116.116.75:5052"
+    assert any("rp-external" in w and "EL" in w for w in plan.warnings)
+    assert any("rp-external" in w and "CL" in w for w in plan.warnings)
+    assert any("rp-external" in w and "MEV" in w for w in plan.warnings)
 
 
 def test_plan_cl_without_el_fails(tmp_path: Path):
@@ -170,3 +199,16 @@ def test_datadir_map_covers_stock_clients():
     assert "data/nethermind" in DATADIR_MOVES
     assert "data/reth" in DATADIR_MOVES
     assert DATADIR_MOVES["data/lodestar"][0] == "lodestar_validator"
+
+
+def test_grafana_port_from_env():
+    assert grafana_port_from_env({"MONITORING_PORT_GRAFANA": "3701"}) == 3701
+    assert grafana_port_from_env({}) is None
+    assert grafana_port_from_env({"MONITORING_PORT_GRAFANA": "0"}) is None
+
+
+def test_grafana_ini_http_port_rewrite():
+    content = "[server]\nhttp_port = 3000\ndomain = localhost\n"
+    updated = _grafana_ini_with_http_port(content, 3701)
+    assert "http_port = 3701" in updated
+    assert "http_port = 3000" not in updated

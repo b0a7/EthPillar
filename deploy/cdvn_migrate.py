@@ -42,7 +42,7 @@ VC_PROFILE_MAP: Dict[str, str] = {
     "vc-nimbus": "Nimbus",
 }
 MEV_LOCAL = frozenset({"mev-mevboost"})
-MEV_NONE = frozenset({"mev-none", ""})
+MEV_NONE = frozenset({"mev-none", "none", ""})
 
 # Relative CDVN ./data path → (EthPillar datadir under BASE_DATA_DIR, systemd user)
 DATADIR_MOVES: Dict[str, Tuple[str, str]] = {
@@ -114,6 +114,7 @@ class CdvnMigrationPlan:
     cl_profile: str = ""
     vc_profile: str = ""
     mev_profile: str = ""
+    grafana_port: Optional[int] = None
 
     def summary(self) -> str:
         """Human-readable plan for confirmation / dry-run."""
@@ -130,6 +131,7 @@ class CdvnMigrationPlan:
             f"(local_mevboost={self.with_mevboost}, builder_api={self.with_builder_api})",
             f"  Charon:       {self.with_charon} (lock={self.has_lock}, keys={self.has_keyshares})",
             f"  BN address:   {self.bn_address or '(local via EthPillar CC)'}",
+            f"  Grafana port: {self.grafana_port or '(EthPillar default 3000)'}",
             f"  Compose:      {self.compose_file or '(none)'}",
             f"  Docker up:    {self.docker_running}",
             "",
@@ -193,6 +195,128 @@ def _truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _resolve_ec_name(el_raw: str) -> Tuple[Optional[str], List[str]]:
+    """Map CDVN ``EL`` profile to a local EthPillar EC name, or none (external).
+
+    Stock CDVN compose may list profiles EthPillar does not install locally;
+    unmapped values are treated as external EL with a plan warning.
+    """
+    warnings: List[str] = []
+    if _is_none_profile(el_raw, "el"):
+        return None, warnings
+    mapped = EL_PROFILE_MAP.get(el_raw)
+    if mapped:
+        return mapped, warnings
+    warnings.append(
+        f"EL profile {el_raw!r} is not a supported local client "
+        f"({', '.join(sorted(EL_PROFILE_MAP))}); treating as external (no local EL)."
+    )
+    return None, warnings
+
+
+def _resolve_cc_name(cl_raw: str) -> Tuple[Optional[str], List[str]]:
+    """Map CDVN ``CL`` profile to a local EthPillar CC name, or none (external)."""
+    warnings: List[str] = []
+    if _is_none_profile(cl_raw, "cl"):
+        return None, warnings
+    mapped = CL_PROFILE_MAP.get(cl_raw)
+    if mapped:
+        return mapped, warnings
+    warnings.append(
+        f"CL profile {cl_raw!r} is not a supported local client "
+        f"({', '.join(sorted(CL_PROFILE_MAP))}); treating as external (no local CL)."
+    )
+    return None, warnings
+
+
+def _resolve_local_mevboost(
+    mev_raw: str, *, has_local_el: bool, has_local_cl: bool
+) -> Tuple[bool, List[str]]:
+    """Return whether to install local ``mevboost.service`` from the MEV profile."""
+    warnings: List[str] = []
+    if mev_raw in MEV_LOCAL:
+        return has_local_el and has_local_cl, warnings
+    if mev_raw in MEV_NONE or _is_none_profile(mev_raw, "mev"):
+        return False, warnings
+    warnings.append(
+        f"MEV profile {mev_raw!r} is not local mev-mevboost; "
+        "treating as external/no local MEV-Boost."
+    )
+    return False, warnings
+
+
+def grafana_port_from_env(env: Dict[str, str]) -> Optional[int]:
+    """Parse CDVN ``MONITORING_PORT_GRAFANA`` when set to a valid TCP port."""
+    raw = (env.get("MONITORING_PORT_GRAFANA") or "").strip()
+    if not raw:
+        return None
+    try:
+        port = int(raw)
+    except ValueError:
+        return None
+    if port < 1 or port > 65535:
+        return None
+    return port
+
+
+def apply_grafana_http_port(port: int) -> bool:
+    """Set Grafana ``http_port`` in ``/etc/grafana/grafana.ini`` and restart.
+
+    Returns True when the port was applied (ini updated or already matched).
+    """
+    ini = Path("/etc/grafana/grafana.ini")
+    if not ini.is_file():
+        return False
+    try:
+        content = ini.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    tmp = Path("/tmp/ethpillar-grafana.ini")
+    tmp.write_text(_grafana_ini_with_http_port(content, port), encoding="utf-8")
+    subprocess.run(["sudo", "cp", str(tmp), str(ini)], check=True)
+    subprocess.run(
+        ["sudo", "systemctl", "try-restart", "grafana-server"],
+        check=False,
+    )
+    return True
+
+
+def _grafana_ini_with_http_port(content: str, port: int) -> str:
+    """Return ``grafana.ini`` content with ``[server] http_port`` set."""
+    new_line = f"http_port = {port}\n"
+    out: List[str] = []
+    in_server = False
+    replaced = False
+    for line in content.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_server and not replaced:
+                out.append(new_line)
+                replaced = True
+            in_server = stripped.lower() == "[server]"
+            out.append(line)
+            continue
+        if in_server and stripped.startswith("http_port"):
+            out.append(new_line)
+            replaced = True
+            continue
+        out.append(line)
+    if in_server and not replaced:
+        out.append(new_line)
+    return "".join(out)
+
+
+def apply_cdvn_monitoring_from_env(env_path: str) -> Optional[int]:
+    """Apply CDVN monitoring settings (Grafana port) after EthPillar monitoring install."""
+    env = parse_dotenv(env_path)
+    port = grafana_port_from_env(env)
+    if port is None:
+        return None
+    apply_grafana_http_port(port)
+    return port
+
+
 def _dir_nonempty(path: str) -> bool:
     if not os.path.isdir(path):
         return False
@@ -252,25 +376,14 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
     vc_raw = _norm_profile(env.get("VC", ""))
     mev_raw = _norm_profile(env.get("MEV", ""))
 
-    el_none = _is_none_profile(el_raw, "el")
-    cl_none = _is_none_profile(cl_raw, "cl")
+    warnings: List[str] = []
+    ec_name, el_warns = _resolve_ec_name(el_raw)
+    cc_name, cl_warns = _resolve_cc_name(cl_raw)
+    warnings.extend(el_warns)
+    warnings.extend(cl_warns)
 
-    ec_name: Optional[str] = None
-    cc_name: Optional[str] = None
-    if not el_none:
-        if el_raw not in EL_PROFILE_MAP:
-            raise ValueError(
-                f"Unsupported CDVN EL profile {el_raw!r}. "
-                f"Supported: {', '.join(sorted(EL_PROFILE_MAP))} or el-none."
-            )
-        ec_name = EL_PROFILE_MAP[el_raw]
-    if not cl_none:
-        if cl_raw not in CL_PROFILE_MAP:
-            raise ValueError(
-                f"Unsupported CDVN CL profile {cl_raw!r}. "
-                f"Supported: {', '.join(sorted(CL_PROFILE_MAP))} or cl-none."
-            )
-        cc_name = CL_PROFILE_MAP[cl_raw]
+    el_none = ec_name is None
+    cl_none = cc_name is None
 
     if _is_none_profile(vc_raw, "vc"):
         raise ValueError("VC profile is unset or vc-none; Charon migrate requires a signer VC.")
@@ -293,7 +406,6 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         )
 
     bn_address = ""
-    warnings: List[str] = []
     bn_vc_warn = lodestar_bn_vc_incompatibility_message(cc_name, vc_name)
     if bn_vc_warn:
         warnings.append(bn_vc_warn)
@@ -321,9 +433,13 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
             )
 
     with_charon = True
-    with_mevboost = mev_raw in MEV_LOCAL and not el_none and not cl_none
+    with_mevboost, mev_warns = _resolve_local_mevboost(
+        mev_raw, has_local_el=not el_none, has_local_cl=not cl_none
+    )
+    warnings.extend(mev_warns)
     builder_raw = env.get("CHARON_BUILDER_API") or env.get("BUILDER_API_ENABLED") or ""
     with_builder_api = with_mevboost or (bool(builder_raw) and _truthy(builder_raw))
+    grafana_port = grafana_port_from_env(env)
 
     compose_file = info.get("compose_file")
     docker_running = detect_docker_compose_running(
@@ -336,9 +452,13 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         if not _dir_nonempty(full):
             continue
         if kind == "EL" and el_none:
-            warnings.append(f"Found {rel} but EL={el_raw or 'unset'} (el-none); not migrating that dir.")
+            label = el_raw or "unset"
+            hint = "el-none" if _is_none_profile(el_raw, "el") else "external/unmapped EL"
+            warnings.append(f"Found {rel} but EL={label} ({hint}); not migrating that dir.")
         if kind == "CL" and cl_none:
-            warnings.append(f"Found {rel} but CL={cl_raw or 'unset'} (cl-none); not migrating that dir.")
+            label = cl_raw or "unset"
+            hint = "cl-none" if _is_none_profile(cl_raw, "cl") else "external/unmapped CL"
+            warnings.append(f"Found {rel} but CL={label} ({hint}); not migrating that dir.")
 
     datadir_moves: List[DatadirMove] = []
     active_rels: List[str] = []
@@ -425,6 +545,7 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         cl_profile=cl_raw,
         vc_profile=vc_raw,
         mev_profile=mev_raw,
+        grafana_port=grafana_port,
     )
 
 
