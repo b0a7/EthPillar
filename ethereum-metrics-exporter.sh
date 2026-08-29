@@ -37,16 +37,10 @@ function upgradeBinaries(){
 	fi
 }
 
-# Show a recent log snapshot (not follow mode — Enter does not exit journalctl -f).
+# Asks to view logs
 function promptViewLogs(){
-    if whiptail --title "View Logs" --yesno \
-"Show recent ethereum-metrics-exporter logs?
-
-A short snapshot is printed; you return here automatically when it finishes." 11 78; then
-      echo ""
-      view_journal_logs -u ethereum-metrics-exporter -n 40 --no-pager || true
-      echo ""
-      whiptail --title "View Logs" --msgbox "Log snapshot complete." 8 60
+    if whiptail --title "View Logs" --yesno "Would you like to view logs and confirm everything is running properly?" 8 78; then
+  		view_journal_logs -fu ethereum-metrics-exporter
     fi
 }
 
@@ -93,17 +87,14 @@ function removeAll() {
 
 # Installs Grafana, Prometheus, Node-Exporter
 function installGrafanaPrometheus(){
-	sudo apt-get install -y software-properties-common wget apt-transport-https gnupg
-	sudo mkdir -p /etc/apt/keyrings
-	sudo rm -f /usr/share/keyrings/grafana.key /etc/apt/keyrings/grafana.asc
-	sudo wget -q -O /etc/apt/keyrings/grafana.asc https://apt.grafana.com/gpg-full.key
-	sudo chmod 644 /etc/apt/keyrings/grafana.asc
-	echo "deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+	sudo apt-get install -y software-properties-common wget apt-transport-https
+	sudo wget -q -O /usr/share/keyrings/grafana.key https://apt.grafana.com/gpg.key
+	echo "deb [signed-by=/usr/share/keyrings/grafana.key] https://apt.grafana.com stable main" | sudo tee -a /etc/apt/sources.list.d/grafana.list
 	sudo apt-get update && sudo apt-get install -y grafana prometheus prometheus-node-exporter
 	sudo systemctl enable grafana-server prometheus prometheus-node-exporter
 	sudo systemctl restart grafana-server prometheus prometheus-node-exporter
 
-# Setup prometheus.yml config file (Charon scrape added later if charon.service exists)
+# Setup prometheus.yml config file
 sudo bash -c "cat << 'EOF' > ${PROMETHEUS_DIR}/prometheus.yml
 rule_files:
   - alert.rules.yml
