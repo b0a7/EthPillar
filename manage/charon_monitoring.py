@@ -20,6 +20,17 @@ CHARON_OVERVIEW_URL = (
     "https://raw.githubusercontent.com/ObolNetwork/charon-distributed-validator-node/"
     "main/grafana/dashboards/charon_overview_dashboard.json"
 )
+CDVN_DASHBOARDS_BASE = (
+    "https://raw.githubusercontent.com/ObolNetwork/charon-distributed-validator-node/"
+    "main/grafana/dashboards"
+)
+# Same JSON files CDVN Docker Grafana provisions (Overview, Cluster, Node, Logs).
+CDVN_GRAFANA_DASHBOARDS = (
+    "charon_overview_dashboard.json",
+    "cluster_dashboard.json",
+    "node_overview_dashboard.json",
+    "logs_dashboard.json",
+)
 CHARON_SCRAPE_JOB = (
     "   - job_name: 'charon'\n"
     "     static_configs:\n"
@@ -114,17 +125,39 @@ def ensure_charon_scrape(prometheus_yml: Path) -> bool:
     return True
 
 
-def download_charon_overview_dashboard(
-    dest: Path,
-    url: str = CHARON_OVERVIEW_URL,
-) -> None:
-    """Download Obol Charon Overview dashboard JSON to ``dest``."""
+def download_charon_dashboard(dest: Path, url: str) -> None:
+    """Download a Grafana dashboard JSON to ``dest``."""
     req = urllib.request.Request(url, headers={"User-Agent": "ethpillar"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = resp.read()
     if not data:
         raise RuntimeError(f"Empty response downloading Charon dashboard from {url}")
     _write_bytes(dest, data)
+
+
+def download_charon_overview_dashboard(
+    dest: Path,
+    url: str = CHARON_OVERVIEW_URL,
+) -> None:
+    """Download Obol Charon Overview dashboard JSON to ``dest``."""
+    download_charon_dashboard(dest, url)
+
+
+def provision_cdvn_grafana_dashboards(
+    dashboards_dir: Path,
+    base_url: str = CDVN_DASHBOARDS_BASE,
+    filenames: tuple[str, ...] = CDVN_GRAFANA_DASHBOARDS,
+) -> int:
+    """Provision the same Grafana dashboards bundled with CDVN.
+
+    Returns:
+        Count of dashboard files written.
+    """
+    written = 0
+    for name in filenames:
+        download_charon_dashboard(dashboards_dir / name, f"{base_url.rstrip('/')}/{name}")
+        written += 1
+    return written
 
 
 def provision_charon_overview_dashboard(
@@ -141,12 +174,29 @@ def provision_charon_overview_dashboard(
     return True
 
 
+def provision_charon_dashboards(
+    dashboards_dir: Path,
+    *,
+    all_cdvn: bool = True,
+    dashboard_url: str = CHARON_OVERVIEW_URL,
+) -> bool:
+    """Write Charon Grafana dashboards (CDVN bundle or Overview-only).
+
+    Returns:
+        True if at least one dashboard file was written.
+    """
+    if all_cdvn:
+        return provision_cdvn_grafana_dashboards(dashboards_dir) > 0
+    return provision_charon_overview_dashboard(dashboards_dir, url=dashboard_url)
+
+
 def provision_charon_monitoring(
     prometheus_yml: Path = DEFAULT_PROMETHEUS_YML,
     grafana_dashboards: Path = DEFAULT_GRAFANA_DASHBOARDS,
     datasources_yml: Path = DEFAULT_DATASOURCES_YML,
     restart: bool = False,
     dashboard_url: str = CHARON_OVERVIEW_URL,
+    all_cdvn_dashboards: bool = True,
 ) -> Dict[str, bool]:
     """Ensure Charon scrape + Overview dashboard when monitoring is present.
 
@@ -164,8 +214,10 @@ def provision_charon_monitoring(
     if grafana_dashboards.is_dir() or grafana_etc.is_dir():
         results["datasource"] = ensure_prometheus_datasource_uid(datasources_yml)
         try:
-            results["dashboard"] = provision_charon_overview_dashboard(
-                grafana_dashboards, url=dashboard_url
+            results["dashboard"] = provision_charon_dashboards(
+                grafana_dashboards,
+                all_cdvn=all_cdvn_dashboards,
+                dashboard_url=dashboard_url,
             )
         except Exception as exc:  # noqa: BLE001 — surface soft failure to caller
             print(f"Warning: Charon Grafana dashboard provision failed: {exc}", file=sys.stderr)
@@ -197,6 +249,11 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--prometheus-yml", type=Path, default=DEFAULT_PROMETHEUS_YML)
     p.add_argument("--grafana-dashboards", type=Path, default=DEFAULT_GRAFANA_DASHBOARDS)
     p.add_argument("--dashboard-url", default=CHARON_OVERVIEW_URL)
+    p.add_argument(
+        "--overview-only",
+        action="store_true",
+        help="Provision Charon Overview only (default: full CDVN dashboard bundle)",
+    )
     p.add_argument("--restart", action="store_true", help="try-restart prometheus if scrape changed")
 
     args = parser.parse_args(argv)
@@ -206,6 +263,7 @@ def main(argv: Optional[list] = None) -> int:
             grafana_dashboards=args.grafana_dashboards,
             restart=args.restart,
             dashboard_url=args.dashboard_url,
+            all_cdvn_dashboards=not args.overview_only,
         )
         print(
             "charon monitoring: "

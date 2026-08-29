@@ -782,7 +782,7 @@ migrateCdvnFull(){
   • Install matching EthPillar clients (if needed)
   • Move Docker datadirs into /var/lib when confirmed
   • Overlay .charon + Charon systemd flags
-  • Fresh EthPillar monitoring (not CDVN Grafana DB)
+  • Fresh EthPillar monitoring; CDVN dashboard JSONs re-provisioned (no historical DB)
 
 WARNING: Stop CDVN Docker Compose first (slashing risk).
 
@@ -880,7 +880,7 @@ PY
     # Fresh EthPillar monitoring + Charon dashboard
     if [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then
         if whiptail --title "Monitoring" --yesno \
-"Install EthPillar Monitoring (Grafana/Prometheus) for Charon Overview?" 10 70; then
+"Install EthPillar Monitoring (Grafana/Prometheus) with CDVN Charon dashboards?" 10 70; then
             runScript ethereum-metrics-exporter.sh -i
         fi
     fi
@@ -927,7 +927,9 @@ Import them into the validator client now?" 11 70; then
 • Keep CDVN Docker Charon/VC stopped
 • Open your Charon P2P TCP port if peers need direct access (see charon.service)
 • Start order: EL → CL → Charon → VC (as installed)
-• Grafana: ${_grafana_url} (if monitoring installed)" 14 70
+• Grafana (CDVN dashboards): ${_grafana_url}
+  Also: /d/clusterview-user/ /d/node_overview/
+  Logs dashboard needs Loki (not installed by EthPillar)" 16 70
 }
 
 # Charon TUI menu + legacy alias

@@ -4,9 +4,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from manage.charon_monitoring import (
+    CDVN_GRAFANA_DASHBOARDS,
     CHARON_SCRAPE_JOB,
     ensure_charon_scrape,
     has_charon_scrape,
+    provision_cdvn_grafana_dashboards,
     provision_charon_monitoring,
     provision_charon_overview_dashboard,
 )
@@ -66,6 +68,21 @@ def test_provision_dashboard_writes_file(tmp_path: Path):
     ):
         assert provision_charon_overview_dashboard(dash_dir) is True
         assert (dash_dir / "charon_overview_dashboard.json").read_bytes() == payload
+
+
+def test_provision_cdvn_dashboard_bundle(tmp_path: Path):
+    dash_dir = tmp_path / "dashboards"
+    seen: list[str] = []
+
+    def _fake_download(dest: Path, url: str) -> None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        seen.append(dest.name)
+        dest.write_bytes(b'{"uid":"x"}')
+
+    with patch("manage.charon_monitoring.download_charon_dashboard", side_effect=_fake_download):
+        count = provision_cdvn_grafana_dashboards(dash_dir)
+    assert count == 4
+    assert seen == list(CDVN_GRAFANA_DASHBOARDS)
 
 
 def test_ensure_prometheus_datasource_uid_inserts(tmp_path: Path):

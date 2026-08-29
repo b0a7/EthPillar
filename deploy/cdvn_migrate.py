@@ -22,7 +22,11 @@ from deploy.charon import (
 from deploy.orchestrator import lodestar_bn_vc_incompatibility_message
 from deploy.common import BASE_DATA_DIR
 
-# Stock CDVN compose profile tokens → EthPillar client names.
+# Stock CDVN compose profile tokens → EthPillar client names for *local* migrate.
+# Upstream CDVN compose-el.yml only defines el-nethermind and el-reth; other EL=
+# values (custom/external) are treated as no local EL. EthPillar itself installs
+# Besu, Geth, Erigon, Ethrex, etc. via deploy/orchestrator — expand this map when
+# CDVN adds matching compose profiles.
 EL_PROFILE_MAP: Dict[str, str] = {
     "el-nethermind": "Nethermind",
     "el-reth": "Reth",
