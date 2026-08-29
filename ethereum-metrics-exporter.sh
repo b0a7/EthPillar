@@ -93,9 +93,12 @@ function removeAll() {
 
 # Installs Grafana, Prometheus, Node-Exporter
 function installGrafanaPrometheus(){
-	sudo apt-get install -y software-properties-common wget apt-transport-https
-	sudo wget -q -O /usr/share/keyrings/grafana.key https://apt.grafana.com/gpg.key
-	echo "deb [signed-by=/usr/share/keyrings/grafana.key] https://apt.grafana.com stable main" | sudo tee -a /etc/apt/sources.list.d/grafana.list
+	sudo apt-get install -y software-properties-common wget apt-transport-https gnupg
+	sudo mkdir -p /etc/apt/keyrings
+	sudo rm -f /usr/share/keyrings/grafana.key /etc/apt/keyrings/grafana.asc
+	sudo wget -q -O /etc/apt/keyrings/grafana.asc https://apt.grafana.com/gpg-full.key
+	sudo chmod 644 /etc/apt/keyrings/grafana.asc
+	echo "deb [signed-by=/etc/apt/keyrings/grafana.asc] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
 	sudo apt-get update && sudo apt-get install -y grafana prometheus prometheus-node-exporter
 	sudo systemctl enable grafana-server prometheus prometheus-node-exporter
 	sudo systemctl restart grafana-server prometheus prometheus-node-exporter
