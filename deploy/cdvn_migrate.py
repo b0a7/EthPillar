@@ -172,7 +172,7 @@ class CdvnMigrationPlan:
             f"  Compose:      {self.compose_file or '(none)'}",
             f"  Docker up:    {self.docker_running}",
             "",
-            "Datadir moves:",
+            "Optional datadir moves (EL/CL/VC Docker data/):",
         ]
         if not self.datadir_moves:
             lines.append("  (none)")
@@ -182,6 +182,16 @@ class CdvnMigrationPlan:
                 lines.append(f"    →   {move.dest}  (owner={move.owner})")
             else:
                 lines.append(f"  SKIP  {move.src}  ({move.skip_reason})")
+        if self.has_lock and self.charon_dir:
+            dest_charon = os.path.join(BASE_DATA_DIR, "charon", ".charon")
+            lines.extend(
+                [
+                    "",
+                    "Charon cluster overlay (always copied; CDVN checkout preserved):",
+                    f"  COPY  {self.charon_dir}",
+                    f"    →   {dest_charon}  (owner=charon)",
+                ]
+            )
         if self.warnings:
             lines.append("")
             lines.append("Warnings:")
@@ -785,22 +795,6 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
             )
         )
 
-    # Prefer move for .charon when present (shown in plan; apply via copy_charon if move fails)
-    if charon_dir and has_lock:
-        dest_charon = os.path.join(BASE_DATA_DIR, "charon", ".charon")
-        skip = ""
-        if os.path.isfile(os.path.join(dest_charon, "cluster-lock.json")):
-            skip = f"destination already has cluster-lock.json ({dest_charon})"
-        datadir_moves.append(
-            DatadirMove(
-                relative_src=".charon",
-                src=str(charon_dir),
-                dest=dest_charon,
-                owner="charon",
-                skip_reason=skip,
-            )
-        )
-
     fee_recipient = _fee_recipient_from_cdvn(env, str(charon_dir) if charon_dir else None)
     if not fee_recipient and vc_name:
         warnings.append(
@@ -1051,28 +1045,16 @@ def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False
         )
 
     copy_only = charon_cluster_copy_only(plan.root, plan.charon_dir)
+    # Always copy during migrate — never move — so CDVN checkout stays intact if a
+    # later step fails or the operator re-runs migrate.
+    subprocess.run(["sudo", "mkdir", "-p", os.path.dirname(dest)], check=True)
+    if os.path.exists(dest) and not _dir_nonempty(dest):
+        subprocess.run(["sudo", "rmdir", dest], check=False)
+    result = copy_charon_cluster(plan.charon_dir, force=False)
     if copy_only:
-        result = copy_charon_cluster(plan.charon_dir, force=False)
         print(f"Copied {plan.charon_dir} → {dest} (.charon symlink/outside checkout)")
     else:
-        try:
-            subprocess.run(["sudo", "mkdir", "-p", os.path.dirname(dest)], check=True)
-            if os.path.exists(dest) and not _dir_nonempty(dest):
-                subprocess.run(["sudo", "rmdir", dest], check=False)
-            if not os.path.exists(dest):
-                subprocess.run(["sudo", "mv", plan.charon_dir, dest], check=True)
-                subprocess.run(
-                    ["sudo", "chown", "-R", "charon:charon", os.path.dirname(dest)],
-                    check=False,
-                )
-                print(f"Moved {plan.charon_dir} → {dest}")
-                result = {"status": "copied", "dest": dest}
-            else:
-                result = copy_charon_cluster(plan.charon_dir, force=False)
-                print(f"Copied {plan.charon_dir} → {dest} (destination existed)")
-        except (OSError, subprocess.CalledProcessError) as exc:
-            print(f"Charon move failed ({exc}); falling back to copy.")
-            result = copy_charon_cluster(plan.charon_dir, force=False)
+        print(f"Copied {plan.charon_dir} → {dest} (CDVN checkout preserved)")
 
     if result.get("status") == "skipped":
         raise RuntimeError(

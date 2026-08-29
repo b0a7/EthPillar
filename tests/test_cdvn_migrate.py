@@ -102,9 +102,10 @@ def test_plan_symlink_charon(tmp_path: Path):
     plan = plan_cdvn_migration(str(root))
     assert plan.charon_is_symlink is True
     assert plan.charon_dir == str(real.resolve())
-    assert "→" in plan.summary()
-    charon_move = next(m for m in plan.datadir_moves if m.relative_src == ".charon")
-    assert charon_move.src == str(real.resolve())
+    summary = plan.summary()
+    assert "Charon cluster overlay" in summary
+    assert "COPY" in summary
+    assert str(real.resolve()) in summary
 
 
 def test_plan_validator_only_external_bn(tmp_path: Path):
