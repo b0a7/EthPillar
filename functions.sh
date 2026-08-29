@@ -913,13 +913,13 @@ migrateCdvnFull(){
     fi
 
     if ! whiptail --title "Migrate from CDVN" --yesno \
-"Migrate charon-distributed-validator-node → EthPillar:
+"Migrate charon-distributed-validator-node to EthPillar:
 
-  • Detect active EL / CL / VC / MEV / network from .env
-  • Install matching EthPillar clients (if needed)
-  • Move Docker datadirs into /var/lib when confirmed
-  • Overlay .charon + Charon systemd flags
-  • Fresh EthPillar monitoring; CDVN dashboard JSONs re-provisioned (no historical DB)
+  - Detect active EL / CL / VC / MEV / network from .env
+  - Install matching EthPillar clients (if needed)
+  - Move Docker datadirs into /var/lib when confirmed
+  - Overlay .charon + Charon systemd flags
+  - Fresh EthPillar monitoring; CDVN dashboards re-provisioned
 
 WARNING: Stop CDVN Docker Compose first (slashing risk).
 
@@ -941,7 +941,7 @@ Continue?" 20 78; then
     local rc=$?
     set -e
     if [[ $rc -eq 2 ]]; then
-        whiptail --title "Migrate from CDVN — abort" --msgbox \
+        whiptail --title "CDVN migration abort" --msgbox \
 "CDVN Docker is still running, or its status could not be verified
 (missing docker/docker-compose, permission denied, or timeout).
 
@@ -954,13 +954,13 @@ Then: ethpillar --migrate_cdvn" 16 72
         return 1
     fi
     if [[ $rc -ne 0 ]]; then
-        whiptail --title "Migrate from CDVN — error" --msgbox \
+        whiptail --title "CDVN migration error" --msgbox \
 "$(cat /tmp/ethpillar-cdvn-migrate-err 2>/dev/null || echo "Failed to build plan.")" 14 78
         rm -f "$plan_file"
         return 1
     fi
 
-    whiptail --title "Migrate from CDVN — plan" --textbox "$plan_file" 24 88
+    whiptail --title "CDVN migration plan" --textbox "$plan_file" 24 88
 
     _migrate_log_dir="${HOME}/.ethpillar/logs"
     mkdir -p "$_migrate_log_dir"
@@ -1056,7 +1056,7 @@ PY
     set -e
     _migrateCdvnLog "deploy.cdvn_migrate exit=${rc}"
     if [[ $rc -ne 0 ]]; then
-        whiptail --title "Migrate from CDVN — failed" --msgbox \
+        whiptail --title "CDVN migration failed" --msgbox \
 "Migration failed (exit ${rc}).
 
 Full log:
@@ -1086,7 +1086,7 @@ if result.get("status") == "skipped" and not str(result.get("reason", "")).start
 PY
         rc=${PIPESTATUS[0]}
         if [[ $rc -ne 0 ]]; then
-            whiptail --title "Migrate from CDVN — failed" --msgbox \
+            whiptail --title "CDVN migration failed" --msgbox \
 "Key share import failed. See log:
 ${_migrate_log}" 12 78
             return 1
@@ -1113,29 +1113,34 @@ ${_migrate_log}" 12 78
     fi
     if [[ -f "$_cdvn_env" ]]; then
         _grafana_port=$(PYTHONPATH="${BASE_DIR}" python3 -c \
-            "from deploy.cdvn_migrate import apply_cdvn_monitoring_from_env; import sys; p=apply_cdvn_monitoring_from_env(sys.argv[1]); print(p or '')" \
+            "from deploy.cdvn_migrate import apply_cdvn_monitoring_from_env; import sys; print(apply_cdvn_monitoring_from_env(sys.argv[1]) or '')" \
             "$_cdvn_env")
-        [[ -n "$_grafana_port" ]] && ohai "Grafana http_port set to ${_grafana_port} (from CDVN .env)"
+    elif [[ -d /etc/grafana ]]; then
+        _grafana_port=$(PYTHONPATH="${BASE_DIR}" python3 -c \
+            "from deploy.cdvn_migrate import read_grafana_http_port; print(read_grafana_http_port())")
+    fi
+    if [[ -n "${_grafana_port:-}" ]]; then
+        _migrateCdvnLog "Grafana http_port: ${_grafana_port}"
+        ohai "Grafana: http://127.0.0.1:${_grafana_port}/"
     fi
 
     _migrateCdvnPromptStartMonitoring
 
-    local _grafana_url="http://127.0.0.1:3000/d/charon_overview/"
-    if [[ -n "${_grafana_port:-}" ]]; then
-        _grafana_url="http://127.0.0.1:${_grafana_port}/d/charon_overview/"
-    fi
+    local _grafana_url="http://127.0.0.1:${_grafana_port:-3000}/d/charon_overview/"
 
-    whiptail --title "Migrate from CDVN — done" --msgbox \
+    whiptail --title "CDVN migration done" --msgbox \
 "Reminders:
-• Keep CDVN Docker Charon/VC stopped
-• Open your Charon P2P TCP port if peers need direct access (see charon.service)
-• Start order: EL → CL → Charon → VC (as installed)
-• Grafana (CDVN dashboards): ${_grafana_url}
-  Also: /d/clusterview-user/ /d/node_overview/
-  Logs dashboard needs Loki (not installed by EthPillar)
+- Keep CDVN Docker Charon/VC stopped
+- Open Charon P2P TCP if peers need access
+  (port in charon.service)
+- Start order: EL -> CL -> Charon -> VC
+- Grafana Charon dashboards:
+  ${_grafana_url}
+  Also: clusterview-user, node_overview
+- Logs dashboard needs Loki (not installed)
 
 Migration log:
-${_migrate_log}" 18 78
+${_migrate_log}" 20 76
 }
 
 # Charon TUI menu + legacy alias

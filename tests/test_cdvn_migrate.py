@@ -474,3 +474,38 @@ def test_grafana_ini_http_port_rewrite():
     updated = _grafana_ini_with_http_port(content, 3701)
     assert "http_port = 3701" in updated
     assert "http_port = 3000" not in updated
+
+
+def test_grafana_ini_http_port_rewrite_commented_default():
+    content = "[server]\n;http_port = 3000\ndomain = localhost\n"
+    updated = _grafana_ini_with_http_port(content, 3701)
+    assert "http_port = 3701" in updated
+    assert ";http_port = 3000" not in updated
+
+
+def test_parse_grafana_http_port_from_ini():
+    from deploy.cdvn_migrate import _parse_grafana_http_port_from_ini, read_grafana_http_port
+
+    content = "[server]\n;http_port = 3000\nhttp_port = 3701\n"
+    assert _parse_grafana_http_port_from_ini(content) == 3701
+    assert read_grafana_http_port() == 3000  # no grafana.ini in test env
+
+
+def test_apply_cdvn_monitoring_from_env_reads_effective_port(monkeypatch, tmp_path):
+    from deploy.cdvn_migrate import apply_cdvn_monitoring_from_env
+
+    env = tmp_path / ".env"
+    env.write_text("MONITORING_PORT_GRAFANA=3701\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "deploy.cdvn_migrate.apply_grafana_http_port",
+        lambda port: port == 3701,
+    )
+    monkeypatch.setattr(
+        "deploy.cdvn_migrate._read_grafana_ini",
+        lambda: "[server]\nhttp_port = 3000\n",
+    )
+    monkeypatch.setattr(
+        "deploy.cdvn_migrate.read_grafana_http_port",
+        lambda default=3000: 3000,
+    )
+    assert apply_cdvn_monitoring_from_env(str(env)) == 3000

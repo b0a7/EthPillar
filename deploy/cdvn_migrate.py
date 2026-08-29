@@ -438,24 +438,70 @@ def grafana_port_from_env(env: Dict[str, str]) -> Optional[int]:
     return port
 
 
+def _read_grafana_ini() -> Optional[str]:
+    """Read ``/etc/grafana/grafana.ini`` (directly or via sudo when needed)."""
+    ini = Path("/etc/grafana/grafana.ini")
+    if ini.is_file():
+        try:
+            return ini.read_text(encoding="utf-8")
+        except OSError:
+            pass
+    result = subprocess.run(
+        ["sudo", "cat", str(ini)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode == 0 and result.stdout:
+        return result.stdout
+    return None
+
+
+def _parse_grafana_http_port_from_ini(content: str) -> Optional[int]:
+    """Return active ``http_port`` from ``grafana.ini`` ``[server]`` section."""
+    in_server = False
+    commented: Optional[int] = None
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_server = stripped.lower() == "[server]"
+            continue
+        if not in_server:
+            continue
+        match = re.match(r"^;?\s*http_port\s*=\s*(\d+)", stripped)
+        if not match:
+            continue
+        port = int(match.group(1))
+        if stripped.startswith(";"):
+            commented = port
+        else:
+            return port
+    return commented
+
+
+def read_grafana_http_port(default: int = 3000) -> int:
+    """Return Grafana ``http_port`` from ``grafana.ini``, or *default* when unset."""
+    content = _read_grafana_ini()
+    if content is None:
+        return default
+    port = _parse_grafana_http_port_from_ini(content)
+    return port if port is not None else default
+
+
 def apply_grafana_http_port(port: int) -> bool:
     """Set Grafana ``http_port`` in ``/etc/grafana/grafana.ini`` and restart.
 
     Returns True when the port was applied (ini updated or already matched).
     """
-    ini = Path("/etc/grafana/grafana.ini")
-    if not ini.is_file():
-        return False
-    try:
-        content = ini.read_text(encoding="utf-8")
-    except OSError:
+    content = _read_grafana_ini()
+    if content is None:
         return False
 
     fd, tmp_name = tempfile.mkstemp(prefix="ethpillar-grafana-", suffix=".ini")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(_grafana_ini_with_http_port(content, port))
-        subprocess.run(["sudo", "cp", tmp_name, str(ini)], check=True)
+        subprocess.run(["sudo", "cp", tmp_name, "/etc/grafana/grafana.ini"], check=True)
     finally:
         try:
             os.remove(tmp_name)
@@ -491,7 +537,7 @@ def _grafana_ini_with_http_port(content: str, port: int) -> str:
             in_server = stripped.lower() == "[server]"
             out.append(line)
             continue
-        if in_server and stripped.startswith("http_port"):
+        if in_server and re.match(r"^;?\s*http_port", stripped):
             out.append(new_line)
             replaced = True
             continue
@@ -508,14 +554,17 @@ def apply_cdvn_monitoring_from_env(env_path: str) -> Optional[int]:
         env_path: Path to CDVN ``.env``.
 
     Returns:
-        Grafana ``http_port`` when ``MONITORING_PORT_GRAFANA`` was applied, else None.
+        Effective Grafana ``http_port`` from ``grafana.ini`` when Grafana is
+        installed, else None. When ``MONITORING_PORT_GRAFANA`` is set, attempts
+        to apply it before reading the configured port back.
     """
     env = parse_dotenv(env_path)
-    port = grafana_port_from_env(env)
-    if port is None:
+    desired = grafana_port_from_env(env)
+    if desired is not None:
+        apply_grafana_http_port(desired)
+    if _read_grafana_ini() is None:
         return None
-    apply_grafana_http_port(port)
-    return port
+    return read_grafana_http_port()
 
 
 def _vc_datadir_useful_entries(src: str) -> List[str]:
