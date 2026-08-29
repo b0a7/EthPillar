@@ -37,10 +37,16 @@ function upgradeBinaries(){
 	fi
 }
 
-# Asks to view logs
+# Show a recent log snapshot (not follow mode — Enter does not exit journalctl -f).
 function promptViewLogs(){
-    if whiptail --title "View Logs" --yesno "Would you like to view logs and confirm everything is running properly?" 8 78; then
-      view_journal_logs -fu ethereum-metrics-exporter
+    if whiptail --title "View Logs" --yesno \
+"Show recent ethereum-metrics-exporter logs?
+
+A short snapshot is printed; you return here automatically when it finishes." 11 78; then
+      echo ""
+      view_journal_logs -u ethereum-metrics-exporter -n 40 --no-pager || true
+      echo ""
+      whiptail --title "View Logs" --msgbox "Log snapshot complete." 8 60
     fi
 }
 
@@ -195,32 +201,24 @@ EOF"
 }
 
 function showNextSteps(){
-cat << EOF
+	local _msg _charon_hint=""
+	if isCharonEnabled; then
+		_charon_hint="
 
-Congrats!
-Successfully installed monitoring tools: ethereum-metrics-exporter, grafana, prometheus, node-exporter
+Charon Overview: http://127.0.0.1:3000/d/charon_overview/"
+	fi
+	_msg="Successfully installed monitoring tools:
+ethereum-metrics-exporter, grafana, prometheus, node-exporter
 
 Access Grafana at:
 http://127.0.0.1:3000
 or
 http://${ip_current}:3000
 
-Login to Grafana with:
-Username: admin
-Password: admin
+Login: admin / admin
 
-To view dashboards,
-1) Click Dashboards in the primary menu.
-EOF
-	if isCharonEnabled; then
-		cat << EOF
-
-Charon Overview is provisioned when Obol Charon is installed.
-Open: http://127.0.0.1:3000/d/charon_overview/
-EOF
-	fi
-echo "Press ENTER to continue"
-read
+Open Dashboards in the Grafana menu.${_charon_hint}"
+	whiptail --title "Monitoring installed" --msgbox "$_msg" 22 78
 }
 
 function provisionDashboards(){

@@ -964,40 +964,7 @@ def run_migration(
 
     apply_datadir_moves(plan, selected=apply_moves)
 
-    charon_selected = True
-    if apply_moves is not None:
-        charon_selected = ".charon" in apply_moves
-    if (
-        plan.charon_dir
-        and plan.has_lock
-        and not skip_charon_overlay
-        and charon_selected
-    ):
-        # Prefer move; fall back to copy if move fails (cross-device, etc.)
-        dest = os.path.join(BASE_DATA_DIR, "charon", ".charon")
-        dest_lock = os.path.join(dest, "cluster-lock.json")
-        if not os.path.isfile(dest_lock):
-            copy_only = charon_cluster_copy_only(plan.root, plan.charon_dir)
-            if copy_only:
-                copy_charon_cluster(plan.charon_dir, force=False)
-                print(f"Copied {plan.charon_dir} → {dest} (.charon symlink/outside checkout)")
-            else:
-                try:
-                    subprocess.run(["sudo", "mkdir", "-p", os.path.dirname(dest)], check=True)
-                    if os.path.exists(dest) and not _dir_nonempty(dest):
-                        subprocess.run(["sudo", "rmdir", dest], check=False)
-                    if not os.path.exists(dest):
-                        subprocess.run(["sudo", "mv", plan.charon_dir, dest], check=True)
-                        subprocess.run(
-                            ["sudo", "chown", "-R", "charon:charon", os.path.dirname(dest)],
-                            check=False,
-                        )
-                        print(f"Moved {plan.charon_dir} → {dest}")
-                    else:
-                        copy_charon_cluster(plan.charon_dir, force=False)
-                except (OSError, subprocess.CalledProcessError):
-                    print("Charon move failed; falling back to copy.")
-                    copy_charon_cluster(plan.charon_dir, force=False)
+    _apply_charon_cluster_overlay(plan, skip=skip_charon_overlay)
     if plan.env_path and not skip_charon_overlay:
         import_cdvn_env_to_service(plan.env_path, apply=True)
 
@@ -1020,6 +987,71 @@ def run_migration(
             )
 
     return plan
+
+
+def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False) -> None:
+    """Copy or move CDVN ``.charon`` into EthPillar's Charon datadir.
+
+    Always runs when the plan has a cluster lock. Optional Docker ``data/``
+    moves (--moves) do not control this step.
+    """
+    if skip or not plan.charon_dir or not plan.has_lock:
+        if skip:
+            print("Charon cluster overlay: skipped (skip_charon_overlay)")
+        elif not plan.charon_dir:
+            print("Charon cluster overlay: skipped (no .charon path in plan)")
+        elif not plan.has_lock:
+            print("Charon cluster overlay: skipped (no cluster-lock.json in CDVN .charon)")
+        return
+
+    dest = os.path.join(BASE_DATA_DIR, "charon", ".charon")
+    dest_lock = os.path.join(dest, "cluster-lock.json")
+    if os.path.isfile(dest_lock):
+        print(f"Charon cluster overlay: already present at {dest_lock}")
+        return
+
+    copy_only = charon_cluster_copy_only(plan.root, plan.charon_dir)
+    if copy_only:
+        result = copy_charon_cluster(plan.charon_dir, force=False)
+        print(f"Copied {plan.charon_dir} → {dest} (.charon symlink/outside checkout)")
+    else:
+        try:
+            subprocess.run(["sudo", "mkdir", "-p", os.path.dirname(dest)], check=True)
+            if os.path.exists(dest) and not _dir_nonempty(dest):
+                subprocess.run(["sudo", "rmdir", dest], check=False)
+            if not os.path.exists(dest):
+                subprocess.run(["sudo", "mv", plan.charon_dir, dest], check=True)
+                subprocess.run(
+                    ["sudo", "chown", "-R", "charon:charon", os.path.dirname(dest)],
+                    check=False,
+                )
+                print(f"Moved {plan.charon_dir} → {dest}")
+                result = {"status": "copied", "dest": dest}
+            else:
+                result = copy_charon_cluster(plan.charon_dir, force=False)
+                print(f"Copied {plan.charon_dir} → {dest} (destination existed)")
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"Charon move failed ({exc}); falling back to copy.")
+            result = copy_charon_cluster(plan.charon_dir, force=False)
+
+    if result.get("status") == "skipped":
+        raise RuntimeError(
+            f"Charon cluster overlay failed: {result.get('reason', 'skipped')}"
+        )
+    if not os.path.isfile(dest_lock):
+        raise RuntimeError(
+            f"Charon cluster overlay did not produce {dest_lock}. "
+            "Check migration log for copy/move errors."
+        )
+    keys_dir = os.path.join(dest, "validator_keys")
+    key_count = 0
+    if os.path.isdir(keys_dir):
+        key_count = sum(
+            1
+            for name in os.listdir(keys_dir)
+            if name.startswith("keystore-") and name.endswith(".json")
+        )
+    print(f"Charon cluster overlay OK: {dest_lock} ({key_count} key share file(s))")
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -1045,8 +1077,9 @@ def main(argv: Optional[list] = None) -> int:
     p_run.add_argument(
         "--moves",
         default=None,
-        help="Comma-separated relative datadir paths to move. "
-        "Omit for all eligible; pass empty string for none.",
+        help="Comma-separated relative Docker data/ paths to move/merge. "
+        "Omit for all eligible; pass empty string for none. "
+        "Does not affect mandatory .charon cluster overlay.",
     )
 
     args = parser.parse_args(argv)

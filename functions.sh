@@ -827,10 +827,44 @@ patchValidatorBeaconEndpoint(){
         --service-path "$validator_svc"
 }
 
+# Start Charon + validator after CDVN migration (before optional monitoring install).
+_migrateCdvnPromptStartValidatorStack(){
+    [[ -f /etc/systemd/system/charon.service ]] \
+        || [[ -f /etc/systemd/system/validator.service ]] || return 0
+    if ! whiptail --title "Start services" --yesno \
+"Start Charon (and validator if installed) now?" 9 70; then
+        return 0
+    fi
+    [[ -f /etc/systemd/system/charon.service ]] \
+        && sudo systemctl start charon 2>/dev/null || true
+    [[ -f /etc/systemd/system/validator.service ]] \
+        && sudo systemctl start validator 2>/dev/null || true
+}
+
+# Start Grafana/Prometheus stack after monitoring is installed during CDVN migration.
+_migrateCdvnPromptStartMonitoring(){
+    [[ -f /etc/systemd/system/grafana-server.service ]] \
+        || [[ -f /etc/systemd/system/ethereum-metrics-exporter.service ]] || return 0
+    if ! whiptail --title "Start monitoring" --yesno \
+"Start Grafana, Prometheus, and metrics exporter now?" 9 70; then
+        return 0
+    fi
+    sudo systemctl start grafana-server prometheus prometheus-node-exporter 2>/dev/null || true
+    [[ -f /etc/systemd/system/ethereum-metrics-exporter.service ]] \
+        && sudo systemctl start ethereum-metrics-exporter 2>/dev/null || true
+}
+
+# Append a timestamped line to the active CDVN migration log (if set).
+_migrateCdvnLog(){
+    [[ -n "${_migrate_log:-}" ]] || return 0
+    printf '%s %s\n' "$(date -Is)" "$*" >>"$_migrate_log"
+}
+
 # Full CDVN → EthPillar migration (CLI + TUI). Detects active EL/CL/VC/MEV.
 migrateCdvnFull(){
     local default_root path_in plan_file moves_file selected_moves line rel src dest
     local docker_up=0 _cdvn_env _grafana_port=""
+    local _migrate_log_dir _migrate_log
 
     default_root="${HOME}/charon-distributed-validator-node"
     [[ -d "$default_root" ]] || default_root="${HOME}/git/charon-distributed-validator-node"
@@ -895,10 +929,24 @@ Then re-run ethpillar --migrate_cdvn" 14 70
 
     whiptail --title "Migrate from CDVN — plan" --textbox "$plan_file" 24 88
 
+    _migrate_log_dir="${HOME}/.ethpillar/logs"
+    mkdir -p "$_migrate_log_dir"
+    _migrate_log="${_migrate_log_dir}/cdvn-migrate-$(date +%Y%m%d-%H%M%S).log"
+    {
+        echo "=== EthPillar CDVN migration $(date -Is) ==="
+        echo "checkout: ${path_in}"
+        echo "log: ${_migrate_log}"
+        echo ""
+        cat "$plan_file"
+        echo ""
+    } >>"$_migrate_log"
+    ohai "Migration log: ${_migrate_log}"
+
     if ! whiptail --title "Migrate from CDVN" --yesno \
 "Proceed with deploy using this plan?
 
-Datadir moves are confirmed next (you can skip individual moves)." 11 70; then
+Optional Docker data/ moves are confirmed next.
+(.charon cluster copy always runs when cluster-lock.json is present.)" 12 70; then
         rm -f "$plan_file"
         return 0
     fi
@@ -912,6 +960,8 @@ import os
 from deploy.cdvn_migrate import plan_cdvn_migration
 plan = plan_cdvn_migration("$path_in")
 for m in plan.datadir_moves:
+    if m.relative_src == ".charon":
+        continue
     if m.will_move:
         dest_name = os.path.basename(m.dest.rstrip(os.sep)) or m.dest
         print(m.relative_src)
@@ -925,11 +975,14 @@ PY
         if [[ ${#checklist[@]} -gt 0 ]]; then
             prompted_moves=1
             selected_moves=$(whiptail --title "Confirm datadir moves" --checklist \
-                "Move CDVN data into /var/lib (uncheck = skip, fresh sync)." \
+                "Move optional CDVN Docker data/ into /var/lib (uncheck = skip).\n.charon cluster copy is always applied separately." \
                 22 76 10 "${checklist[@]}" 3>&1 1>&2 2>&3) || selected_moves=""
             selected_moves=$(echo "$selected_moves" | tr -d '"')
             selected_moves=$(echo "$selected_moves" | tr ' ' ',')
+            _migrateCdvnLog "datadir checklist selection: ${selected_moves:-<none>}"
         fi
+    else
+        _migrateCdvnLog "datadir checklist: not shown (no optional Docker data/ moves)"
     fi
     rm -f "$moves_file" "$plan_file"
 
@@ -940,16 +993,39 @@ PY
     fi
 
     ohai "Deploying EthPillar clients from CDVN plan…"
+    _migrateCdvnLog "=== deploy.cdvn_migrate run ==="
     set +e
     PYTHONPATH="${BASE_DIR}" python3 -m deploy.cdvn_migrate run --path "$path_in" \
-        "${moves_arg[@]}"
-    rc=$?
+        "${moves_arg[@]}" 2>&1 | tee -a "$_migrate_log"
+    rc=${PIPESTATUS[0]}
     set -e
+    _migrateCdvnLog "deploy.cdvn_migrate exit=${rc}"
     if [[ $rc -ne 0 ]]; then
         whiptail --title "Migrate from CDVN — failed" --msgbox \
-"Migration failed (exit ${rc}). See terminal output for details." 10 70
+"Migration failed (exit ${rc}).
+
+Full log:
+${_migrate_log}" 12 78
         return 1
     fi
+
+    # Key shares: auto-synced during deploy.cdvn_migrate run (see sync_charon_keyshares_to_vc).
+    if [[ -f /etc/systemd/system/validator.service ]] \
+        && [[ -d /var/lib/charon/.charon/validator_keys ]] \
+        && compgen -G "/var/lib/charon/.charon/validator_keys/keystore-*.json" >/dev/null \
+        && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
+        && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1 \
+        && ! compgen -G "/var/lib/lodestar_validator/keystores/keystore-*.json" >/dev/null 2>&1; then
+        if whiptail --title "Import key shares" --yesno \
+"Key shares are under /var/lib/charon/.charon/validator_keys but were not copied into the validator client.
+
+Import them now?" 12 70; then
+            runScript manage_validator_keys.sh charon-import
+        fi
+    fi
+
+    # Start Charon/VC before optional monitoring (monitoring install can block on log prompts).
+    _migrateCdvnPromptStartValidatorStack
 
     # Fresh EthPillar monitoring + Charon dashboard
     if [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then
@@ -973,27 +1049,7 @@ PY
         [[ -n "$_grafana_port" ]] && ohai "Grafana http_port set to ${_grafana_port} (from CDVN .env)"
     fi
 
-    # Key shares: auto-synced during deploy.cdvn_migrate run (see sync_charon_keyshares_to_vc).
-    if [[ -f /etc/systemd/system/validator.service ]] \
-        && [[ -d /var/lib/charon/.charon/validator_keys ]] \
-        && compgen -G "/var/lib/charon/.charon/validator_keys/keystore-*.json" >/dev/null \
-        && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
-        && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1; then
-        if whiptail --title "Import key shares" --yesno \
-"Key shares are under /var/lib/charon/.charon/validator_keys but were not copied into the validator client.
-
-Import them now?" 12 70; then
-            runScript manage_validator_keys.sh charon-import
-        fi
-    fi
-
-    if [[ -f /var/lib/charon/.charon/cluster-lock.json ]]; then
-        if whiptail --title "Start services" --yesno \
-"Start Charon (and validator if installed) now?" 9 70; then
-            sudo systemctl try-restart charon 2>/dev/null || sudo systemctl start charon
-            [[ -f /etc/systemd/system/validator.service ]] && sudo systemctl try-restart validator 2>/dev/null || true
-        fi
-    fi
+    _migrateCdvnPromptStartMonitoring
 
     local _grafana_url="http://127.0.0.1:3000/d/charon_overview/"
     if [[ -n "${_grafana_port:-}" ]]; then
@@ -1007,7 +1063,10 @@ Import them now?" 12 70; then
 • Start order: EL → CL → Charon → VC (as installed)
 • Grafana (CDVN dashboards): ${_grafana_url}
   Also: /d/clusterview-user/ /d/node_overview/
-  Logs dashboard needs Loki (not installed by EthPillar)" 16 70
+  Logs dashboard needs Loki (not installed by EthPillar)
+
+Migration log:
+${_migrate_log}" 18 78
 }
 
 # Charon TUI menu + legacy alias
