@@ -243,6 +243,11 @@ def test_sync_charon_keyshares_lodestar_import(tmp_path, monkeypatch):
 
     def _fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "find":
+            names = ""
+            if "validator_keys" in cmd[2] or "charon-key-import" in cmd[2]:
+                names = "keystore-0.json\nkeystore-0.txt\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=names)
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
@@ -285,12 +290,77 @@ def test_sync_charon_keyshares_to_teku(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(charon_mod, "_chown_vc_tree", lambda *_a, **_k: None)
 
+    def _fake_run(cmd, **kwargs):
+        if len(cmd) >= 3 and cmd[0] == "sudo" and cmd[1] == "mkdir":
+            os.makedirs(cmd[-1], exist_ok=True)
+        elif len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "cp":
+            import shutil
+
+            shutil.copy2(cmd[3], cmd[4])
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
+
     result = sync_charon_keyshares_to_vc("Teku", keys_dir=str(keys))
     assert result["status"] == "copied"
     assert result["count"] == 1
     assert result["dest"] == str(dest)
     assert (dest / "keystore-0.json").is_file()
     assert (dest / "keystore-0.txt").is_file()
+
+
+def test_sync_charon_keyshares_root_owned_source(tmp_path, monkeypatch):
+    """Charon validator_keys is charon:charon mode 700 — sync must use sudo."""
+    from deploy import charon as charon_mod
+    from deploy.charon import sync_charon_keyshares_to_vc
+
+    keys = tmp_path / "validator_keys"
+    keys.mkdir()
+    (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
+    (keys / "keystore-0.txt").write_text("password\n", encoding="utf-8")
+    dest = tmp_path / "lodestar_validator"
+    monkeypatch.setattr(charon_mod, "BASE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_IMPORT_DATA_DIRS",
+        {"Lodestar": str(dest)},
+    )
+    real_isdir = charon_mod.os.path.isdir
+    real_listdir = charon_mod.os.listdir
+
+    def _isdir(path):
+        if os.path.abspath(path) == os.path.abspath(str(keys)):
+            return False
+        return real_isdir(path)
+
+    def _listdir(path):
+        if os.path.abspath(path) == os.path.abspath(str(keys)):
+            raise PermissionError(path)
+        return real_listdir(path)
+
+    monkeypatch.setattr(charon_mod.os.path, "isdir", _isdir)
+    monkeypatch.setattr(charon_mod.os, "listdir", _listdir)
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["sudo", "test", "-d"]:
+            return subprocess.CompletedProcess(cmd, 0)
+        if cmd[:4] == ["sudo", "find", str(keys), "-mindepth"]:
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="keystore-0.json\nkeystore-0.txt\n"
+            )
+        if len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "find":
+            return subprocess.CompletedProcess(cmd, 0, stdout="keystore-0.txt\n")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
+
+    result = sync_charon_keyshares_to_vc("Lodestar", keys_dir=str(keys))
+    assert result["status"] == "copied"
+    assert any(cmd[:3] == ["sudo", "test", "-d"] for cmd in calls)
+    assert any("lodestar" in str(c) and "import" in str(c) for c in calls)
 
 
 def test_copy_charon_cluster_and_skip(tmp_path):

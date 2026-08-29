@@ -854,6 +854,18 @@ _migrateCdvnPromptStartMonitoring(){
         && sudo systemctl start ethereum-metrics-exporter 2>/dev/null || true
 }
 
+# Return 0 when Charon key shares exist under the EthPillar Charon datadir.
+charonKeysharesPresent(){
+    sudo test -d /var/lib/charon/.charon/validator_keys 2>/dev/null || return 1
+    [[ "$(sudo find /var/lib/charon/.charon/validator_keys -maxdepth 1 -name 'keystore-*.json' 2>/dev/null | wc -l)" -gt 0 ]]
+}
+
+# Return 0 when Lodestar already has imported validator keystores.
+lodestarValidatorKeysPresent(){
+    sudo test -d /var/lib/lodestar_validator/keystores 2>/dev/null || return 1
+    [[ "$(sudo find /var/lib/lodestar_validator/keystores -maxdepth 1 -name 'keystore-*.json' 2>/dev/null | wc -l)" -gt 0 ]]
+}
+
 # Append a timestamped line to the active CDVN migration log (if set).
 _migrateCdvnLog(){
     [[ -n "${_migrate_log:-}" ]] || return 0
@@ -1009,13 +1021,50 @@ ${_migrate_log}" 12 78
         return 1
     fi
 
-    # Key shares: auto-synced during deploy.cdvn_migrate run (see sync_charon_keyshares_to_vc).
+    ensure_journal_access || ohai "Journal access ready (sg systemd-journal used when needed)"
+    _migrateCdvnLog "journal access: $(can_read_journal && echo ok || echo re-login-required)"
+
+    # Key shares: auto-synced during deploy.cdvn_migrate run; retry if still missing.
     if [[ -f /etc/systemd/system/validator.service ]] \
-        && [[ -d /var/lib/charon/.charon/validator_keys ]] \
-        && compgen -G "/var/lib/charon/.charon/validator_keys/keystore-*.json" >/dev/null \
+        && charonKeysharesPresent \
+        && ! lodestarValidatorKeysPresent \
         && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
-        && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1 \
-        && ! compgen -G "/var/lib/lodestar_validator/keystores/keystore-*.json" >/dev/null 2>&1; then
+        && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1; then
+        ohai "Importing Obol Charon key shares into validator client…"
+        PYTHONPATH="${BASE_DIR}" python3 - <<'PY' 2>&1 | tee -a "$_migrate_log"
+import re
+from pathlib import Path
+
+from deploy.charon import sync_charon_keyshares_to_vc
+
+svc = Path("/etc/systemd/system/validator.service").read_text(encoding="utf-8")
+vc = "Lodestar"
+for name in ("Lodestar", "Lighthouse", "Teku", "Nimbus", "Prysm", "Grandine"):
+    if re.search(rf"{name.lower()}", svc, re.I):
+        vc = name
+        break
+result = sync_charon_keyshares_to_vc(vc)
+print(result)
+if result.get("status") == "failed":
+    raise SystemExit(1)
+if result.get("status") == "skipped" and "no validator_keys dir" in str(result.get("reason", "")):
+    raise SystemExit(1)
+PY
+        rc=${PIPESTATUS[0]}
+        if [[ $rc -ne 0 ]]; then
+            whiptail --title "Migrate from CDVN — failed" --msgbox \
+"Key share import failed. See log:
+${_migrate_log}" 12 78
+            return 1
+        fi
+    fi
+
+    # Legacy fallback prompt when auto-sync did not run (older branches).
+    if [[ -f /etc/systemd/system/validator.service ]] \
+        && charonKeysharesPresent \
+        && ! lodestarValidatorKeysPresent \
+        && ! compgen -G "/var/lib/teku_validator/validator_keys/keystore-*.json" >/dev/null 2>&1 \
+        && ! compgen -G "/var/lib/grandine/validator_keys/keystore-*.json" >/dev/null 2>&1; then
         if whiptail --title "Import key shares" --yesno \
 "Key shares are under /var/lib/charon/.charon/validator_keys but were not copied into the validator client.
 
@@ -2093,8 +2142,11 @@ can_read_journal() {
     if [[ "$(id -u)" -eq 0 ]]; then
         return 0
     fi
-    # Per-user journals succeed without systemd-journal membership; probe system logs.
-    journalctl -n 1 --quiet _UID=0 >/dev/null 2>&1
+    journalctl -n 1 --quiet _UID=0 >/dev/null 2>&1 && return 0
+    if user_in_journal_group "$(whoami)"; then
+        sg systemd-journal -c 'journalctl -n 1 --quiet _UID=0 >/dev/null' 2>/dev/null && return 0
+    fi
+    return 1
 }
 
 # Return 0 when the named user appears in systemd-journal.
@@ -2162,29 +2214,39 @@ journalctl_run() {
         return $?
     fi
 
+    if user_in_journal_group "$(whoami)"; then
+        local _jcmd=(journalctl "$@")
+        sg systemd-journal -c "$(printf '%q ' "${_jcmd[@]}")"
+        return $?
+    fi
+
     sudo journalctl "$@"
+}
+
+# Build a journalctl … | ccze -A pipeline for tmux/log panes (sg when group is new).
+journalctl_ccze_pipeline() {
+    local _args=("$@")
+    local _inner="journalctl"
+    local _a
+    for _a in "${_args[@]}"; do
+        _inner+=" $(printf '%q' "$_a")"
+    done
+    if can_read_journal; then
+        printf '%s | ccze -A' "$_inner"
+    elif user_in_journal_group "$(whoami)"; then
+        printf 'sg systemd-journal -c %q | ccze -A' "$_inner"
+    else
+        printf 'sudo %s | ccze -A' "$_inner"
+    fi
 }
 
 view_journal_logs() {
     # Parent ignores SIGINT so EthPillar survives Ctrl-C.
     # Child restores default so journalctl still stops.
-    export -f _journal_log_colorizer 2>/dev/null || true
+    export -f _journal_log_colorizer journalctl_run can_read_journal user_in_journal_group 2>/dev/null || true
     trap '' INT
 
-    if can_read_journal; then
-        bash -c 'trap - INT; journalctl "$@" | _journal_log_colorizer' _ "$@" || true
-    else
-        ensure_journal_access || true
-        if can_read_journal; then
-            bash -c 'trap - INT; journalctl "$@" | _journal_log_colorizer' _ "$@" || true
-        else
-            if command -v ccze >/dev/null 2>&1; then
-                sudo bash -c 'trap - INT; journalctl "$@" | ccze -A' _ "$@" || true
-            else
-                sudo bash -c 'trap - INT; journalctl "$@"' _ "$@" || true
-            fi
-        fi
-    fi
+    bash -c 'trap - INT; journalctl_run "$@" | _journal_log_colorizer' _ "$@" || true
 
     trap - INT
     return 0

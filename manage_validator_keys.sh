@@ -165,7 +165,7 @@ function _getAmount(){
 
 function importCharonKeyShares(){
     local CHARON_KEYS="/var/lib/charon/.charon/validator_keys"
-    if [[ ! -d "$CHARON_KEYS" ]] || ! compgen -G "$CHARON_KEYS/keystore-*.json" > /dev/null; then
+    if ! charonKeysharesPresent; then
         whiptail --title "Obol Charon key shares" --msgbox \
 "No Charon key shares found at:
 ${CHARON_KEYS}

@@ -31,6 +31,59 @@ CHARON_LOCK_FILE = f"{CHARON_CLUSTER_DIR}/cluster-lock.json"
 CHARON_PRIVATE_KEY_FILE = f"{CHARON_CLUSTER_DIR}/charon-enr-private-key"
 CHARON_VALIDATOR_KEYS_DIR = f"{CHARON_CLUSTER_DIR}/validator_keys"
 CHARON_SERVICE_PATH = "/etc/systemd/system/charon.service"
+VC_RUN_USER = "validator"
+CHARON_KEY_IMPORT_STAGING = "/tmp/ethpillar-charon-key-import"
+
+
+def path_exists(path: str, *, directory: bool = False) -> bool:
+    """Return True when *path* exists, including root-owned Charon datadir paths."""
+    if directory:
+        if os.path.isdir(path):
+            return True
+        flag = "-d"
+    else:
+        if os.path.isfile(path):
+            return True
+        flag = "-f"
+    return subprocess.run(["sudo", "test", flag, path], check=False).returncode == 0
+
+
+def list_dir_basenames(path: str) -> List[str]:
+    """List directory entries, using sudo when the path is not readable as the current user."""
+    try:
+        return os.listdir(path)
+    except OSError:
+        result = subprocess.run(
+            ["sudo", "find", path, "-mindepth", "1", "-maxdepth", "1", "-printf", "%f\n"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return []
+        return [line for line in (result.stdout or "").splitlines() if line]
+
+
+def count_charon_keystores(keys_dir: str) -> int:
+    """Return the number of ``keystore-*.json`` files under *keys_dir*."""
+    return len(_list_charon_keystores(keys_dir))
+
+
+def _stage_charon_keys_for_vc(keys_dir: str) -> str:
+    """Stage Charon key shares where the VC service user can read them.
+
+    Charon cluster data under ``/var/lib/charon/.charon`` is ``charon:charon`` mode
+    ``700``, so VCs cannot traverse it directly for import.
+    """
+    src = os.path.abspath(keys_dir)
+    staging = CHARON_KEY_IMPORT_STAGING
+    subprocess.run(["sudo", "rm", "-rf", staging], check=False)
+    subprocess.run(["sudo", "mkdir", "-p", staging], check=True)
+    subprocess.run(["sudo", "cp", "-a", f"{src}/.", f"{staging}/"], check=True)
+    subprocess.run(["sudo", "chown", "-R", f"{VC_RUN_USER}:{VC_RUN_USER}", staging], check=True)
+    subprocess.run(["sudo", "chmod", "-R", "700", staging], check=True)
+    return staging
+
 
 # EthPillar VC paths keyed by deploy client name (CDVN vc-* → same names).
 VC_COPY_KEY_DIRS: Dict[str, str] = {
@@ -772,15 +825,13 @@ def resolve_charon_cluster_dir(checkout_root: str) -> Dict[str, object]:
             "has_keyshares": False,
         }
     keys = os.path.join(resolved, "validator_keys")
-    has_keyshares = os.path.isdir(keys) and any(
-        name.startswith("keystore-") and name.endswith(".json")
-        for name in os.listdir(keys)
-    )
+    lock = os.path.join(resolved, "cluster-lock.json")
+    has_keyshares = path_exists(keys, directory=True) and bool(_list_charon_keystores(keys))
     return {
         "link": link,
         "resolved": resolved,
         "is_symlink": os.path.islink(link),
-        "has_lock": os.path.isfile(os.path.join(resolved, "cluster-lock.json")),
+        "has_lock": path_exists(lock),
         "has_keyshares": has_keyshares,
     }
 
@@ -841,20 +892,20 @@ def sync_charon_keyshares_to_vc(
 def _list_charon_keystores(keys_dir: str) -> List[str]:
     """Return sorted ``keystore-*.json`` basenames under *keys_dir*."""
     src = os.path.abspath(keys_dir)
-    if not os.path.isdir(src):
+    if not path_exists(src, directory=True):
         return []
     return sorted(
         name
-        for name in os.listdir(src)
+        for name in list_dir_basenames(src)
         if name.startswith("keystore-") and name.endswith(".json")
     )
 
 
 def _find_passphrase_file(keys_dir: str) -> Optional[str]:
     """Return the first ``keystore-*.txt`` path under *keys_dir*, if any."""
-    if not os.path.isdir(keys_dir):
+    if not path_exists(keys_dir, directory=True):
         return None
-    for name in sorted(os.listdir(keys_dir)):
+    for name in sorted(list_dir_basenames(keys_dir)):
         if name.startswith("keystore-") and name.endswith(".txt"):
             return os.path.join(keys_dir, name)
     return None
@@ -947,11 +998,9 @@ def _sync_copy_keyshares(
     Returns:
         Sync result dict (see :func:`sync_charon_keyshares_to_vc`).
     """
-    import shutil
-
     dest_dir = VC_COPY_KEY_DIRS[vc_name]
     src = os.path.abspath(keys_dir)
-    if not os.path.isdir(src):
+    if not path_exists(src, directory=True):
         return {"status": "skipped", "reason": f"no validator_keys dir at {src}"}
     keystores = _list_charon_keystores(src)
     if not keystores:
@@ -965,29 +1014,19 @@ def _sync_copy_keyshares(
             "count": len(keystores),
         }
 
-    def _copy_tree() -> None:
-        os.makedirs(dest_dir, mode=0o700, exist_ok=True)
-        for name in os.listdir(src):
-            if not name.startswith("keystore-"):
-                continue
-            shutil.copy2(os.path.join(src, name), os.path.join(dest_dir, name))
-        os.chmod(dest_dir, 0o700)
-
-    try:
-        _copy_tree()
-    except PermissionError:
-        subprocess.run(["sudo", "mkdir", "-p", dest_dir], check=True)
-        for name in os.listdir(src):
-            if not name.startswith("keystore-"):
-                continue
+    subprocess.run(["sudo", "mkdir", "-p", dest_dir], check=True)
+    for name in keystores:
+        txt = name.replace(".json", ".txt")
+        subprocess.run(
+            ["sudo", "cp", "-a", os.path.join(src, name), os.path.join(dest_dir, name)],
+            check=True,
+        )
+        if path_exists(os.path.join(src, txt)):
             subprocess.run(
-                ["sudo", "cp", "-a", os.path.join(src, name), os.path.join(dest_dir, name)],
+                ["sudo", "cp", "-a", os.path.join(src, txt), os.path.join(dest_dir, txt)],
                 check=True,
             )
-        _chown_vc_tree(vc_name, os.path.dirname(dest_dir))
-    else:
-        if dest_dir.startswith(BASE_DATA_DIR):
-            _chown_vc_tree(vc_name, os.path.dirname(dest_dir))
+    _chown_vc_tree(vc_name, os.path.dirname(dest_dir))
 
     return {
         "status": "copied",
@@ -1016,7 +1055,7 @@ def _sync_import_keyshares(
         Sync result dict (see :func:`sync_charon_keyshares_to_vc`).
     """
     src = os.path.abspath(keys_dir)
-    if not os.path.isdir(src):
+    if not path_exists(src, directory=True):
         return {"status": "skipped", "reason": f"no validator_keys dir at {src}"}
     keystores = _list_charon_keystores(src)
     if not keystores:
@@ -1031,23 +1070,27 @@ def _sync_import_keyshares(
             "count": len(keystores),
         }
 
+    import_dir = _stage_charon_keys_for_vc(src)
     subprocess.run(["sudo", "mkdir", "-p", data_dir], check=True)
     try:
         if vc_name == "Lighthouse":
             subprocess.run(
                 [
+                    "sudo",
+                    "-u",
+                    VC_RUN_USER,
                     f"{INSTALL_DIR}/lighthouse",
                     "account",
                     "validator",
                     "import",
                     f"--datadir={data_dir}",
-                    f"--directory={src}",
+                    f"--directory={import_dir}",
                     "--reuse-password",
                 ],
                 check=True,
             )
         elif vc_name == "Lodestar":
-            passphrase = _find_passphrase_file(src)
+            passphrase = _find_passphrase_file(import_dir)
             if not passphrase:
                 return {
                     "status": "skipped",
@@ -1055,26 +1098,32 @@ def _sync_import_keyshares(
                 }
             subprocess.run(
                 [
+                    "sudo",
+                    "-u",
+                    VC_RUN_USER,
                     f"{INSTALL_DIR}/lodestar",
                     "validator",
                     "import",
                     f"--dataDir={data_dir}",
-                    f"--keystore={src}",
+                    f"--keystore={import_dir}",
                     f"--passphraseFile={passphrase}",
                 ],
                 check=True,
             )
         elif vc_name == "Nimbus":
             nimbus_bin = f"{INSTALL_DIR}/nimbus_validator_client"
-            if not os.path.isfile(nimbus_bin):
+            if not path_exists(nimbus_bin):
                 nimbus_bin = f"{INSTALL_DIR}/nimbus_beacon_node"
             subprocess.run(
                 [
+                    "sudo",
+                    "-u",
+                    VC_RUN_USER,
                     nimbus_bin,
                     "deposits",
                     "import",
                     f"--data-dir={data_dir}",
-                    src,
+                    import_dir,
                 ],
                 check=True,
             )
@@ -1082,12 +1131,15 @@ def _sync_import_keyshares(
             wallet_dir = f"{BASE_DATA_DIR}/prysm_validator/validator_keys"
             subprocess.run(
                 [
+                    "sudo",
+                    "-u",
+                    VC_RUN_USER,
                     f"{INSTALL_DIR}/prysm-validator",
                     "accounts",
                     "import",
                     "--accept-terms-of-use",
                     f"--wallet-dir={wallet_dir}",
-                    f"--keys-dir={src}",
+                    f"--keys-dir={import_dir}",
                 ],
                 check=True,
             )
@@ -1100,6 +1152,8 @@ def _sync_import_keyshares(
             "reason": f"{vc_name} key import failed (exit {exc.returncode})",
             "dest": data_dir,
         }
+    finally:
+        subprocess.run(["sudo", "rm", "-rf", import_dir], check=False)
 
     _chown_vc_tree(vc_name, data_dir)
     return {

@@ -28,13 +28,17 @@ fi
 if ! ensure_journal_access; then
   clear
   current_user=$(whoami)
-  echo -e "\033[1m########## New Terminal Session Required ############"
-  echo "To view logs, $current_user needs an active systemd-journal group session."
-  echo "Open a new terminal, run 'ethpillar', then check logs again."
+  echo -e "\033[1m########## Journal access unavailable ############"
+  echo "Could not grant journal access for ${current_user}."
+  echo "Try: sudo usermod -aG systemd-journal ${current_user}"
+  echo "Then open a new terminal and run ethpillar again."
   echo "Press ENTER to continue"
   read
   exit 0
 fi
+
+CONSENSUS_LOG_CMD=$(journalctl_ccze_pipeline -fu consensus --no-hostname)
+EXECUTION_LOG_CMD=$(journalctl_ccze_pipeline -fu execution --no-hostname)
 
 # Enable truecolor logs for btop
 if [[ ! -f ~/.tmux.conf ]]; then
@@ -62,14 +66,14 @@ if [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.servic
 elif [[ -d /opt/ethpillar/aztec ]] && [[ -f /etc/systemd/system/consensus.service ]] && [[ ! -f /etc/systemd/system/validator.service ]]; then
       # Aztec node with local rpc
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           send-keys "${CONSENSUS_LOG_CMD}" C-m \; \
            split-window -h \; \
            send-keys 'btop --utf-force' C-m \; \
            split-window -v \; \
            send-keys 'cd  /opt/ethpillar/aztec && docker compose logs -f --tail=233' C-m \; \
            select-pane -t 0 \; \
            split-window -v \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \;
+           send-keys "${EXECUTION_LOG_CMD}" C-m \;
       exec tmux attach-session -t logs
       exit 0
 fi
@@ -84,34 +88,34 @@ if grep -q 'keystore-dir' /etc/systemd/system/consensus.service 2>/dev/null; the
 
 hasCharon=false
 isCharonEnabled && hasCharon=true
-VC_LOG_CMD='journalctl -fu validator --no-hostname | ccze -A'
-[[ ${hasCharon} == "true" ]] && VC_LOG_CMD='journalctl -fu validator -u charon --no-hostname | ccze -A'
-CHARON_LOG_CMD='journalctl -fu charon --no-hostname | ccze -A'
+VC_LOG_CMD=$(journalctl_ccze_pipeline -fu validator --no-hostname)
+[[ ${hasCharon} == "true" ]] && VC_LOG_CMD=$(journalctl_ccze_pipeline -fu validator -u charon --no-hostname)
+CHARON_LOG_CMD=$(journalctl_ccze_pipeline -fu charon --no-hostname)
 
 # Portrait view for narrow terminals <= 80 col
 if [[ $cols -lt 81 ]]; then
    if [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]] && [[ -f /etc/systemd/system/validator.service ]]; then
       # Solo Staking Node
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           send-keys "${CONSENSUS_LOG_CMD}" C-m \; \
            split-window -v \; \
            send-keys "${VC_LOG_CMD}" C-m \; \
            select-pane -t 0 \; \
            split-window -v \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
+           send-keys "${EXECUTION_LOG_CMD}" C-m \; \
            select-layout even-vertical \;
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]] && [[ ${isGrandineIntegrated} == "true" ]]; then
       # Grandine integrated: consensus carries BN+VC, show it alongside execution
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           send-keys "${CONSENSUS_LOG_CMD}" C-m \; \
            split-window -h \; \
            select-pane -t 1 \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
+           send-keys "${EXECUTION_LOG_CMD}" C-m \; \
            select-layout even-vertical \;
    elif [[ -f /etc/systemd/system/execution.service || ${isIntegrated:-false} == "true" ]] && [[ -f /etc/systemd/system/validator.service ]]; then
       # Integrated EL-CL Node i.e. Caplin-Erigon
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
+           send-keys "${EXECUTION_LOG_CMD}" C-m \; \
            split-window -h \; \
            select-pane -t 1 \; \
            send-keys "${VC_LOG_CMD}" C-m \; \
@@ -119,15 +123,15 @@ if [[ $cols -lt 81 ]]; then
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]]; then
       # Full Node Only
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           send-keys "${CONSENSUS_LOG_CMD}" C-m \; \
            split-window -h \; \
            select-pane -t 1 \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
+           send-keys "${EXECUTION_LOG_CMD}" C-m \; \
            select-layout even-vertical \;
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ ${isIntegrated:-false} == "true" ]]; then
       # Full Node Only for Integrated EL-CL
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
+           send-keys "${EXECUTION_LOG_CMD}" C-m \; \
            split-window -h \; \
            select-pane -t 1 \; \
            send-keys 'btop --utf-force' C-m \; \
@@ -155,38 +159,38 @@ else
       # Solo Staking Node
       if [[ ${hasCharon} == "true" ]]; then
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           send-keys "${CONSENSUS_LOG_CMD}" C-m \; \
            split-window -h \; \
            send-keys "${CHARON_LOG_CMD}" C-m \; \
            split-window -v \; \
            send-keys "${VC_LOG_CMD}" C-m \; \
            select-pane -t 0 \; \
            split-window -v \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \;
+           send-keys "${EXECUTION_LOG_CMD}" C-m \;
       else
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           send-keys "${CONSENSUS_LOG_CMD}" C-m \; \
            split-window -h \; \
            send-keys 'btop --utf-force' C-m \; \
            split-window -v \; \
            send-keys "${VC_LOG_CMD}" C-m \; \
            select-pane -t 0 \; \
            split-window -v \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \;
+           send-keys "${EXECUTION_LOG_CMD}" C-m \;
       fi
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]] && [[ ${isGrandineIntegrated} == "true" ]]; then
       # Grandine integrated: consensus carries BN+VC, show it alongside execution and btop
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           send-keys "${CONSENSUS_LOG_CMD}" C-m \; \
            split-window -v \; \
            split-window -h \; \
            send-keys 'btop --utf-force' C-m \; \
            select-pane -t 1 \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \;
+           send-keys "${EXECUTION_LOG_CMD}" C-m \;
    elif [[ -f /etc/systemd/system/execution.service || ${isIntegrated:-false} == "true" ]] && [[ -f /etc/systemd/system/validator.service ]]; then
       # Integrated EL-CL Node i.e. Caplin-Erigon
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
+           send-keys "${EXECUTION_LOG_CMD}" C-m \; \
            split-window -v \; \
            split-window -h \; \
            send-keys 'btop --utf-force' C-m \; \
@@ -195,16 +199,16 @@ else
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service ]]; then
       # Full Node Only
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu consensus --no-hostname | ccze -A' C-m \; \
+           send-keys "${CONSENSUS_LOG_CMD}" C-m \; \
            split-window -v \; \
            split-window -h \; \
            send-keys 'btop --utf-force' C-m \; \
            select-pane -t 1 \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \;
+           send-keys "${EXECUTION_LOG_CMD}" C-m \;
    elif [[ -f /etc/systemd/system/execution.service ]] && [[ ${isIntegrated:-false} == "true" ]]; then
       # Full Node Only for Integrated EL-CL
       tmux new-session -d -s logs \; \
-           send-keys 'journalctl -fu execution --no-hostname | ccze -A' C-m \; \
+           send-keys "${EXECUTION_LOG_CMD}" C-m \; \
            split-window -h \; \
            select-pane -t 1 \; \
            send-keys 'btop --utf-force' C-m \; \

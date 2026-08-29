@@ -21,8 +21,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from deploy.charon import (
     charon_cluster_copy_only,
     copy_charon_cluster,
+    count_charon_keystores,
     import_cdvn_env_to_service,
     parse_dotenv,
+    path_exists,
     resolve_cdvn_checkout,
     rewrite_endpoint_list,
     sync_charon_keyshares_to_vc,
@@ -970,10 +972,13 @@ def run_migration(
                 f"→ {sync.get('dest')}"
             )
         elif sync.get("status") == "skipped":
-            print(f"Key share sync skipped: {sync.get('reason')}")
+            reason = str(sync.get("reason", ""))
+            if reason.startswith("destination already has"):
+                print(f"Key share sync skipped: {reason}")
+            else:
+                raise RuntimeError(f"Key share sync skipped: {reason}")
         elif sync.get("status") == "failed":
-            print(f"Key share sync failed: {sync.get('reason')}")
-            print("  Fallback: Validator → Import Obol Charon key shares")
+            raise RuntimeError(f"Key share sync failed: {sync.get('reason')}")
         elif sync.get("status") == "unsupported":
             print(
                 f"Key shares present; auto-sync not implemented for {plan.vc_name}. "
@@ -981,41 +986,6 @@ def run_migration(
             )
 
     return plan
-
-
-def _runtime_path_exists(path: str, *, directory: bool = False) -> bool:
-    """Return True when *path* exists, including root-owned Charon datadir paths."""
-    if directory:
-        if os.path.isdir(path):
-            return True
-        flag = "-d"
-    else:
-        if os.path.isfile(path):
-            return True
-        flag = "-f"
-    return subprocess.run(["sudo", "test", flag, path], check=False).returncode == 0
-
-
-def _sudo_keystore_count(keys_dir: str) -> int:
-    """Count ``keystore-*.json`` files under *keys_dir* (sudo when needed)."""
-    if _runtime_path_exists(keys_dir, directory=True):
-        try:
-            names = os.listdir(keys_dir)
-        except OSError:
-            names = []
-        else:
-            return sum(
-                1 for name in names if name.startswith("keystore-") and name.endswith(".json")
-            )
-    result = subprocess.run(
-        ["sudo", "find", keys_dir, "-maxdepth", "1", "-name", "keystore-*.json"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        return 0
-    return len([line for line in result.stdout.splitlines() if line.strip()])
 
 
 def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False) -> None:
@@ -1031,8 +1001,8 @@ def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False
         print("Charon cluster overlay: skipped (skip_charon_overlay)")
         return
 
-    if _runtime_path_exists(dest_lock):
-        key_count = _sudo_keystore_count(os.path.join(dest, "validator_keys"))
+    if path_exists(dest_lock):
+        key_count = count_charon_keystores(os.path.join(dest, "validator_keys"))
         print(f"Charon cluster overlay: already present at {dest_lock}")
         print(f"Charon cluster overlay OK: {dest_lock} ({key_count} key share file(s))")
         return
@@ -1060,13 +1030,13 @@ def _apply_charon_cluster_overlay(plan: CdvnMigrationPlan, *, skip: bool = False
         raise RuntimeError(
             f"Charon cluster overlay failed: {result.get('reason', 'skipped')}"
         )
-    if not _runtime_path_exists(dest_lock):
+    if not path_exists(dest_lock):
         raise RuntimeError(
             f"Charon cluster overlay did not produce {dest_lock}. "
             "Check migration log for copy/move errors."
         )
     keys_dir = os.path.join(dest, "validator_keys")
-    key_count = _sudo_keystore_count(keys_dir)
+    key_count = count_charon_keystores(keys_dir)
     print(f"Charon cluster overlay OK: {dest_lock} ({key_count} key share file(s))")
 
 

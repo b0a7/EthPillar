@@ -347,7 +347,7 @@ def test_run_migration_applies_charon_overlay_with_empty_moves(tmp_path, monkeyp
     monkeypatch.setattr("deploy.cdvn_migrate.import_cdvn_env_to_service", lambda *a, **k: None)
     monkeypatch.setattr(
         "deploy.cdvn_migrate.sync_charon_keyshares_to_vc",
-        lambda *a, **k: {"status": "skipped"},
+        lambda *a, **k: {"status": "skipped", "reason": "destination already has keystores (/var/lib/lodestar_validator/keystores)"},
     )
 
     from deploy.cdvn_migrate import run_migration
@@ -359,23 +359,19 @@ def test_run_migration_applies_charon_overlay_with_empty_moves(tmp_path, monkeyp
 def test_runtime_path_exists_uses_sudo_for_root_owned_file(tmp_path, monkeypatch):
     target = tmp_path / "cluster-lock.json"
     target.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr("deploy.cdvn_migrate.os.path.isfile", lambda _path: False)
+    monkeypatch.setattr("deploy.charon.os.path.isfile", lambda _path: False)
 
     def fake_run(args, **kwargs):
-        check = kwargs.get("check", True)
         rc = 0 if args[:3] == ["sudo", "test", "-f"] else 1
         class _Result:
             returncode = rc
 
-        result = _Result()
-        if check and rc != 0:
-            raise subprocess.CalledProcessError(rc, args)
-        return result
+        return _Result()
 
-    monkeypatch.setattr("deploy.cdvn_migrate.subprocess.run", fake_run)
-    from deploy.cdvn_migrate import _runtime_path_exists
+    monkeypatch.setattr("deploy.charon.subprocess.run", fake_run)
+    from deploy.charon import path_exists
 
-    assert _runtime_path_exists(str(target)) is True
+    assert path_exists(str(target)) is True
 
 
 def test_grafana_port_from_env():
