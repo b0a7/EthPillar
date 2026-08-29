@@ -87,12 +87,21 @@ def ensure_prometheus_datasource_uid(datasources_yml: Path) -> bool:
     return False
 
 
+def _finalize_grafana_provisioned_file(path: Path) -> None:
+    """Ensure Grafana (user ``grafana``) can read file-provisioned dashboard JSON."""
+    if not str(path).startswith("/etc/grafana"):
+        return
+    subprocess.run(["sudo", "chown", "root:grafana", str(path)], check=False)
+    subprocess.run(["sudo", "chmod", "644", str(path)], check=False)
+
+
 def _write_bytes(path: Path, data: Union[str, bytes]) -> None:
     """Write ``data`` to ``path``, using ``sudo cp`` when needed for /etc."""
     raw = data.encode("utf-8") if isinstance(data, str) else data
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
+        _finalize_grafana_provisioned_file(path)
         return
     except PermissionError:
         pass
@@ -103,6 +112,7 @@ def _write_bytes(path: Path, data: Union[str, bytes]) -> None:
         with os.fdopen(fd, "wb") as handle:
             handle.write(raw)
         subprocess.run(["sudo", "cp", tmp, str(path)], check=True)
+        _finalize_grafana_provisioned_file(path)
     finally:
         try:
             os.remove(tmp)
