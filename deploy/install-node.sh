@@ -46,10 +46,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip_prompts)
       extra_args+=("$1")
-      if [[ "${2:-}" == "true" ]]; then
-        non_interactive="true"
+      if [[ -n "${2:-}" ]]; then
+        extra_args+=("$2")
+        if [[ "$2" == "true" ]]; then
+          non_interactive="true"
+        fi
+        shift 2
+      else
+        shift
       fi
-      shift
       ;;
     *)
       extra_args+=("$1")
@@ -169,13 +174,18 @@ linux_install_validator-install() {
         git clone https://github.com/coincashew/ethpillar.git "${ETHPILLAR_DIR}"
     fi
     ohai "Installing validator-install"
+    local deploy_rc=0
     if [ ${#extra_args[@]} -gt 0 ]; then
         $python "${ETHPILLAR_DIR}/${install_file}" "${extra_args[@]}"
     else
         $python "${ETHPILLAR_DIR}/${install_file}"
     fi
+    deploy_rc=$?
     ohai "Allowing user to view journalctl logs"
     ensure_journal_access || ohai "Journal access granted; open a new terminal session before viewing logs without sudo"
+    if [[ $deploy_rc -ne 0 ]]; then
+        exit "$deploy_rc"
+    fi
     ohai "Install complete!"
     exit_on_error $?
 

@@ -128,6 +128,8 @@ def test_plan_validator_only_external_bn(tmp_path: Path):
     assert plan.with_builder_api is True
     assert plan.bn_address == "http://192.168.1.50:5052"
     argv = plan.deploy_argv()
+    assert "--skip_prompts" in argv
+    assert argv[argv.index("--skip_prompts") + 1] == "true"
     assert "--install_config" in argv
     assert "Validator Client Only" in argv
     assert "--with_charon" in argv

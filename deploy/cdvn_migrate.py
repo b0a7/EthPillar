@@ -28,7 +28,7 @@ from deploy.charon import (
     sync_charon_keyshares_to_vc,
 )
 from deploy.orchestrator import lodestar_bn_vc_incompatibility_message
-from deploy.common import BASE_DATA_DIR
+from deploy.common import BASE_DATA_DIR, setup_client_user_and_dir
 
 # Stock CDVN compose profile tokens → EthPillar client names for *local* migrate.
 # Upstream CDVN compose-el.yml only defines el-nethermind and el-reth; other EL=
@@ -465,6 +465,8 @@ def merge_cdvn_vc_datadir(src: str, dest: str, owner: str) -> List[str]:
             subprocess.run(["sudo", "cp", "-a", s_item, d_item], check=True)
         merged.append(name)
     if merged:
+        client_name = os.path.basename(dest.rstrip(os.sep)) or owner
+        setup_client_user_and_dir(owner, client_name)
         subprocess.run(["sudo", "chown", "-R", f"{owner}:{owner}", dest], check=True)
     return merged
 

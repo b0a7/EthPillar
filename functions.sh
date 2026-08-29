@@ -908,12 +908,14 @@ Datadir moves are confirmed next (you can skip individual moves)." 11 70; then
     local prompted_moves=0
     moves_file=$(mktemp)
     PYTHONPATH="${BASE_DIR}" python3 - <<PY >"$moves_file"
+import os
 from deploy.cdvn_migrate import plan_cdvn_migration
 plan = plan_cdvn_migration("$path_in")
 for m in plan.datadir_moves:
     if m.will_move:
+        dest_name = os.path.basename(m.dest.rstrip(os.sep)) or m.dest
         print(m.relative_src)
-        print(m.src + " → " + m.dest)
+        print(f"-> {dest_name} ({m.owner})")
 PY
     if [[ -s "$moves_file" ]]; then
         local checklist=() rel_line dest_line
@@ -923,8 +925,8 @@ PY
         if [[ ${#checklist[@]} -gt 0 ]]; then
             prompted_moves=1
             selected_moves=$(whiptail --title "Confirm datadir moves" --checklist \
-                "Select CDVN data directories to MOVE into EthPillar /var/lib.\nUncheck to leave that client empty (fresh sync)." \
-                20 88 8 "${checklist[@]}" 3>&1 1>&2 2>&3) || selected_moves=""
+                "Move CDVN data into /var/lib (uncheck = skip, fresh sync)." \
+                22 76 10 "${checklist[@]}" 3>&1 1>&2 2>&3) || selected_moves=""
             selected_moves=$(echo "$selected_moves" | tr -d '"')
             selected_moves=$(echo "$selected_moves" | tr ' ' ',')
         fi
