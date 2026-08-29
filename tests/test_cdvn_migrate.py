@@ -140,6 +140,32 @@ def test_plan_validator_only_external_bn(tmp_path: Path):
     assert "http://192.168.1.50:5052" in argv
 
 
+def test_fee_recipient_from_cluster_lock(tmp_path: Path):
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=el-none\n"
+        "CL=cl-none\n"
+        "VC=vc-lodestar\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
+    )
+    fee = "0x388C818CA8B9251b393131C08a736A67ccB19297"
+    lock = {
+        "cluster_definition": {
+            "validators": [{"fee_recipient_address": fee, "withdrawal_address": fee}]
+        },
+        "distributed_validators": [],
+    }
+    (root / ".charon" / "cluster-lock.json").write_text(
+        __import__("json").dumps(lock),
+        encoding="utf-8",
+    )
+    plan = plan_cdvn_migration(str(root))
+    assert plan.fee_recipient.lower() == fee.lower()
+    argv = plan.deploy_argv()
+    assert argv[argv.index("--fee_address") + 1].lower() == fee.lower()
+
+
 def test_fee_recipient_from_deposit_data_withdrawal_credentials(tmp_path: Path):
     root = _write_cdvn(
         tmp_path,

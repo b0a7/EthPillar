@@ -221,14 +221,75 @@ class CdvnMigrationPlan:
         return argv
 
 
+def _valid_eth_address(val: object) -> str:
+    """Return *val* when it looks like a 20-byte hex address, else ``""``."""
+    if not isinstance(val, str):
+        return ""
+    candidate = val.strip().strip('"')
+    if not candidate.lower().startswith("0x") or len(candidate) != 42:
+        return ""
+    try:
+        int(candidate[2:], 16)
+    except ValueError:
+        return ""
+    return candidate
+
+
+def _fee_recipient_from_cluster_lock(charon_dir: str) -> str:
+    """Read fee recipient from Obol ``cluster-lock.json`` (primary CDVN source)."""
+    lock_path = os.path.join(charon_dir, "cluster-lock.json")
+    if not os.path.isfile(lock_path):
+        return ""
+    try:
+        import json
+
+        with open(lock_path, encoding="utf-8") as fh:
+            lock = json.load(fh)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return ""
+
+    cluster_def = lock.get("cluster_definition") or {}
+    if isinstance(cluster_def, dict):
+        for validator in cluster_def.get("validators") or []:
+            if not isinstance(validator, dict):
+                continue
+            for key in ("fee_recipient_address", "fee_recipient", "withdrawal_address"):
+                addr = _valid_eth_address(validator.get(key))
+                if addr:
+                    return addr
+        for key in ("fee_recipient_address", "fee_recipient"):
+            addr = _valid_eth_address(cluster_def.get(key))
+            if addr:
+                return addr
+        fee_addrs = cluster_def.get("fee_recipient_addresses")
+        if isinstance(fee_addrs, list):
+            for item in fee_addrs:
+                addr = _valid_eth_address(item)
+                if addr:
+                    return addr
+
+    for dv in lock.get("distributed_validators") or []:
+        if not isinstance(dv, dict):
+            continue
+        registration = dv.get("builder_registration") or {}
+        message = registration.get("message") or {}
+        addr = _valid_eth_address(message.get("fee_recipient"))
+        if addr:
+            return addr
+    return ""
+
+
 def _fee_recipient_from_cdvn(env: Dict[str, str], charon_dir: Optional[str]) -> str:
-    """Resolve fee recipient from CDVN ``.env`` or ``.charon/deposit-data.json``."""
+    """Resolve fee recipient from CDVN ``.env``, ``cluster-lock.json``, or ``deposit-data.json``."""
     for key in ("FEE_RECIPIENT_ADDRESS", "FEE_RECIPIENT", "CHARON_FEE_RECIPIENT"):
-        val = (env.get(key) or "").strip().strip('"')
-        if val.lower().startswith("0x") and len(val) == 42:
-            return val
+        addr = _valid_eth_address(env.get(key))
+        if addr:
+            return addr
     if not charon_dir:
         return ""
+    addr = _fee_recipient_from_cluster_lock(charon_dir)
+    if addr:
+        return addr
     dep_path = os.path.join(charon_dir, "deposit-data.json")
     if not os.path.isfile(dep_path):
         return ""
@@ -242,9 +303,9 @@ def _fee_recipient_from_cdvn(env: Dict[str, str], charon_dir: Optional[str]) -> 
             if not isinstance(item, dict):
                 continue
             for key in ("fee_recipient", "withdrawal_address", "withdrawalAddress"):
-                val = item.get(key)
-                if isinstance(val, str) and val.lower().startswith("0x") and len(val) == 42:
-                    return val
+                addr = _valid_eth_address(item.get(key))
+                if addr:
+                    return addr
             creds = item.get("withdrawal_credentials") or item.get("withdrawalCredentials")
             if isinstance(creds, str):
                 creds = creds.strip().lower()
@@ -743,8 +804,8 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
     fee_recipient = _fee_recipient_from_cdvn(env, str(charon_dir) if charon_dir else None)
     if not fee_recipient and vc_name:
         warnings.append(
-            "Fee recipient unset in CDVN .env and deposit-data.json; "
-            "deploy will prompt unless FEE_RECIPIENT_ADDRESS is set in .env.overrides."
+            "Fee recipient unset in CDVN .env, cluster-lock.json, and deposit-data.json; "
+            "deploy will fail unless FEE_RECIPIENT_ADDRESS is set in .env.overrides."
         )
 
     return CdvnMigrationPlan(
