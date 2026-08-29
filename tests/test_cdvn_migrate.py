@@ -346,7 +346,7 @@ def test_datadir_map_covers_stock_clients():
     assert VC_PROFILE_MAP["vc-lighthouse"] == "Lighthouse"
 
 
-def test_plan_docker_unknown_when_compose_present(tmp_path: Path, monkeypatch):
+def test_plan_docker_absent_cli_assumes_stopped(tmp_path: Path, monkeypatch):
     root = _write_cdvn(
         tmp_path,
         "NETWORK=mainnet\n"
@@ -359,11 +359,8 @@ def test_plan_docker_unknown_when_compose_present(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("deploy.cdvn_migrate.shutil.which", lambda _name: None)
     plan = plan_cdvn_migration(str(root))
     assert plan.docker_running is False
-    assert plan.docker_check_error
-    with pytest.raises(RuntimeError, match="Could not verify CDVN Docker"):
-        from deploy.cdvn_migrate import run_migration
-
-        run_migration(str(root), dry_run=True)
+    assert not plan.docker_check_error
+    assert any("Docker CLI not found" in w for w in plan.warnings)
 
 
 def test_detect_docker_compose_unknown_without_cli(tmp_path: Path, monkeypatch):
@@ -372,7 +369,7 @@ def test_detect_docker_compose_unknown_without_cli(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("deploy.cdvn_migrate.shutil.which", lambda _name: None)
     running, err = detect_docker_compose_status(str(compose), str(tmp_path))
     assert running is False
-    assert "cannot verify" in err
+    assert err == ""
 
 
 def test_detect_ethpillar_vc_name(tmp_path: Path):

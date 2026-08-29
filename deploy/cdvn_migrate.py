@@ -649,10 +649,8 @@ def detect_docker_compose_status(
             ["docker-compose", "-f", compose_file, "ps", "-q"]
         )
     if not commands:
-        return False, (
-            "Neither 'docker' nor 'docker-compose' is on PATH; "
-            "cannot verify CDVN is stopped"
-        )
+        # Docker removed or never installed — CDVN Compose cannot be running locally.
+        return False, ""
 
     last_err = ""
     for cmd in commands:
@@ -785,6 +783,13 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
     docker_running, docker_check_error = detect_docker_compose_status(
         str(compose_file) if compose_file else None, root
     )
+    if compose_file and not docker_check_error and not shutil.which("docker") and not shutil.which(
+        "docker-compose"
+    ):
+        warnings.append(
+            "Docker CLI not found; assuming CDVN Compose is stopped "
+            "(safe after docker compose down or Docker removal)."
+        )
 
     # Orphan data warnings
     for rel, kind in _ORPHAN_DATA_HINTS.items():
