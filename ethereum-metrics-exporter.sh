@@ -114,6 +114,22 @@ scrape_configs:
 EOF"
 }
 
+# Return Grafana http_port from grafana.ini (default 3000).
+function grafanaHttpPort(){
+	PYTHONPATH="${BASE_DIR}" python3 -c \
+		"from deploy.cdvn_migrate import read_grafana_http_port; print(read_grafana_http_port())" \
+		2>/dev/null || echo 3000
+}
+
+# Apply CDVN MONITORING_PORT_GRAFANA when ETHPILLAR_CDVN_ENV is set (migrate flow).
+function applyCdvnGrafanaPortFromEnv(){
+	local _env_path="${ETHPILLAR_CDVN_ENV:-}"
+	[[ -f "$_env_path" ]] || return 0
+	PYTHONPATH="${BASE_DIR}" python3 -c \
+		"from deploy.cdvn_migrate import apply_cdvn_monitoring_from_env; import sys; apply_cdvn_monitoring_from_env(sys.argv[1])" \
+		"$_env_path" >/dev/null 2>&1 || true
+}
+
 # Ensure Prometheus scrapes Charon :3620 and Grafana has Charon Overview.
 # Safe no-op when monitoring or Charon paths are absent.
 function provisionCharonMonitoring(){
@@ -171,11 +187,13 @@ EOF"
 
 # Asks whether to open grafana access to local network
 function allowLocalAccessToGrafana(){
+  local _grafana_port
+  _grafana_port=$(grafanaHttpPort)
   echo -e "\e[32m:: Open firewall to Grafana for local access ::\e[0m"
   echo "Allow access to Grafana from within your local network? [y|n]"
   read -rsn1 yn
   if [[ ${yn} = [Yy]* ]]; then
-    sudo ufw allow from "$network_current" to any port 3000 proto tcp comment 'Allow local LAN access to Grafana Port'
+    sudo ufw allow from "$network_current" to any port "$_grafana_port" proto tcp comment 'Allow local LAN access to Grafana Port'
   fi
 }
 
@@ -195,19 +213,20 @@ EOF"
 }
 
 function showNextSteps(){
-	local _msg _charon_hint=""
+	local _msg _charon_hint="" _grafana_port
+	_grafana_port=$(grafanaHttpPort)
 	if isCharonEnabled; then
 		_charon_hint="
 
-Charon Overview: http://127.0.0.1:3000/d/charon_overview/"
+Charon Overview: http://127.0.0.1:${_grafana_port}/d/charon_overview/"
 	fi
 	_msg="Successfully installed monitoring tools:
 ethereum-metrics-exporter, grafana, prometheus, node-exporter
 
 Access Grafana at:
-http://127.0.0.1:3000
+http://127.0.0.1:${_grafana_port}
 or
-http://${ip_current}:3000
+http://${ip_current}:${_grafana_port}
 
 Login: admin / admin
 
@@ -292,6 +311,7 @@ MSG_ABOUT="🚨 Monitoring with Ethereum Metrics Exporter & Grafana & Prometheus
 
   if ! whiptail --title "Monitoring: Installation" --yesno "$MSG_ABOUT" 22 78; then exit; fi
   installGrafanaPrometheus
+  applyCdvnGrafanaPortFromEnv
   installSystemd
   configureDataSource
   provisionDashboards

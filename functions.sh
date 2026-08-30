@@ -1096,20 +1096,24 @@ ${_migrate_log}" 12 78
     # Start Charon/VC before optional monitoring (monitoring install can block on log prompts).
     _migrateCdvnStartValidatorStack
 
-    # Fresh EthPillar monitoring + Charon dashboard
-    if [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then
-        if whiptail --title "Monitoring" --yesno \
-"Install EthPillar Monitoring (Grafana/Prometheus) with CDVN Charon dashboards?" 10 70; then
-            runScript ethereum-metrics-exporter.sh -i
-        fi
-    fi
-    if [[ -f /etc/prometheus/prometheus.yml ]] || [[ -d /etc/grafana ]]; then
-        PYTHONPATH="${BASE_DIR}" python3 -m manage.charon_monitoring provision --restart >/dev/null 2>&1 || true
-    fi
     if [[ -d "$path_in" ]]; then
         _cdvn_env="$path_in/.env"
     else
         _cdvn_env="$path_in"
+    fi
+    [[ -f "$_cdvn_env" ]] || _cdvn_env=""
+
+    # Fresh EthPillar monitoring + Charon dashboard
+    if [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then
+        if whiptail --title "Monitoring" --yesno \
+"Install EthPillar Monitoring (Grafana/Prometheus) with CDVN Charon dashboards?" 10 70; then
+            [[ -n "$_cdvn_env" ]] && export ETHPILLAR_CDVN_ENV="$_cdvn_env"
+            runScript ethereum-metrics-exporter.sh -i
+            unset ETHPILLAR_CDVN_ENV
+        fi
+    fi
+    if [[ -f /etc/prometheus/prometheus.yml ]] || [[ -d /etc/grafana ]]; then
+        PYTHONPATH="${BASE_DIR}" python3 -m manage.charon_monitoring provision --restart >/dev/null 2>&1 || true
     fi
     if [[ -f "$_cdvn_env" ]]; then
         _grafana_port=$(PYTHONPATH="${BASE_DIR}" python3 -c \
