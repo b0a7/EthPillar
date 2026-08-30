@@ -1201,17 +1201,23 @@ def _sync_import_keyshares(
                     "status": "skipped",
                     "reason": "Nimbus import needs keystore-*.txt passphrase files in .charon/validator_keys",
                 }
-            nimbus_bin = f"{INSTALL_DIR}/nimbus_validator_client"
+            # Nimbus docs: import via nimbus_beacon_node (not validator_client).
+            # --non-interactive applies to VC runtime, not deposits import.
+            nimbus_bin = f"{INSTALL_DIR}/nimbus_beacon_node"
             if not path_exists(nimbus_bin):
-                nimbus_bin = f"{INSTALL_DIR}/nimbus_beacon_node"
-            # Adjacent keystore-*.txt files in import_dir are the DKG passphrases.
+                return {
+                    "status": "failed",
+                    "reason": (
+                        f"{nimbus_bin} not found; Nimbus key import requires "
+                        "nimbus_beacon_node deposits import"
+                    ),
+                }
             subprocess.run(
                 [
                     "sudo",
                     "-u",
                     VC_RUN_USER,
                     nimbus_bin,
-                    "--non-interactive",
                     "deposits",
                     "import",
                     f"--data-dir={data_dir}",
