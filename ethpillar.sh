@@ -119,7 +119,7 @@ function printInstalledVersions() {
 
   if [[ -f "$charon_svc" ]]; then
     getCharonCurrentVersion || true
-    _CH="$(obol_menu "Obol Charon"): ${VERSION:-unknown}"
+    _CH="${OBOL_CHARON}: ${VERSION:-unknown}"
   else
     _CH=""
   fi
@@ -138,7 +138,7 @@ menuMain(){
 # Define systemctl services
 _SERVICES=("execution" "consensus" "validator" "mevboost" "charon" "csm_nimbusvalidator" "dora")
 _SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "Obol Charon DV" "CSM Nimbus Validator Plugin" "Dora the Explorer")
-_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "🪢" "💧" "🔎")
+_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "${OBOL_INF}" "💧" "🔎")
 
 function testAndServiceCommand() {
   for _service in "${_SERVICES[@]}"; do
@@ -155,11 +155,8 @@ function testAndPluginCommand() {
 
 function buildMenu() {
   for (( i=0; i<${#_SERVICES[@]}; i++ )); do
-    if test -f /etc/systemd/system/"${_SERVICES[i]}".service; then
-      local name="${_SERVICES_NAME[i]}"
-      [[ "${_SERVICES[i]}" == "charon" ]] && name="$(obol_menu "Obol Charon DV")"
-      OPTIONS+=("${_SERVICES_ICON[i]}" "$name")
-    fi
+    test -f /etc/systemd/system/"${_SERVICES[i]}".service \
+      && OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
   done
 }
 
@@ -226,7 +223,7 @@ while true; do
       ⚡)
         submenuMEV-Boost
         ;;
-      🪢)
+      "${OBOL_INF}")
         submenuCharon
         ;;
       💧)
@@ -1177,7 +1174,7 @@ while true; do
       6 "EC RPC Node: Allow local network access to RPC port 8545"
       7 "CC RPC Node: Allow local network access to RPC port 5052"
       8 "Monitoring: Allow local network access to Grafana port 3000"
-      9 "$(obol_menu "Obol Charon: Allow P2P port (from charon.service)")"
+      9 "${OBOL_CHARON}: Allow P2P port (from charon.service)"
       10 "Disable firewall"
       11 "Reset firewall rules: Delete all rules"
       - ""
@@ -1717,37 +1714,61 @@ done
 
 function getBackTitle(){
     getClient
-    # Latest block
-    latest_block_number=$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
-    if [[ -n "$latest_block_number" && "$latest_block_number" != "null" && "$latest_block_number" != "0x0" ]]; then LB=$(printf '🧱 Block %d' "$latest_block_number"); else LB="🔄 EL Syncing"; fi
+    local latest_block_number="" LB="" GP="N/A" LS="" latest_gas_price=""
 
-    # Latest slot
-    LS=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/syncing" -H "accept: application/json" | jq -r '.data.head_slot')
-    [[ "$LS" == "0" ]] && LS="N/A | 🔄 CL Syncing"
+    # Skip EL RPC when no local execution client (VC-only / Charon nodes).
+    if [[ -f /etc/systemd/system/execution.service ]]; then
+        latest_block_number=$(curl -sf -m 2 -X POST -H "Content-Type: application/json" \
+            --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+            "${EL_RPC_ENDPOINT}" 2>/dev/null | jq -r '.result')
+        if [[ -n "$latest_block_number" && "$latest_block_number" != "null" && "$latest_block_number" != "0x0" ]]; then
+            LB=$(printf '🧱 Block %d' "$latest_block_number")
+        else
+            LB="🔄 EL Syncing"
+        fi
 
-    # Format gas price
-    GP="N/A"
-    latest_gas_price=$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":73}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
-    if [[ -n "$latest_gas_price" && "$latest_gas_price" != "null" && "$latest_gas_price" =~ ^0x[0-9a-fA-F]+$ ]]; then
-      WEI=$(printf '%d' "$latest_gas_price");
-      if ((1000000000<="$WEI" && "$WEI"<=1000000000000)); then
-          GP="$(echo "scale=1; $WEI / 1000000000" | bc) Gwei"
-      elif ((1000000<="$WEI" && "$WEI"<=1000000000)); then
-          GP="$(echo "scale=1; $WEI / 1000000" | bc) Mwei"
-      elif ((1000<="$WEI" && "$WEI"<=1000000)); then
-          GP="$(echo "scale=1; $WEI / 1000" | bc) Kwei"
-      elif ((1<="$WEI" && "$WEI"<=1000)); then
-          GP="$(echo "scale=1; $WEI / 1" | bc) wei"
-      else
-          GP="🔄 Gas N/A - Syncing"
-      fi
+        latest_gas_price=$(curl -sf -m 2 -X POST -H "Content-Type: application/json" \
+            --data '{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":73}' \
+            "${EL_RPC_ENDPOINT}" 2>/dev/null | jq -r '.result')
+        if [[ -n "$latest_gas_price" && "$latest_gas_price" != "null" && "$latest_gas_price" =~ ^0x[0-9a-fA-F]+$ ]]; then
+            WEI=$(printf '%d' "$latest_gas_price")
+            if ((1000000000<="$WEI" && "$WEI"<=1000000000000)); then
+                GP="$(echo "scale=1; $WEI / 1000000000" | bc) Gwei"
+            elif ((1000000<="$WEI" && "$WEI"<=1000000000)); then
+                GP="$(echo "scale=1; $WEI / 1000000" | bc) Mwei"
+            elif ((1000<="$WEI" && "$WEI"<=1000000)); then
+                GP="$(echo "scale=1; $WEI / 1000" | bc) Kwei"
+            elif ((1<="$WEI" && "$WEI"<=1000)); then
+                GP="$(echo "scale=1; $WEI / 1" | bc) wei"
+            else
+                GP="🔄 Gas N/A - Syncing"
+            fi
+        fi
     fi
+
+    if [[ -f /etc/systemd/system/consensus.service ]]; then
+        LS=$(curl -sf -m 2 -X GET "${API_BN_ENDPOINT}/eth/v1/node/syncing" \
+            -H "accept: application/json" 2>/dev/null | jq -r '.data.head_slot')
+        [[ "$LS" == "0" ]] && LS="N/A | 🔄 CL Syncing"
+    fi
+
     # Text formatting
-    EL_TEXT=$(if systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; then printf '%s | ⛽ %s' "$LB" "$GP" ; elif [[ -f /etc/systemd/system/execution.service ]]; then printf '🛑 %s' "$EL" ; fi)
+    EL_TEXT=""
+    if [[ -f /etc/systemd/system/execution.service ]]; then
+        if systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; then
+            EL_TEXT=$(printf '%s | ⛽ %s' "$LB" "$GP")
+        else
+            EL_TEXT=$(printf '🛑 %s' "$EL")
+        fi
+    fi
     CL_TEXT=$(if systemctl is-active --quiet consensus || [[ -n "$LS" ]]; then printf '🔗 Slot %s' "$LS" ; elif [[ -f /etc/systemd/system/consensus.service ]]; then printf '🛑 %s' "$CL" ; fi)
     VC_TEXT=$(if systemctl is-active --quiet validator; then printf '✅ VC %s' "$VC" ; elif [[ -f /etc/systemd/system/validator.service ]]; then printf '🛑 VC %s' "$VC"; fi)
     HOSTNAME=$(hostname)
-    NETWORK_TEXT=$(if systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; then printf '🌐 %s on 💻 %s' "$NETWORK" "$HOSTNAME"; else printf '💻 %s' "$HOSTNAME" ; fi)
+    if [[ -f /etc/systemd/system/execution.service ]] && { systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; }; then
+        NETWORK_TEXT=$(printf '🌐 %s on 💻 %s' "$NETWORK" "$HOSTNAME")
+    else
+        NETWORK_TEXT=$(printf '💻 %s' "$HOSTNAME")
+    fi
     END_TEXT="✨ Public Goods by CoinCashew.eth"
     # Check if integrated EL/CL client
     if [[ -f /etc/systemd/system/execution.service ]] && grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi

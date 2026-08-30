@@ -31,21 +31,13 @@ bold="\033[1m"
 
 # Obol Charon branding (UTF-8 infinity)
 readonly OBOL_INF='∞'
-readonly OBOL_MARK="${g}${OBOL_INF}${nc}"  # green ∞ only (ANSI; whiptail menu column)
+readonly OBOL_MARK="${g}${OBOL_INF}${nc}"  # green ∞ for terminal output only (not whiptail)
 
-# Plain labels for whiptail titles (no ANSI — NEWT title bar cannot color one character)
+# Plain labels for whiptail (no ANSI — whiptail shows escape codes literally)
 readonly OBOL_CHARON_DV="${OBOL_INF} Obol Charon DV"
 readonly OBOL_CHARON="${OBOL_INF} Obol Charon"
 readonly OBOL_CHARON_KEY_SHARES="${OBOL_INF} Obol Charon key shares"
 readonly OBOL_IMPORT_KEY_SHARES="Import ${OBOL_INF} Obol Charon key shares"
-
-# Whiptail menu item text: green ∞ + plain suffix
-obol_menu() {
-  printf '%s %s' "$OBOL_MARK" "$*"
-}
-obol_import_menu() {
-  printf 'Import %s Obol Charon key shares' "$OBOL_MARK"
-}
 
 function info {
   echo -e "${g}INFO: $1${nc}"

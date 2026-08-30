@@ -1251,7 +1251,7 @@ OPTIONS=(
   1 "Generate new validator keys"
   2 "Import validator keys from offline key generation or backup"
   3 "Add new or regenerate existing validator keys from Secret Recovery Phrase"
-  4 "$(obol_import_menu) (/var/lib/charon/.charon)"
+  4 "${OBOL_IMPORT_KEY_SHARES} (/var/lib/charon/.charon)"
   - ""
   10 "List Keys (Keymanager API)"
   11 "Import Keystores (Keymanager API)"
