@@ -896,10 +896,16 @@ _migrateCdvnPromptStartValidatorStack(){
     _migrateCdvnStartValidatorStack
 }
 
+# Return 0 when EthPillar monitoring units are present (deb or custom systemd paths).
+_migrateCdvnMonitoringPresent(){
+    [[ -f /etc/systemd/system/ethereum-metrics-exporter.service ]] && return 0
+    systemctl cat grafana-server.service >/dev/null 2>&1 && return 0
+    return 1
+}
+
 # Start Grafana/Prometheus stack after monitoring is installed during CDVN migration.
 _migrateCdvnPromptStartMonitoring(){
-    [[ -f /etc/systemd/system/grafana-server.service ]] \
-        || [[ -f /etc/systemd/system/ethereum-metrics-exporter.service ]] || return 0
+    _migrateCdvnMonitoringPresent || return 0
     if ! whiptail --title "Start monitoring" --yesno \
 "Start Grafana, Prometheus, and metrics exporter now?" 9 70; then
         return 0
@@ -907,6 +913,11 @@ _migrateCdvnPromptStartMonitoring(){
     sudo systemctl start grafana-server prometheus prometheus-node-exporter 2>/dev/null || true
     [[ -f /etc/systemd/system/ethereum-metrics-exporter.service ]] \
         && sudo systemctl start ethereum-metrics-exporter 2>/dev/null || true
+    if whiptail --title "View monitoring logs" --yesno \
+"View Grafana/Prometheus/metrics exporter logs now?" 9 70; then
+        view_journal_logs -u grafana-server -u prometheus -u ethereum-metrics-exporter \
+            -u prometheus-node-exporter --no-hostname -f
+    fi
 }
 
 # Return 0 when Charon key shares exist under the EthPillar Charon datadir.
@@ -1154,9 +1165,10 @@ ${_migrate_log}" 12 78
     if [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then
         if whiptail --title "Monitoring" --yesno \
 "Install EthPillar Monitoring (Grafana/Prometheus) with CDVN ${OBOL_CHARON} dashboards?" 10 70; then
+            export ETHPILLAR_CDVN_MIGRATE=1
             [[ -n "$_cdvn_env" ]] && export ETHPILLAR_CDVN_ENV="$_cdvn_env"
             runScript ethereum-metrics-exporter.sh -i
-            unset ETHPILLAR_CDVN_ENV
+            unset ETHPILLAR_CDVN_ENV ETHPILLAR_CDVN_MIGRATE
         fi
     fi
     if [[ -f /etc/prometheus/prometheus.yml ]] || [[ -d /etc/grafana ]]; then

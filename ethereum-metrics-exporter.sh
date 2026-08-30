@@ -309,7 +309,9 @@ MSG_ABOUT="🚨 Monitoring with Ethereum Metrics Exporter & Grafana & Prometheus
 \nSource Code: https://github.com/ethpandaops/ethereum-metrics-exporter
 \nContinue to install?"
 
-  if ! whiptail --title "Monitoring: Installation" --yesno "$MSG_ABOUT" 22 78; then exit; fi
+  if [[ "${ETHPILLAR_CDVN_MIGRATE:-}" != "1" ]]; then
+    if ! whiptail --title "Monitoring: Installation" --yesno "$MSG_ABOUT" 22 78; then exit; fi
+  fi
   installGrafanaPrometheus
   applyCdvnGrafanaPortFromEnv
   installSystemd
@@ -319,7 +321,9 @@ MSG_ABOUT="🚨 Monitoring with Ethereum Metrics Exporter & Grafana & Prometheus
   getNetworkConfig
   allowLocalAccessToGrafana
   showNextSteps
-  promptViewLogs
+  if [[ "${ETHPILLAR_CDVN_MIGRATE:-}" != "1" ]]; then
+    promptViewLogs
+  fi
 }
 
 # Process command line options
