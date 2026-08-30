@@ -1,7 +1,9 @@
 """Tests for deploy/cdvn_migrate planning and deploy argv."""
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -10,12 +12,17 @@ from deploy.cdvn_migrate import (
     DATADIR_MOVES,
     VC_PROFILE_MAP,
     _fee_recipient_from_cdvn,
+    _fee_recipient_from_cluster_lock,
     _grafana_ini_with_http_port,
+    _read_charon_file_text,
+    _resolve_fee_recipient,
     detect_docker_compose_status,
     detect_ethpillar_vc_name,
     grafana_port_from_env,
     plan_cdvn_migration,
 )
+
+_DEFAULT_TEST_FEE = "0x388C818CA8B9251b393131C08a736A67ccB19297"
 
 
 def _write_cdvn(tmp_path: Path, env: str, *, with_lock: bool = True, data_dirs: list | None = None) -> Path:
@@ -25,7 +32,13 @@ def _write_cdvn(tmp_path: Path, env: str, *, with_lock: bool = True, data_dirs: 
     charon = root / ".charon"
     charon.mkdir()
     if with_lock:
-        (charon / "cluster-lock.json").write_text("{}", encoding="utf-8")
+        lock = {
+            "cluster_definition": {
+                "validators": [{"fee_recipient_address": _DEFAULT_TEST_FEE}]
+            },
+            "distributed_validators": [],
+        }
+        (charon / "cluster-lock.json").write_text(json.dumps(lock), encoding="utf-8")
         keys = charon / "validator_keys"
         keys.mkdir()
         (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
@@ -84,7 +97,18 @@ def test_plan_vc_teku_logs_only_skips_datadir_move(tmp_path: Path):
 def test_plan_symlink_charon(tmp_path: Path):
     real = tmp_path / "node2"
     real.mkdir()
-    (real / "cluster-lock.json").write_text("{}", encoding="utf-8")
+    fee = _DEFAULT_TEST_FEE
+    (real / "cluster-lock.json").write_text(
+        json.dumps(
+            {
+                "cluster_definition": {
+                    "validators": [{"fee_recipient_address": fee}],
+                },
+                "distributed_validators": [],
+            }
+        ),
+        encoding="utf-8",
+    )
     keys = real / "validator_keys"
     keys.mkdir()
     (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
@@ -178,17 +202,74 @@ def test_fee_recipient_ignores_withdrawal_credentials(tmp_path: Path):
         "CL=cl-none\n"
         "VC=vc-lodestar\n"
         "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
+        with_lock=False,
     )
+    charon = root / ".charon"
+    charon.mkdir(exist_ok=True)
     fee = "0x388C818CA8B9251b393131C08a736A67ccB19297"
     creds = "0x01" + "0" * 22 + fee[2:].lower()
-    (root / ".charon" / "deposit-data.json").write_text(
+    (charon / "deposit-data.json").write_text(
         f'[{{"withdrawal_credentials": "{creds}", "withdrawal_address": "{fee}"}}]',
         encoding="utf-8",
     )
+    with pytest.raises(ValueError, match="Fee recipient address is required"):
+        plan_cdvn_migration(str(root))
+
+
+def test_fee_recipient_from_root_owned_cluster_lock(tmp_path: Path, monkeypatch):
+    root = tmp_path / "cdvn"
+    root.mkdir()
+    (root / ".env").write_text(
+        "NETWORK=mainnet\n"
+        "EL=el-none\n"
+        "CL=cl-none\n"
+        "VC=vc-nimbus\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
+        encoding="utf-8",
+    )
+    charon = root / ".charon"
+    charon.mkdir()
+    keys = charon / "validator_keys"
+    keys.mkdir()
+    (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
+    fee = "0x1234567890123456789012345678901234567890"
+    lock_text = json.dumps(
+        {
+            "cluster_definition": {
+                "validators": [{"fee_recipient_address": fee}],
+            },
+            "distributed_validators": [],
+        }
+    )
+    lock_path = charon / "cluster-lock.json"
+    lock_path.write_text(lock_text, encoding="utf-8")
+    lock_path.chmod(0o600)
+
+    real_access = os.access
+
+    def _deny_read(path, mode):
+        if os.path.abspath(str(path)) == os.path.abspath(str(lock_path)) and mode == os.R_OK:
+            return False
+        return real_access(path, mode)
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(cmd) >= 3 and cmd[0] == "sudo" and cmd[1] == "cat" and cmd[2] == str(lock_path):
+            return subprocess.CompletedProcess(cmd, 0, stdout=lock_text)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr("deploy.cdvn_migrate.os.access", _deny_read)
+    monkeypatch.setattr("deploy.cdvn_migrate.subprocess.run", _fake_run)
+
+    env = {"NETWORK": "mainnet"}
+    assert _fee_recipient_from_cluster_lock(str(charon)) == fee
+    assert _resolve_fee_recipient(env, str(charon)) == fee
+    assert any(cmd[:3] == ["sudo", "cat", str(lock_path)] for cmd in calls)
+
     plan = plan_cdvn_migration(str(root))
-    assert plan.fee_recipient == ""
-    assert any("Fee recipient unset" in w for w in plan.warnings)
-    assert "--fee_address" not in plan.deploy_argv()
+    assert plan.fee_recipient == fee
 
 
 def test_plan_vc_lighthouse(tmp_path: Path):

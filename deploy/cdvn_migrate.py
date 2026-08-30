@@ -243,6 +243,67 @@ class CdvnMigrationPlan:
         return argv
 
 
+def _read_charon_file_text(path: str) -> str:
+    """Read a file under ``.charon``, using ``sudo cat`` when not user-readable."""
+    if os.path.isfile(path) and os.access(path, os.R_OK):
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    result = subprocess.run(
+        ["sudo", "cat", path],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise OSError(result.stderr.strip() or f"cannot read {path}")
+    return result.stdout
+
+
+def _fee_recipient_from_ethpillar_env() -> str:
+    """Resolve fee recipient from EthPillar ``env`` / ``.env.overrides``."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        dotenv_values = None  # type: ignore[assignment,misc]
+
+    for name in ("env", ".env.overrides"):
+        env_path = os.path.join(repo, name)
+        if not os.path.isfile(env_path):
+            continue
+        values: Dict[str, str] = {}
+        if dotenv_values is not None:
+            loaded = dotenv_values(env_path)
+            values = {str(k): str(v) for k, v in loaded.items() if k and v is not None}
+        else:
+            values = parse_dotenv(env_path)
+        for key in ("FEE_RECIPIENT_ADDRESS", "FEE_RECIPIENT"):
+            addr = _valid_eth_address(values.get(key, ""))
+            if addr:
+                return addr
+
+    return _valid_eth_address(os.getenv("FEE_RECIPIENT_ADDRESS", ""))
+
+
+def _resolve_fee_recipient(env: Dict[str, str], charon_dir: Optional[str]) -> str:
+    """Resolve fee recipient from CDVN assets and EthPillar env overrides."""
+    addr = _fee_recipient_from_cdvn(env, charon_dir)
+    if addr:
+        return addr
+    return _fee_recipient_from_ethpillar_env()
+
+
+def _require_fee_recipient(fee_recipient: str, vc_name: Optional[str]) -> None:
+    """Raise when a VC deploy is planned but no fee recipient could be resolved."""
+    if vc_name and not fee_recipient:
+        raise ValueError(
+            "Fee recipient address is required for validator deploy. Set "
+            "FEE_RECIPIENT_ADDRESS in EthPillar .env.overrides or CDVN .env, or "
+            "include fee_recipient in cluster-lock.json / deposit-data.json "
+            "(root-owned .charon files are read via sudo during migrate)."
+        )
+
+
 def _valid_eth_address(val: object) -> str:
     """Return *val* when it looks like a 20-byte hex address, else ``""``."""
     if not isinstance(val, str):
@@ -260,13 +321,10 @@ def _valid_eth_address(val: object) -> str:
 def _fee_recipient_from_cluster_lock(charon_dir: str) -> str:
     """Read fee recipient from Obol ``cluster-lock.json`` (primary CDVN source)."""
     lock_path = os.path.join(charon_dir, "cluster-lock.json")
-    if not os.path.isfile(lock_path):
+    if not path_exists(lock_path):
         return ""
     try:
-        import json
-
-        with open(lock_path, encoding="utf-8") as fh:
-            lock = json.load(fh)
+        lock = json.loads(_read_charon_file_text(lock_path))
     except (OSError, json.JSONDecodeError, TypeError):
         return ""
 
@@ -313,13 +371,10 @@ def _fee_recipient_from_cdvn(env: Dict[str, str], charon_dir: Optional[str]) -> 
     if addr:
         return addr
     dep_path = os.path.join(charon_dir, "deposit-data.json")
-    if not os.path.isfile(dep_path):
+    if not path_exists(dep_path):
         return ""
     try:
-        import json
-
-        with open(dep_path, encoding="utf-8") as fh:
-            data = json.load(fh)
+        data = json.loads(_read_charon_file_text(dep_path))
         items = data if isinstance(data, list) else [data]
         for item in items:
             if not isinstance(item, dict):
@@ -904,12 +959,8 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
             )
         )
 
-    fee_recipient = _fee_recipient_from_cdvn(env, str(charon_dir) if charon_dir else None)
-    if not fee_recipient and vc_name:
-        warnings.append(
-            "Fee recipient unset in CDVN .env, cluster-lock.json, and deposit-data.json; "
-            "deploy will fail unless FEE_RECIPIENT_ADDRESS is set in .env.overrides."
-        )
+    fee_recipient = _resolve_fee_recipient(env, str(charon_dir) if charon_dir else None)
+    _require_fee_recipient(fee_recipient, vc_name)
 
     return CdvnMigrationPlan(
         root=root,
