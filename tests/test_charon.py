@@ -1,6 +1,7 @@
 """Tests for deploy/charon.py beacon-endpoint patching and CDVN .env import."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -302,19 +303,19 @@ def test_sync_charon_keyshares_lighthouse_uses_password_file(tmp_path, monkeypat
     assert any("--password-file=" in str(c) for c in calls)
 
 
-def test_sync_charon_keyshares_nimbus_uses_beacon_node_import(tmp_path, monkeypatch):
+def test_sync_charon_keyshares_nimbus_uses_layout_import(tmp_path, monkeypatch):
     from deploy import charon as charon_mod
     from deploy.charon import sync_charon_keyshares_to_vc
 
     keys = tmp_path / "validator_keys"
     keys.mkdir()
-    (keys / "keystore-0.json").write_text("{}", encoding="utf-8")
+    keystore = {
+        "crypto": {},
+        "pubkey": "0x88a471158d618a8f9997dcb2cc1921411392d82d00e339ccf912fd9335bd42f97c9de046280d9d5f681a8e73a7d3baad",
+    }
+    (keys / "keystore-0.json").write_text(json.dumps(keystore), encoding="utf-8")
     (keys / "keystore-0.txt").write_text("password\n", encoding="utf-8")
     dest = tmp_path / "nimbus_validator"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "nimbus_beacon_node").write_text("", encoding="utf-8")
-    monkeypatch.setattr(charon_mod, "INSTALL_DIR", str(bin_dir))
     monkeypatch.setattr(charon_mod, "BASE_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(
         charon_mod,
@@ -330,17 +331,22 @@ def test_sync_charon_keyshares_nimbus_uses_beacon_node_import(tmp_path, monkeypa
             if "validator_keys" in cmd[2] or "charon-key-import" in cmd[2]:
                 names = "keystore-0.json\nkeystore-0.txt\n"
             return subprocess.CompletedProcess(cmd, 0, stdout=names)
+        if len(cmd) >= 3 and cmd[0] == "sudo" and cmd[1] == "cat":
+            target = cmd[2]
+            if target.endswith("keystore-0.json"):
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(keystore))
+            if target.endswith("keystore-0.txt"):
+                return subprocess.CompletedProcess(cmd, 0, stdout="password\n")
         return subprocess.CompletedProcess(cmd, 0)
 
     monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
     monkeypatch.setattr(charon_mod, "path_exists", lambda p, directory=False: True)
     result = sync_charon_keyshares_to_vc("Nimbus", keys_dir=str(keys))
     assert result["status"] == "copied"
-    assert any(
-        "nimbus_beacon_node" in str(c) and "deposits" in str(c) and "import" in str(c)
-        for c in calls
-    )
-    assert not any("--non-interactive" in str(c) for c in calls)
+    joined = " ".join(" ".join(str(part) for part in call) for call in calls)
+    pubkey = "0x88a471158d618a8f9997dcb2cc1921411392d82d00e339ccf912fd9335bd42f97c9de046280d9d5f681a8e73a7d3baad"
+    assert "validators" in joined and "secrets" in joined and pubkey in joined
+    assert not any("nimbus_beacon_node" in str(c) for c in calls)
 
 
 def test_vc_already_has_keys_after_lodestar_merge(tmp_path, monkeypatch):

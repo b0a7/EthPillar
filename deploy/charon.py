@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -925,8 +926,10 @@ def sync_charon_keyshares_to_vc(
     """Install Charon DKG key shares into the EthPillar VC layout.
 
     Teku/Grandine: copy ``keystore-*`` files into the VC keystore directory.
-    Lighthouse/Lodestar/Nimbus/Prysm: run the client import CLI (non-interactive
+    Lighthouse/Lodestar/Prysm: run the client import CLI (non-interactive
     when ``keystore-*.txt`` passphrase files are present).
+    Nimbus: write ``validators/<pubkey>/keystore.json`` and ``secrets/<pubkey>``
+    (``deposits import`` is interactive-only).
 
     Args:
         vc_name: EthPillar validator client name (e.g. ``Teku``, ``Lodestar``).
@@ -965,6 +968,74 @@ def _find_passphrase_file(keys_dir: str) -> Optional[str]:
         if name.startswith("keystore-") and name.endswith(".txt"):
             return os.path.join(keys_dir, name)
     return None
+
+
+def _sudo_read_text(path: str) -> str:
+    """Read a root-owned file via ``sudo cat``."""
+    result = subprocess.run(
+        ["sudo", "cat", path],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _sudo_write_text(path: str, content: str, *, mode: str = "0600") -> None:
+    """Write *content* to *path* as root with secure permissions."""
+    subprocess.run(
+        ["sudo", "tee", path],
+        input=content,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(["sudo", "chown", f"{VC_RUN_USER}:{VC_RUN_USER}", path], check=True)
+    subprocess.run(["sudo", "chmod", mode, path], check=True)
+
+
+def _normalize_eth_pubkey(pubkey: str) -> str:
+    """Return a lower-case ``0x``-prefixed BLS pubkey string."""
+    value = pubkey.strip().lower()
+    if not value.startswith("0x"):
+        value = f"0x{value}"
+    return value
+
+
+def _keystore_pubkey(keystore_path: str) -> str:
+    """Extract the validator pubkey from an EIP-2335 keystore JSON file."""
+    payload = json.loads(_sudo_read_text(keystore_path))
+    pubkey = payload.get("pubkey")
+    if not isinstance(pubkey, str) or not pubkey.strip():
+        raise ValueError(f"missing pubkey in {keystore_path}")
+    return _normalize_eth_pubkey(pubkey)
+
+
+def _import_nimbus_keyshares_layout(data_dir: str, import_dir: str, keystores: List[str]) -> None:
+    """Install Charon keystores into Nimbus ``validators/`` + ``secrets/`` layout.
+
+    ``nimbus_beacon_node deposits import`` is interactive-only (no password-file
+    flag). Nimbus VC reads the same on-disk layout that import would produce, so
+    we write ``validators/<pubkey>/keystore.json`` and ``secrets/<pubkey>`` directly.
+    """
+    validators_root = os.path.join(data_dir, "validators")
+    secrets_root = os.path.join(data_dir, "secrets")
+    subprocess.run(["sudo", "mkdir", "-p", validators_root, secrets_root], check=True)
+    for name in keystores:
+        keystore_path = os.path.join(import_dir, name)
+        passphrase_path = os.path.join(import_dir, name.replace(".json", ".txt"))
+        if not path_exists(passphrase_path):
+            raise FileNotFoundError(f"missing passphrase file for {name}: {passphrase_path}")
+        pubkey = _keystore_pubkey(keystore_path)
+        validator_dir = os.path.join(validators_root, pubkey)
+        secret_path = os.path.join(secrets_root, pubkey)
+        subprocess.run(["sudo", "mkdir", "-p", validator_dir], check=True)
+        subprocess.run(
+            ["sudo", "cp", "-a", keystore_path, os.path.join(validator_dir, "keystore.json")],
+            check=True,
+        )
+        _sudo_write_text(secret_path, _sudo_read_text(passphrase_path).rstrip("\n"))
+    subprocess.run(["sudo", "chmod", "700", validators_root, secrets_root], check=False)
 
 
 def _dir_has_keystore_json(path: str) -> bool:
@@ -1201,30 +1272,7 @@ def _sync_import_keyshares(
                     "status": "skipped",
                     "reason": "Nimbus import needs keystore-*.txt passphrase files in .charon/validator_keys",
                 }
-            # Nimbus docs: import via nimbus_beacon_node (not validator_client).
-            # --non-interactive applies to VC runtime, not deposits import.
-            nimbus_bin = f"{INSTALL_DIR}/nimbus_beacon_node"
-            if not path_exists(nimbus_bin):
-                return {
-                    "status": "failed",
-                    "reason": (
-                        f"{nimbus_bin} not found; Nimbus key import requires "
-                        "nimbus_beacon_node deposits import"
-                    ),
-                }
-            subprocess.run(
-                [
-                    "sudo",
-                    "-u",
-                    VC_RUN_USER,
-                    nimbus_bin,
-                    "deposits",
-                    "import",
-                    f"--data-dir={data_dir}",
-                    import_dir,
-                ],
-                check=True,
-            )
+            _import_nimbus_keyshares_layout(data_dir, import_dir, keystores)
         elif vc_name == "Prysm":
             if not passphrase:
                 return {
