@@ -29,15 +29,17 @@ r="\033[31m" # Red
 nc="\033[0m" # No-color
 bold="\033[1m"
 
-# Obol Charon branding (UTF-8 infinity)
-readonly OBOL_INF='∞'
-readonly OBOL_MARK="${g}${OBOL_INF}${nc}"  # green ∞ for terminal output only (not whiptail)
-
-# Plain labels for whiptail / menus (no ANSI or UTF-8 symbols — whiptail renders them literally)
-readonly OBOL_CHARON_DV="Obol Charon DV"
-readonly OBOL_CHARON="Obol Charon"
-readonly OBOL_CHARON_KEY_SHARES="Obol Charon key shares"
-readonly OBOL_IMPORT_KEY_SHARES="Import Obol Charon key shares"
+# Obol Charon branding (UTF-8 infinity). Guard so re-sourcing functions.sh
+# (e.g. switch_client.sh after a bats setup already sourced this file) is safe.
+if [[ ! -v OBOL_INF ]]; then
+  readonly OBOL_INF='∞'
+  readonly OBOL_MARK="${g}${OBOL_INF}${nc}"  # green ∞ for terminal output only (not whiptail)
+  # Plain labels for whiptail / menus (no ANSI or UTF-8 symbols)
+  readonly OBOL_CHARON_DV="Obol Charon DV"
+  readonly OBOL_CHARON="Obol Charon"
+  readonly OBOL_CHARON_KEY_SHARES="Obol Charon key shares"
+  readonly OBOL_IMPORT_KEY_SHARES="Import Obol Charon key shares"
+fi
 
 function info {
   echo -e "${g}INFO: $1${nc}"
@@ -670,7 +672,7 @@ getCharonP2pPort(){
     local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
     local bind="" port=""
     [[ -f "$charon_svc" ]] || return 0
-    bind=$(grep -oE '--p2p-tcp-address=[^ \\]+' "$charon_svc" 2>/dev/null | head -1 | cut -d= -f2-)
+    bind=$(grep -oE -- '--p2p-tcp-address=[^[:space:]\\]+' "$charon_svc" 2>/dev/null | head -1 | cut -d= -f2-)
     if [[ -n "$bind" ]]; then
         port="${bind##*:}"
     else
