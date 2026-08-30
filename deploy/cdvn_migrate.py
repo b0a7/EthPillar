@@ -1,5 +1,8 @@
 """Plan and run a CDVN → EthPillar full-stack migration.
 
+CDVN is Obol's docker-based charon-distributed-validator-node
+(https://github.com/ObolNetwork/charon-distributed-validator-node).
+
 Detects EL/CL/VC/MEV profiles from CDVN ``.env``, maps them to EthPillar
 clients, moves or merges Docker datadirs, copies ``.charon`` (following
 symlinks), writes ``charon.service`` from ``CHARON_*`` env vars, syncs DKG key
