@@ -18,7 +18,7 @@ import deploy.prysm as prysm
 
 CHARON_VC_LABEL = "Obol Charon DV"
 OBOL_CHARON = "Obol Charon"
-OBOL_IMPORT_KEY_SHARES = "Import ∞ Obol Charon key shares"
+OBOL_IMPORT_KEY_SHARES = "Import Obol Charon key shares"
 OBOL_GREEN = "\033[32m"
 OBOL_RESET = "\033[0m"
 

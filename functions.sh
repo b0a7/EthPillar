@@ -33,11 +33,11 @@ bold="\033[1m"
 readonly OBOL_INF='∞'
 readonly OBOL_MARK="${g}${OBOL_INF}${nc}"  # green ∞ for terminal output only (not whiptail)
 
-# Plain labels for whiptail (no ANSI — whiptail shows escape codes literally)
-readonly OBOL_CHARON_DV="${OBOL_INF} Obol Charon DV"
-readonly OBOL_CHARON="${OBOL_INF} Obol Charon"
-readonly OBOL_CHARON_KEY_SHARES="${OBOL_INF} Obol Charon key shares"
-readonly OBOL_IMPORT_KEY_SHARES="Import ${OBOL_INF} Obol Charon key shares"
+# Plain labels for whiptail / menus (no ANSI or UTF-8 symbols — whiptail renders them literally)
+readonly OBOL_CHARON_DV="Obol Charon DV"
+readonly OBOL_CHARON="Obol Charon"
+readonly OBOL_CHARON_KEY_SHARES="Obol Charon key shares"
+readonly OBOL_IMPORT_KEY_SHARES="Import Obol Charon key shares"
 
 function info {
   echo -e "${g}INFO: $1${nc}"
