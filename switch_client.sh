@@ -73,8 +73,8 @@ function switchClient(){
         if [ "$VALIDATOR_MODE" == "separate" ]; then
             if [ "$AUTO" != true ]; then
                 if isCharonEnabled; then
-                    whiptail --title "Separate Validator Client (Obol Charon)" --msgbox \
-                        "A separate validator client is installed behind Obol Charon on this node.\n\nDuring the consensus client switch:\n• Your validator will be stopped temporarily\n• Validator keys will not be changed\n• Charon's upstream beacon endpoint will be updated automatically\n• The validator stays pointed at Charon (:3600)\n• Charon and the validator will be restarted when the switch completes" \
+                    whiptail --title "Separate Validator Client (${OBOL_CHARON})" --msgbox \
+                        "A separate validator client is installed behind ${OBOL_CHARON} on this node.\n\nDuring the consensus client switch:\n• Your validator will be stopped temporarily\n• Validator keys will not be changed\n• Charon's upstream beacon endpoint will be updated automatically\n• The validator stays pointed at Charon (:3600)\n• Charon and the validator will be restarted when the switch completes" \
                         16 78
                 else
                     whiptail --title "Separate Validator Client" --msgbox \

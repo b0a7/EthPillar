@@ -16,7 +16,16 @@ import deploy.mevboost as mevboost
 import deploy.charon as charon
 import deploy.prysm as prysm
 
-CHARON_VC_LABEL = "Obol Charon DV"
+CHARON_VC_LABEL = "∞ Obol Charon DV"
+OBOL_CHARON = "∞ Obol Charon"
+OBOL_IMPORT_KEY_SHARES = "Import ∞ Obol Charon key shares"
+OBOL_GREEN = "\033[32m"
+OBOL_RESET = "\033[0m"
+
+
+def obol_mark() -> str:
+    """Green ∞ only (ANSI), for terminal output."""
+    return f"{OBOL_GREEN}∞{OBOL_RESET}"
 
 # Charon v1.11+ compatibility matrix: Lodestar BN + these VCs may fail duties (client bug, not Charon).
 LODESTAR_BN_INCOMPATIBLE_VCS = frozenset({"Lighthouse", "Nimbus", "Prysm"})

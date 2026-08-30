@@ -85,5 +85,5 @@ if [[ "${1:-}" == "--auto" ]]; then
 else
     getCurrentVersion
     getLatestVersion
-    promptYesNo "Charon" "Charon"
+    promptYesNo "${OBOL_CHARON}" "${OBOL_CHARON}"
 fi

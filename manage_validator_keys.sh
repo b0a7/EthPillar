@@ -166,7 +166,7 @@ function _getAmount(){
 function importCharonKeyShares(){
     local CHARON_KEYS="/var/lib/charon/.charon/validator_keys"
     if ! charonKeysharesPresent; then
-        whiptail --title "Obol Charon key shares" --msgbox \
+        whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
 "No Charon key shares found at:
 ${CHARON_KEYS}
 
@@ -183,12 +183,12 @@ Then import the key shares into the validator client." 18 78
         VC="${VALIDATOR_CLIENT:-}"
     fi
     if [[ -z "${VC:-}" ]]; then
-        whiptail --title "Obol Charon key shares" --msgbox \
+        whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
 "Could not detect the validator client from validator.service.
 Install a signer VC first, then retry." 10 70
         return 1
     fi
-    if ! whiptail --title "Import Obol Charon key shares" --yesno \
+    if ! whiptail --title "${OBOL_IMPORT_KEY_SHARES}" --yesno \
 "Import EIP-2335 key shares from:
 ${CHARON_KEYS}
 
@@ -201,7 +201,7 @@ is started, then the validator client.
 Continue?" 18 78; then
         return
     fi
-    ohai "Importing Obol Charon key shares into ${VC}…"
+    ohai "Importing ${OBOL_MARK} Obol Charon key shares into ${VC}…"
     if [[ "$VC" == "Grandine" ]]; then
         sudo systemctl stop consensus 2>/dev/null || true
     else
@@ -223,7 +223,7 @@ PY
     local rc=$?
     set -e
     if [[ $rc -ne 0 ]]; then
-        whiptail --title "Obol Charon key shares" --msgbox \
+        whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
 "Key share import into ${VC} failed. Check the terminal output.
 Do not use solo-key Import (loadKeys) for Charon shares." 12 70
         return 1
@@ -234,7 +234,7 @@ Do not use solo-key Import (loadKeys) for Charon shares." 12 70
     else
         sudo systemctl start validator
     fi
-    whiptail --title "Obol Charon key shares" --msgbox \
+    whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
 "Imported Charon key shares into ${VC}.
 Start order: Charon, then the validator client." 10 70
     promptViewLogs "default"
@@ -1251,7 +1251,7 @@ OPTIONS=(
   1 "Generate new validator keys"
   2 "Import validator keys from offline key generation or backup"
   3 "Add new or regenerate existing validator keys from Secret Recovery Phrase"
-  4 "Import Obol Charon key shares (/var/lib/charon/.charon)"
+  4 "$(obol_import_menu) (/var/lib/charon/.charon)"
   - ""
   10 "List Keys (Keymanager API)"
   11 "Import Keystores (Keymanager API)"

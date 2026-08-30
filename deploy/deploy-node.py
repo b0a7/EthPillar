@@ -12,7 +12,7 @@ import common as common
 from orchestrator import (
     VALID_ROLES, resolve_role_flags, get_combo_menu, get_vc_menu,
     get_ec_menu, get_cc_menu, get_vc_options_for_cc, resolve_vc_name, run_install,
-    CHARON_VC_LABEL, is_charon_vc_choice, lodestar_bn_vc_incompatibility_message,
+    CHARON_VC_LABEL, OBOL_CHARON, is_charon_vc_choice, lodestar_bn_vc_incompatibility_message,
 )
 import config
 
@@ -120,12 +120,12 @@ flags["builder_api"] = bool(
 )
 if args.vc == CHARON_VC_LABEL:
     print(
-        "ERROR: --vc 'Obol Charon DV' is not a signer client. "
+        f"ERROR: --vc '{CHARON_VC_LABEL}' is not a signer client. "
         "Use --with_charon --vc <Lighthouse|Nimbus|Teku|Lodestar|Prysm>."
     )
     exit(1)
 if flags["charon"] and args.vc == "Grandine (integrated)":
-    print("ERROR: Obol Charon is incompatible with Grandine (integrated).")
+    print(f"ERROR: {OBOL_CHARON} is incompatible with Grandine (integrated).")
     exit(1)
 
 # 3. Client Selection
@@ -167,8 +167,8 @@ elif flags['validator_only']:
                 signer_menu = get_vc_menu(include_charon=False)
                 signer_idx = SelectionMenu.get_selection(
                     signer_menu,
-                    title='Charon Signer',
-                    subtitle='Select the validator client that will sign behind Charon:',
+                    title=f'{OBOL_CHARON} Signer',
+                    subtitle=f'Select the validator client that will sign behind {OBOL_CHARON}:',
                     show_exit_option=False,
                 )
                 vc_name = signer_menu[signer_idx]
@@ -237,8 +237,8 @@ elif role == "Custom Setup":
                     )
                     signer_idx = SelectionMenu.get_selection(
                         signer_opts,
-                        title='Charon Signer',
-                        subtitle='Select the validator client that will sign behind Charon:',
+                        title=f'{OBOL_CHARON} Signer',
+                        subtitle=f'Select the validator client that will sign behind {OBOL_CHARON}:',
                         show_exit_option=False,
                     )
                     vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
@@ -290,7 +290,7 @@ else:
             mode_idx = SelectionMenu.get_selection(
                 mode_opts,
                 title='Validator Client',
-                subtitle='Use same client as consensus, or Obol Charon DV?',
+                subtitle=f'Use same client as consensus, or {CHARON_VC_LABEL}?',
                 show_exit_option=False,
             )
             if is_charon_vc_choice(mode_opts[mode_idx]):
@@ -300,8 +300,8 @@ else:
                 )
                 signer_idx = SelectionMenu.get_selection(
                     signer_opts,
-                    title='Charon Signer',
-                    subtitle='Select the validator client that will sign behind Charon:',
+                    title=f'{OBOL_CHARON} Signer',
+                    subtitle=f'Select the validator client that will sign behind {OBOL_CHARON}:',
                     show_exit_option=False,
                 )
                 vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
@@ -387,7 +387,7 @@ if _bn_vc_warn and not skip_prompts:
     cont = SelectionMenu.get_selection(
         ["Continue anyway", "Abort install"],
         title="Lodestar BN compatibility",
-        subtitle="Obol Charon v1.11+ marks this BN/VC pair as duties may fail.",
+        subtitle=f"{OBOL_CHARON} v1.11+ marks this BN/VC pair as duties may fail.",
         show_exit_option=False,
     )
     if cont != 0:

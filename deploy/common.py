@@ -591,13 +591,14 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
 
     if charon_enabled:
         from deploy.charon import CHARON_CLUSTER_DIR, CHARON_VALIDATOR_KEYS_DIR
-        print('\nObol Charon next steps:')
+        from deploy.orchestrator import obol_mark
+        print(f'\n{obol_mark()} Obol Charon next steps:')
         print(f'  1. Copy your existing .charon folder to {CHARON_CLUSTER_DIR}')
         print(f'     sudo cp -a /path/to/.charon/. {CHARON_CLUSTER_DIR}/')
         print(f'     sudo chown -R charon:charon {CHARON_CLUSTER_DIR}')
         print('  2. sudo systemctl start charon')
         print(f'  3. Import key shares from {CHARON_VALIDATOR_KEYS_DIR}')
-        print('     EthPillar → Validator → Generate / Import Validator Keys → Import Obol Charon key shares')
+        print(f'     EthPillar → Validator → Generate / Import Validator Keys → Import {obol_mark()} Obol Charon key shares')
         print('  4. sudo systemctl start validator')
         try:
             from deploy.charon import parse_p2p_tcp_port

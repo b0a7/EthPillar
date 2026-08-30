@@ -29,6 +29,24 @@ r="\033[31m" # Red
 nc="\033[0m" # No-color
 bold="\033[1m"
 
+# Obol Charon branding (UTF-8 infinity)
+readonly OBOL_INF='∞'
+readonly OBOL_MARK="${g}${OBOL_INF}${nc}"  # green ∞ only (ANSI; whiptail menu column)
+
+# Plain labels for whiptail titles (no ANSI — NEWT title bar cannot color one character)
+readonly OBOL_CHARON_DV="${OBOL_INF} Obol Charon DV"
+readonly OBOL_CHARON="${OBOL_INF} Obol Charon"
+readonly OBOL_CHARON_KEY_SHARES="${OBOL_INF} Obol Charon key shares"
+readonly OBOL_IMPORT_KEY_SHARES="Import ${OBOL_INF} Obol Charon key shares"
+
+# Whiptail menu item text: green ∞ + plain suffix
+obol_menu() {
+  printf '%s %s' "$OBOL_MARK" "$*"
+}
+obol_import_menu() {
+  printf 'Import %s Obol Charon key shares' "$OBOL_MARK"
+}
+
 function info {
   echo -e "${g}INFO: $1${nc}"
 }
@@ -1071,7 +1089,7 @@ ${_migrate_log}" 12 78
     if [[ -f /etc/systemd/system/validator.service ]] \
         && charonKeysharesPresent \
         && ! _ethpillarVcHasImportedKeys; then
-        ohai "Importing Obol Charon key shares into validator client…"
+        ohai "Importing ${OBOL_MARK} Obol Charon key shares into validator client…"
         PYTHONPATH="${BASE_DIR}" python3 - <<'PY' 2>&1 | tee -a "$_migrate_log"
 from deploy.charon import sync_charon_keyshares_to_vc
 from deploy.cdvn_migrate import detect_ethpillar_vc_name
@@ -1106,7 +1124,7 @@ ${_migrate_log}" 12 78
     # Fresh EthPillar monitoring + Charon dashboard
     if [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then
         if whiptail --title "Monitoring" --yesno \
-"Install EthPillar Monitoring (Grafana/Prometheus) with CDVN Charon dashboards?" 10 70; then
+"Install EthPillar Monitoring (Grafana/Prometheus) with CDVN ${OBOL_CHARON} dashboards?" 10 70; then
             [[ -n "$_cdvn_env" ]] && export ETHPILLAR_CDVN_ENV="$_cdvn_env"
             runScript ethereum-metrics-exporter.sh -i
             unset ETHPILLAR_CDVN_ENV

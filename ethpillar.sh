@@ -119,7 +119,7 @@ function printInstalledVersions() {
 
   if [[ -f "$charon_svc" ]]; then
     getCharonCurrentVersion || true
-    _CH="Charon: ${VERSION:-unknown}"
+    _CH="$(obol_menu "Obol Charon"): ${VERSION:-unknown}"
   else
     _CH=""
   fi
@@ -155,7 +155,11 @@ function testAndPluginCommand() {
 
 function buildMenu() {
   for (( i=0; i<${#_SERVICES[@]}; i++ )); do
-    test -f /etc/systemd/system/"${_SERVICES[i]}".service && OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
+    if test -f /etc/systemd/system/"${_SERVICES[i]}".service; then
+      local name="${_SERVICES_NAME[i]}"
+      [[ "${_SERVICES[i]}" == "charon" ]] && name="$(obol_menu "Obol Charon DV")"
+      OPTIONS+=("${_SERVICES_ICON[i]}" "$name")
+    fi
   done
 }
 
@@ -668,7 +672,7 @@ while true; do
 
     SUBCHOICE=$(whiptail --clear --cancel-button "Back" \
       --backtitle "$BACKTITLE" \
-      --title "Obol Charon DV" \
+      --title "${OBOL_CHARON_DV}" \
       --menu "Choose one of the following options:" \
       0 0 0 \
       "${SUBOPTIONS[@]}" \
@@ -1173,7 +1177,7 @@ while true; do
       6 "EC RPC Node: Allow local network access to RPC port 8545"
       7 "CC RPC Node: Allow local network access to RPC port 5052"
       8 "Monitoring: Allow local network access to Grafana port 3000"
-      9 "Charon: Allow Charon P2P port (from charon.service)"
+      9 "$(obol_menu "Obol Charon: Allow P2P port (from charon.service)")"
       10 "Disable firewall"
       11 "Reset firewall rules: Delete all rules"
       - ""
@@ -1280,7 +1284,7 @@ while true; do
             ufwAllowCharonP2p
             ohai "Charon P2P port $(getCharonP2pPort) allowed (TCP)."
         else
-            whiptail --title "Charon" --msgbox "charon.service is not installed.\nInstall Charon first, or use option 2 to allow a port manually." 10 70
+            whiptail --title "${OBOL_CHARON}" --msgbox "charon.service is not installed.\nInstall ${OBOL_CHARON} first, or use option 2 to allow a port manually." 10 70
         fi
         sleep 2
         ;;
