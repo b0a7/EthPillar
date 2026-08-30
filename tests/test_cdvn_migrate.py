@@ -13,7 +13,6 @@ from deploy.cdvn_migrate import (
     VC_PROFILE_MAP,
     _fee_recipient_from_cdvn,
     _fee_recipient_from_cluster_lock,
-    _grafana_ini_with_http_port,
     _read_charon_file_text,
     _resolve_fee_recipient,
     detect_docker_compose_status,
@@ -550,28 +549,6 @@ def test_grafana_port_from_env():
     assert grafana_port_from_env({"MONITORING_PORT_GRAFANA": "0"}) is None
 
 
-def test_grafana_ini_http_port_rewrite():
-    content = "[server]\nhttp_port = 3000\ndomain = localhost\n"
-    updated = _grafana_ini_with_http_port(content, 3701)
-    assert "http_port = 3701" in updated
-    assert "http_port = 3000" not in updated
-
-
-def test_grafana_ini_http_port_rewrite_commented_default():
-    content = "[server]\n;http_port = 3000\ndomain = localhost\n"
-    updated = _grafana_ini_with_http_port(content, 3701)
-    assert "http_port = 3701" in updated
-    assert ";http_port = 3000" not in updated
-
-
-def test_parse_grafana_http_port_from_ini():
-    from deploy.cdvn_migrate import _parse_grafana_http_port_from_ini, read_grafana_http_port
-
-    content = "[server]\n;http_port = 3000\nhttp_port = 3701\n"
-    assert _parse_grafana_http_port_from_ini(content) == 3701
-    assert read_grafana_http_port() == 3000  # no grafana.ini in test env
-
-
 def test_apply_cdvn_monitoring_from_env_reads_effective_port(monkeypatch, tmp_path):
     from deploy.cdvn_migrate import apply_cdvn_monitoring_from_env
 
@@ -582,7 +559,7 @@ def test_apply_cdvn_monitoring_from_env_reads_effective_port(monkeypatch, tmp_pa
         lambda port: port == 3701,
     )
     monkeypatch.setattr(
-        "deploy.cdvn_migrate._read_grafana_ini",
+        "deploy.cdvn_migrate.read_grafana_ini",
         lambda: "[server]\nhttp_port = 3000\n",
     )
     monkeypatch.setattr(

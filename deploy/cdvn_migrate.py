@@ -18,7 +18,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -39,6 +38,11 @@ from deploy.charon import (
 )
 from deploy.orchestrator import lodestar_bn_vc_incompatibility_message
 from deploy.common import BASE_DATA_DIR, setup_client_user_and_dir
+from manage.grafana import (
+    apply_grafana_http_port,
+    read_grafana_http_port,
+    read_grafana_ini,
+)
 
 # Stock CDVN compose profile tokens → EthPillar client names for *local* migrate.
 # Upstream CDVN compose-el.yml only defines el-nethermind and el-reth; other EL=
@@ -497,115 +501,6 @@ def grafana_port_from_env(env: Dict[str, str]) -> Optional[int]:
     return port
 
 
-def _read_grafana_ini() -> Optional[str]:
-    """Read ``/etc/grafana/grafana.ini`` (directly or via sudo when needed)."""
-    ini = Path("/etc/grafana/grafana.ini")
-    if ini.is_file():
-        try:
-            return ini.read_text(encoding="utf-8")
-        except OSError:
-            pass
-    result = subprocess.run(
-        ["sudo", "cat", str(ini)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode == 0 and result.stdout:
-        return result.stdout
-    return None
-
-
-def _parse_grafana_http_port_from_ini(content: str) -> Optional[int]:
-    """Return active ``http_port`` from ``grafana.ini`` ``[server]`` section."""
-    in_server = False
-    commented: Optional[int] = None
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            in_server = stripped.lower() == "[server]"
-            continue
-        if not in_server:
-            continue
-        match = re.match(r"^;?\s*http_port\s*=\s*(\d+)", stripped)
-        if not match:
-            continue
-        port = int(match.group(1))
-        if stripped.startswith(";"):
-            commented = port
-        else:
-            return port
-    return commented
-
-
-def read_grafana_http_port(default: int = 3000) -> int:
-    """Return Grafana ``http_port`` from ``grafana.ini``, or *default* when unset."""
-    content = _read_grafana_ini()
-    if content is None:
-        return default
-    port = _parse_grafana_http_port_from_ini(content)
-    return port if port is not None else default
-
-
-def apply_grafana_http_port(port: int) -> bool:
-    """Set Grafana ``http_port`` in ``/etc/grafana/grafana.ini`` and restart.
-
-    Returns True when the port was applied (ini updated or already matched).
-    """
-    content = _read_grafana_ini()
-    if content is None:
-        return False
-
-    fd, tmp_name = tempfile.mkstemp(prefix="ethpillar-grafana-", suffix=".ini")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(_grafana_ini_with_http_port(content, port))
-        subprocess.run(["sudo", "cp", tmp_name, "/etc/grafana/grafana.ini"], check=True)
-    finally:
-        try:
-            os.remove(tmp_name)
-        except OSError:
-            pass
-    subprocess.run(
-        ["sudo", "systemctl", "try-restart", "grafana-server"],
-        check=False,
-    )
-    return True
-
-
-def _grafana_ini_with_http_port(content: str, port: int) -> str:
-    """Return ``grafana.ini`` content with ``[server] http_port`` set to *port*.
-
-    Args:
-        content: Existing ``grafana.ini`` text.
-        port: TCP port for Grafana HTTP UI.
-
-    Returns:
-        Updated ini text (inserts or replaces ``http_port`` under ``[server]``).
-    """
-    new_line = f"http_port = {port}\n"
-    out: List[str] = []
-    in_server = False
-    replaced = False
-    for line in content.splitlines(keepends=True):
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            if in_server and not replaced:
-                out.append(new_line)
-                replaced = True
-            in_server = stripped.lower() == "[server]"
-            out.append(line)
-            continue
-        if in_server and re.match(r"^;?\s*http_port", stripped):
-            out.append(new_line)
-            replaced = True
-            continue
-        out.append(line)
-    if in_server and not replaced:
-        out.append(new_line)
-    return "".join(out)
-
-
 def apply_cdvn_monitoring_from_env(env_path: str) -> Optional[int]:
     """Apply CDVN monitoring settings (Grafana port) after EthPillar monitoring install.
 
@@ -621,7 +516,7 @@ def apply_cdvn_monitoring_from_env(env_path: str) -> Optional[int]:
     desired = grafana_port_from_env(env)
     if desired is not None:
         apply_grafana_http_port(desired)
-    if _read_grafana_ini() is None:
+    if read_grafana_ini() is None:
         return None
     return read_grafana_http_port()
 

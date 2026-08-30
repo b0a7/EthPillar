@@ -1183,7 +1183,7 @@ ${_migrate_log}" 12 78
             "$_cdvn_env")
     elif [[ -d /etc/grafana ]]; then
         _grafana_port=$(PYTHONPATH="${BASE_DIR}" python3 -c \
-            "from deploy.cdvn_migrate import read_grafana_http_port; print(read_grafana_http_port())")
+            "from manage.grafana import read_grafana_http_port; print(read_grafana_http_port())")
     fi
     if [[ -n "${_grafana_port:-}" ]]; then
         _migrateCdvnLog "Grafana http_port: ${_grafana_port}"

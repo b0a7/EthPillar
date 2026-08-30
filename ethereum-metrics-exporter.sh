@@ -117,7 +117,7 @@ EOF"
 # Return Grafana http_port from grafana.ini (default 3000).
 function grafanaHttpPort(){
 	PYTHONPATH="${BASE_DIR}" python3 -c \
-		"from deploy.cdvn_migrate import read_grafana_http_port; print(read_grafana_http_port())" \
+		"from manage.grafana import read_grafana_http_port; print(read_grafana_http_port())" \
 		2>/dev/null || echo 3000
 }
 
