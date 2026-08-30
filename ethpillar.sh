@@ -1746,7 +1746,7 @@ function getBackTitle(){
     NETWORK_TEXT=$(if systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; then printf '🌐 %s on 💻 %s' "$NETWORK" "$HOSTNAME"; else printf '💻 %s' "$HOSTNAME" ; fi)
     END_TEXT="✨ Public Goods by CoinCashew.eth"
     # Check if integrated EL/CL client
-    if grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
+    if [[ -f /etc/systemd/system/execution.service ]] && grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
 
     case ${NODE_MODE%% |*} in
     "Solo Staking Node" | "Lido CSM Staking Node" | "Failover Staking Node" )
@@ -1841,7 +1841,7 @@ function applyPatches(){
 # Determine node configuration
 function setNodeMode(){
   # Check if integrated EL/CL client
-  if grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
+  if [[ -f /etc/systemd/system/execution.service ]] && grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
   if [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service || ${isIntegrated:-false} == "true" ]] && [[ -f /etc/systemd/system/validator.service ]]; then
      if [[ $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_MAINNET}" /etc/systemd/system/validator.service) || $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_HOLESKY}" /etc/systemd/system/validator.service) || $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_HOODI}" /etc/systemd/system/validator.service) ]]; then
         NODE_MODE="Lido CSM Staking Node"
