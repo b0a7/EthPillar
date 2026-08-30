@@ -155,20 +155,21 @@ class CdvnMigrationPlan:
 
     def summary(self) -> str:
         """Human-readable plan for confirmation / dry-run."""
+        arrow = "->"
         lines = [
-            "CDVN → EthPillar migration plan",
+            f"CDVN {arrow} EthPillar migration plan",
             f"  Checkout:     {self.root}",
             f"  .env:         {self.env_path or '(none)'}",
             f"  Network:      {self.network}",
             f"  Role:         {self.role}",
-            f"  EL profile:   {self.el_profile or '(unset)'} → {self.ec_name or 'none'}",
-            f"  CL profile:   {self.cl_profile or '(unset)'} → {self.cc_name or 'none'}",
-            f"  VC profile:   {self.vc_profile or '(unset)'} → {self.vc_name or 'none'}",
+            f"  EL profile:   {self.el_profile or '(unset)'} {arrow} {self.ec_name or 'none'}",
+            f"  CL profile:   {self.cl_profile or '(unset)'} {arrow} {self.cc_name or 'none'}",
+            f"  VC profile:   {self.vc_profile or '(unset)'} {arrow} {self.vc_name or 'none'}",
             f"  MEV profile:  {self.mev_profile or '(unset)'} "
             f"(local_mevboost={self.with_mevboost}, builder_api={self.with_builder_api})",
             f"  Charon:       {self.with_charon} (lock={self.has_lock}, keys={self.has_keyshares})",
             (
-                f"  Charon path:  {self.charon_link} → {self.charon_dir}"
+                f"  Charon path:  {self.charon_link} {arrow} {self.charon_dir}"
                 if self.charon_is_symlink and self.charon_link and self.charon_dir
                 else f"  Charon path:  {self.charon_dir or '(none)'}"
             ),
@@ -191,7 +192,7 @@ class CdvnMigrationPlan:
         for move in self.datadir_moves:
             if move.will_move:
                 lines.append(f"  MOVE  {move.src}")
-                lines.append(f"    →   {move.dest}  (owner={move.owner})")
+                lines.append(f"    {arrow}   {move.dest}  (owner={move.owner})")
             else:
                 lines.append(f"  SKIP  {move.src}  ({move.skip_reason})")
         if self.has_lock and self.charon_dir:
@@ -201,7 +202,7 @@ class CdvnMigrationPlan:
                     "",
                     "Charon cluster overlay (always copied; CDVN checkout preserved):",
                     f"  COPY  {self.charon_dir}",
-                    f"    →   {dest_charon}  (owner=charon)",
+                    f"    {arrow}   {dest_charon}  (owner=charon)",
                 ]
             )
         if self.warnings:
