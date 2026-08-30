@@ -1,4 +1,4 @@
-"""Grafana ini helpers (http_port read/write) used by monitoring and CDVN migrate."""
+"""Grafana helpers: ini http_port, provisioning files, and dashboard downloads."""
 
 from __future__ import annotations
 
@@ -6,11 +6,24 @@ import os
 import re
 import subprocess
 import tempfile
+import urllib.request
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 GRAFANA_INI_PATH = Path("/etc/grafana/grafana.ini")
 DEFAULT_GRAFANA_HTTP_PORT = 3000
+DEFAULT_GRAFANA_DASHBOARDS = Path("/etc/grafana/provisioning/dashboards")
+DEFAULT_DATASOURCES_YML = Path("/etc/grafana/provisioning/datasources/datasources.yml")
+_DEFAULT_PROMETHEUS_DATASOURCE = (
+    "apiVersion: 1\n"
+    "datasources:\n"
+    "  - name: Prometheus\n"
+    "    type: prometheus\n"
+    "    uid: prometheus\n"
+    "    url: http://localhost:9090\n"
+    "    access: proxy\n"
+    "    isDefault: true\n"
+)
 
 
 def read_grafana_ini() -> Optional[str]:
@@ -142,3 +155,97 @@ def _grafana_ini_with_http_port(content: str, port: int) -> str:
     if in_server and not replaced:
         out.append(new_line)
     return "".join(out)
+
+
+def finalize_grafana_provisioned_file(path: Path) -> None:
+    """Ensure Grafana (user ``grafana``) can read a file-provisioned file.
+
+    Args:
+        path: Provisioned file under ``/etc/grafana`` (no-op for other paths).
+    """
+    if not str(path).startswith("/etc/grafana"):
+        return
+    subprocess.run(["sudo", "chown", "root:grafana", str(path)], check=False)
+    subprocess.run(["sudo", "chmod", "644", str(path)], check=False)
+
+
+def write_privileged_file(path: Path, data: Union[str, bytes]) -> None:
+    """Write ``data`` to ``path``, using ``sudo cp`` when /etc is not writable.
+
+    Grafana-provisioned paths also get ``root:grafana`` ownership.
+
+    Args:
+        path: Destination file.
+        data: Text or bytes to write (text is encoded as UTF-8).
+    """
+    raw = data.encode("utf-8") if isinstance(data, str) else data
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        finalize_grafana_provisioned_file(path)
+        return
+    except PermissionError:
+        pass
+
+    subprocess.run(["sudo", "mkdir", "-p", str(path.parent)], check=True)
+    fd, tmp = tempfile.mkstemp(prefix="ethpillar-grafana-")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+        subprocess.run(["sudo", "cp", tmp, str(path)], check=True)
+        finalize_grafana_provisioned_file(path)
+    finally:
+        try:
+            os.remove(tmp)
+        except FileNotFoundError:
+            pass
+
+
+def ensure_prometheus_datasource_uid(datasources_yml: Path) -> bool:
+    """Ensure Grafana Prometheus datasource uses ``uid: prometheus``.
+
+    Args:
+        datasources_yml: Grafana datasources provisioning file path.
+
+    Returns:
+        True if the file was created or modified.
+    """
+    grafana_etc = Path("/etc/grafana")
+    if not datasources_yml.is_file():
+        if not grafana_etc.is_dir():
+            return False
+        write_privileged_file(datasources_yml, _DEFAULT_PROMETHEUS_DATASOURCE)
+        return True
+
+    text = datasources_yml.read_text(encoding="utf-8")
+    if re.search(r"uid:\s*['\"]?prometheus['\"]?", text):
+        return False
+
+    updated, count = re.subn(
+        r"(name:\s*Prometheus\r?\n\s*type:\s*prometheus\r?\n)",
+        r"\1    uid: prometheus\n",
+        text,
+        count=1,
+    )
+    if count:
+        write_privileged_file(datasources_yml, updated)
+        return True
+    return False
+
+
+def download_grafana_dashboard(dest: Path, url: str) -> None:
+    """Download a Grafana dashboard JSON to ``dest``.
+
+    Args:
+        dest: Local path to write the JSON file.
+        url: HTTP URL of the dashboard JSON.
+
+    Raises:
+        RuntimeError: When the download returns an empty body.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "ethpillar"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = resp.read()
+    if not data:
+        raise RuntimeError(f"Empty response downloading Grafana dashboard from {url}")
+    write_privileged_file(dest, data)

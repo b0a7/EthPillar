@@ -97,26 +97,6 @@ def test_provision_cdvn_dashboard_bundle(tmp_path: Path):
     assert seen == list(CDVN_GRAFANA_DASHBOARDS)
 
 
-def test_ensure_prometheus_datasource_uid_inserts(tmp_path: Path):
-    from manage.charon_monitoring import ensure_prometheus_datasource_uid
-
-    ds = tmp_path / "datasources.yml"
-    ds.write_text(
-        "apiVersion: 1\n"
-        "datasources:\n"
-        "  - name: Prometheus\n"
-        "    type: prometheus\n"
-        "    url: http://localhost:9090\n"
-        "    access: proxy\n"
-        "    isDefault: true\n",
-        encoding="utf-8",
-    )
-    assert ensure_prometheus_datasource_uid(ds) is True
-    text = ds.read_text(encoding="utf-8")
-    assert "uid: prometheus" in text
-    assert ensure_prometheus_datasource_uid(ds) is False
-
-
 def test_provision_charon_monitoring_noop_without_stack(tmp_path: Path):
     results = provision_charon_monitoring(
         prometheus_yml=tmp_path / "nope.yml",

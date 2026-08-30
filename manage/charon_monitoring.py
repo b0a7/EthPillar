@@ -8,14 +8,19 @@ the same dashboard JSON bundle as upstream CDVN (Overview, Cluster, Node, Logs).
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import subprocess
 import sys
-import tempfile
-import urllib.request
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional
+
+from manage.grafana import (
+    DEFAULT_DATASOURCES_YML,
+    DEFAULT_GRAFANA_DASHBOARDS,
+    download_grafana_dashboard,
+    ensure_prometheus_datasource_uid,
+    write_privileged_file,
+)
 
 CHARON_OVERVIEW_URL = (
     "https://raw.githubusercontent.com/ObolNetwork/charon-distributed-validator-node/"
@@ -32,6 +37,8 @@ CDVN_GRAFANA_DASHBOARDS = (
     "node_overview_dashboard.json",
     "logs_dashboard.json",
 )
+DEFAULT_PROMETHEUS_YML = Path("/etc/prometheus/prometheus.yml")
+_JOB_RE = re.compile(r"job_name:\s*['\"]charon['\"]")
 
 
 def charon_scrape_job(port: int = 3620) -> str:
@@ -51,20 +58,6 @@ def charon_scrape_job(port: int = 3620) -> str:
 
 
 CHARON_SCRAPE_JOB = charon_scrape_job(3620)
-DEFAULT_PROMETHEUS_YML = Path("/etc/prometheus/prometheus.yml")
-DEFAULT_GRAFANA_DASHBOARDS = Path("/etc/grafana/provisioning/dashboards")
-DEFAULT_DATASOURCES_YML = Path("/etc/grafana/provisioning/datasources/datasources.yml")
-_JOB_RE = re.compile(r"job_name:\s*['\"]charon['\"]")
-_DEFAULT_DATASOURCE = (
-    "apiVersion: 1\n"
-    "datasources:\n"
-    "  - name: Prometheus\n"
-    "    type: prometheus\n"
-    "    uid: prometheus\n"
-    "    url: http://localhost:9090\n"
-    "    access: proxy\n"
-    "    isDefault: true\n"
-)
 
 
 def has_charon_scrape(text: str) -> bool:
@@ -77,80 +70,6 @@ def has_charon_scrape(text: str) -> bool:
         True when a ``job_name: charon`` entry is present.
     """
     return bool(_JOB_RE.search(text))
-
-
-def ensure_prometheus_datasource_uid(datasources_yml: Path) -> bool:
-    """Ensure Grafana Prometheus datasource uses ``uid: prometheus`` (CDVN dashboards).
-
-    Args:
-        datasources_yml: Grafana datasources provisioning file path.
-
-    Returns:
-        True if the file was created or modified.
-    """
-    grafana_etc = Path("/etc/grafana")
-    if not datasources_yml.is_file():
-        if not grafana_etc.is_dir():
-            return False
-        _write_bytes(datasources_yml, _DEFAULT_DATASOURCE)
-        return True
-
-    text = datasources_yml.read_text(encoding="utf-8")
-    if re.search(r"uid:\s*['\"]?prometheus['\"]?", text):
-        return False
-
-    updated, count = re.subn(
-        r"(name:\s*Prometheus\r?\n\s*type:\s*prometheus\r?\n)",
-        r"\1    uid: prometheus\n",
-        text,
-        count=1,
-    )
-    if count:
-        _write_bytes(datasources_yml, updated)
-        return True
-    return False
-
-
-def _finalize_grafana_provisioned_file(path: Path) -> None:
-    """Ensure Grafana (user ``grafana``) can read file-provisioned dashboard JSON.
-
-    Args:
-        path: Provisioned file under ``/etc/grafana`` (no-op for other paths).
-    """
-    if not str(path).startswith("/etc/grafana"):
-        return
-    subprocess.run(["sudo", "chown", "root:grafana", str(path)], check=False)
-    subprocess.run(["sudo", "chmod", "644", str(path)], check=False)
-
-
-def _write_bytes(path: Path, data: Union[str, bytes]) -> None:
-    """Write ``data`` to ``path``, using ``sudo cp`` when needed for /etc.
-
-    Args:
-        path: Destination file.
-        data: Text or bytes to write (text is encoded as UTF-8).
-    """
-    raw = data.encode("utf-8") if isinstance(data, str) else data
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(raw)
-        _finalize_grafana_provisioned_file(path)
-        return
-    except PermissionError:
-        pass
-
-    subprocess.run(["sudo", "mkdir", "-p", str(path.parent)], check=True)
-    fd, tmp = tempfile.mkstemp(prefix="ethpillar_charon_")
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(raw)
-        subprocess.run(["sudo", "cp", tmp, str(path)], check=True)
-        _finalize_grafana_provisioned_file(path)
-    finally:
-        try:
-            os.remove(tmp)
-        except FileNotFoundError:
-            pass
 
 
 def _charon_metrics_port() -> int:
@@ -191,15 +110,15 @@ def ensure_charon_scrape(prometheus_yml: Path, metrics_port: Optional[int] = Non
         )
         if not count or updated == text:
             return False
-        _write_bytes(prometheus_yml, updated)
+        write_privileged_file(prometheus_yml, updated)
         return True
     suffix = "" if text.endswith("\n") else "\n"
-    _write_bytes(prometheus_yml, text + suffix + job)
+    write_privileged_file(prometheus_yml, text + suffix + job)
     return True
 
 
 def download_charon_dashboard(dest: Path, url: str) -> None:
-    """Download a Grafana dashboard JSON to ``dest``.
+    """Download a CDVN/Charon Grafana dashboard JSON to ``dest``.
 
     Args:
         dest: Local path to write the JSON file.
@@ -208,12 +127,7 @@ def download_charon_dashboard(dest: Path, url: str) -> None:
     Raises:
         RuntimeError: When the download returns an empty body.
     """
-    req = urllib.request.Request(url, headers={"User-Agent": "ethpillar"})
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = resp.read()
-    if not data:
-        raise RuntimeError(f"Empty response downloading Charon dashboard from {url}")
-    _write_bytes(dest, data)
+    download_grafana_dashboard(dest, url)
 
 
 def download_charon_overview_dashboard(
