@@ -104,7 +104,7 @@ class TestCustomClientMenuLogic:
 
     def test_vc_only_menu_includes_charon_by_default(self):
         menu = get_vc_menu()
-        assert menu[0] == CHARON_VC_LABEL
+        assert menu[-1] == CHARON_VC_LABEL
         assert "Grandine" not in menu
 
     def test_custom_ec_menu_includes_all_clients(self):
@@ -118,12 +118,12 @@ class TestCustomClientMenuLogic:
     def test_vc_options_same_as_cc_is_default(self):
         menu = get_vc_options_for_cc("Lighthouse")
         assert menu[0] == "Same as CC"
-        assert menu[1] == CHARON_VC_LABEL
+        assert menu[-1] == CHARON_VC_LABEL
 
     def test_vc_options_no_same_as_cc_when_caplin(self):
         menu = get_vc_options_for_cc("Caplin")
         assert "Same as CC" not in menu
-        assert CHARON_VC_LABEL in menu
+        assert menu[-1] == CHARON_VC_LABEL
 
     def test_charon_signer_menu_excludes_charon_and_integrated_grandine(self):
         menu = get_vc_options_for_cc("Lighthouse", for_charon_signer=True)
@@ -134,7 +134,7 @@ class TestCustomClientMenuLogic:
     def test_grandine_cc_offers_charon_after_integrated(self):
         menu = get_vc_options_for_cc("Grandine")
         assert menu[0] == "Grandine (integrated)"
-        assert menu[1] == CHARON_VC_LABEL
+        assert menu[-1] == CHARON_VC_LABEL
 
     def test_is_charon_vc_choice(self):
         assert is_charon_vc_choice(CHARON_VC_LABEL)

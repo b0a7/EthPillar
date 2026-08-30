@@ -382,10 +382,47 @@ getEphemeryChainID(){
     EPH_CHAIN_ID=$(expr 39438000 + "$ITERATION_NUMBER")
 }
 
+# Infer network from installed systemd units when no local execution client exists.
+_network_from_systemd_units(){
+    local svc path net_raw
+    for svc in validator consensus charon execution; do
+        path="/etc/systemd/system/${svc}.service"
+        [[ -f "$path" ]] || continue
+        net_raw=$(grep -oEi '\-\-network[= ]([a-zA-Z0-9_-]+)' "$path" 2>/dev/null | head -1 \
+            | sed -E 's/^.*=//; s/^.* //')
+        if [[ -z "$net_raw" ]]; then
+            net_raw=$(grep -oEi 'for ([A-Z][A-Z0-9_-]+)' "$path" 2>/dev/null | head -1 | awk '{print $2}')
+        fi
+        [[ -n "$net_raw" ]] || continue
+        case "${net_raw,,}" in
+        mainnet)  NETWORK="Mainnet";;
+        holesky)  NETWORK="Holesky";;
+        hoodi)    NETWORK="Hoodi";;
+        sepolia)  NETWORK="Sepolia";;
+        ephemery) NETWORK="Ephemery";;
+        *)
+            NETWORK="$(echo "$net_raw" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')"
+            ;;
+        esac
+        return 0
+    done
+    return 1
+}
+
 getNetwork(){
-    # Get network name from execution client
-    result=$(curl -sS --fail --connect-timeout 1 --max-time 2 -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"net_version","params":[],"id":67}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
-    if [[ -z $result ]]; then NETWORK="Network Syncing"; return; fi
+    local exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    local result=""
+
+    if [[ -f "$exec_svc" ]]; then
+        result=$(curl -sf --connect-timeout 1 --max-time 2 -X POST -H "Content-Type: application/json" \
+            --data '{"jsonrpc":"2.0","method":"net_version","params":[],"id":67}' \
+            "${EL_RPC_ENDPOINT}" 2>/dev/null | jq -r '.result')
+    elif _network_from_systemd_units; then
+        export NETWORK
+        return
+    fi
+
+    if [[ -z $result ]]; then NETWORK="Network Syncing"; export NETWORK; return; fi
     case $result in
     1)
       NETWORK="Mainnet"
@@ -1698,10 +1735,12 @@ getPeerCount(){
     declare -A _peer_status=()
     local _warn=""
     # Get peer counts from CL and EL
-    _peer_status["Consensus_Layer_Connected_Peer_Count"]="$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/peer_count" -H  "accept: application/json" | jq -r ".data.connected")"
-    _peer_status["Execution_Layer_Connected_Peer_Count"]="$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc": "2.0", "method":"net_peerCount", "params": [], "id":1}' "${EL_RPC_ENDPOINT}" | jq -r ".result" | mawk '{printf "%d\n",$1}')"
+    _peer_status["Consensus_Layer_Connected_Peer_Count"]="$(curl -sf -m 2 -X GET "${API_BN_ENDPOINT}/eth/v1/node/peer_count" -H "accept: application/json" 2>/dev/null | jq -r ".data.connected")"
+    if [[ -f /etc/systemd/system/execution.service ]]; then
+        _peer_status["Execution_Layer_Connected_Peer_Count"]="$(curl -sf -m 2 -X POST -H "Content-Type: application/json" --data '{"jsonrpc": "2.0", "method":"net_peerCount", "params": [], "id":1}' "${EL_RPC_ENDPOINT}" 2>/dev/null | jq -r ".result" | mawk '{printf "%d\n",$1}')"
+    fi
     # Get CL peers by direction
-    _json_cl=$(curl -s ${API_BN_ENDPOINT}/eth/v1/node/peers | jq -c '.data')
+    _json_cl=$(curl -sf -m 2 "${API_BN_ENDPOINT}/eth/v1/node/peers" 2>/dev/null | jq -c '.data')
     _peer_status["Consensus_Layer_Known_Inbound_Peers"]=$(jq -c '.[] | select(.direction == "inbound")' <<< "$_json_cl" | wc -l)
     _peer_status["Consensus_Layer_Known_Outbound_Peers"]=$(jq -c '.[] | select(.direction == "outbound")' <<< "$_json_cl" | wc -l)
 

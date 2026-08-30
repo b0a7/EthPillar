@@ -16,8 +16,8 @@ import deploy.mevboost as mevboost
 import deploy.charon as charon
 import deploy.prysm as prysm
 
-CHARON_VC_LABEL = "∞ Obol Charon DV"
-OBOL_CHARON = "∞ Obol Charon"
+CHARON_VC_LABEL = "Obol Charon DV"
+OBOL_CHARON = "Obol Charon"
 OBOL_IMPORT_KEY_SHARES = "Import ∞ Obol Charon key shares"
 OBOL_GREEN = "\033[32m"
 OBOL_RESET = "\033[0m"
@@ -107,7 +107,7 @@ def get_vc_menu(*, include_charon: bool = True) -> List[str]:
     """
     choices = [c for c in CONSENSUS_CLIENTS if c != "Grandine"]
     if include_charon:
-        choices = [CHARON_VC_LABEL] + choices
+        choices.append(CHARON_VC_LABEL)
     return choices
 
 def get_ec_menu() -> List[str]:
@@ -141,11 +141,11 @@ def get_vc_options_for_cc(
     if cc_name == "Grandine":
         # Integrated Grandine cannot sit behind Charon middleware.
         if include_charon:
-            return ["Grandine (integrated)", CHARON_VC_LABEL] + get_vc_menu(include_charon=False)
+            return ["Grandine (integrated)"] + get_vc_menu(include_charon=True)
         return ["Grandine (integrated)"] + get_vc_menu(include_charon=False)
 
     if include_charon:
-        return ["Same as CC", CHARON_VC_LABEL] + get_vc_menu(include_charon=False)
+        return ["Same as CC"] + get_vc_menu(include_charon=True)
     return ["Same as CC"] + get_vc_menu(include_charon=False)
 
 def is_charon_vc_choice(vc_choice: Optional[str]) -> bool:

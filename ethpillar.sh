@@ -662,7 +662,6 @@ while true; do
       4 "Restart Charon"
       5 "Edit configuration"
       6 "Update to latest release"
-      7 "Migrate from CDVN (full stack)"
       - ""
       9 "Back to main menu"
     )
@@ -700,9 +699,6 @@ while true; do
         ;;
       6)
         runScript update_charon.sh
-        ;;
-      7)
-        migrateCharonFromCdvn
         ;;
       9)
         break

@@ -56,7 +56,7 @@ Supported stock profiles today: `el-nethermind`, `el-reth`; `cl-lighthouse` / `t
 
 Datadir moves (after confirm): e.g. `./data/nethermind` → `/var/lib/nethermind`, `./data/lodestar` (VC) → `/var/lib/lodestar_validator`, `.charon` is **copied** to `/var/lib/charon/.charon` (CDVN checkout is preserved). Destinations that already have data are skipped (clear manually if you want the CDVN DB).
 
-TUI: **Obol Charon DV → Migrate from CDVN (full stack)** runs the same flow.
+Run from CLI only: `ethpillar --migrate_cdvn` (interactive whiptail prompts for path/plan confirmation).
 
 Dry-run / inspect plan (tests / advanced):
 
