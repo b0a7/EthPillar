@@ -32,8 +32,17 @@ CDVN_GRAFANA_DASHBOARDS = (
     "node_overview_dashboard.json",
     "logs_dashboard.json",
 )
+
+
 def charon_scrape_job(port: int = 3620) -> str:
-    """Return a Prometheus scrape job targeting Charon metrics on *port*."""
+    """Return a Prometheus scrape job targeting Charon metrics on *port*.
+
+    Args:
+        port: Charon ``--monitoring-address`` port (default 3620).
+
+    Returns:
+        YAML snippet for ``scrape_configs`` (includes trailing newline).
+    """
     return (
         "   - job_name: 'charon'\n"
         "     static_configs:\n"
@@ -59,12 +68,22 @@ _DEFAULT_DATASOURCE = (
 
 
 def has_charon_scrape(text: str) -> bool:
-    """Return True if prometheus.yml already defines a Charon scrape job."""
+    """Return True if prometheus.yml already defines a Charon scrape job.
+
+    Args:
+        text: Full ``prometheus.yml`` contents.
+
+    Returns:
+        True when a ``job_name: charon`` entry is present.
+    """
     return bool(_JOB_RE.search(text))
 
 
 def ensure_prometheus_datasource_uid(datasources_yml: Path) -> bool:
     """Ensure Grafana Prometheus datasource uses ``uid: prometheus`` (CDVN dashboards).
+
+    Args:
+        datasources_yml: Grafana datasources provisioning file path.
 
     Returns:
         True if the file was created or modified.
@@ -93,7 +112,11 @@ def ensure_prometheus_datasource_uid(datasources_yml: Path) -> bool:
 
 
 def _finalize_grafana_provisioned_file(path: Path) -> None:
-    """Ensure Grafana (user ``grafana``) can read file-provisioned dashboard JSON."""
+    """Ensure Grafana (user ``grafana``) can read file-provisioned dashboard JSON.
+
+    Args:
+        path: Provisioned file under ``/etc/grafana`` (no-op for other paths).
+    """
     if not str(path).startswith("/etc/grafana"):
         return
     subprocess.run(["sudo", "chown", "root:grafana", str(path)], check=False)
@@ -101,7 +124,12 @@ def _finalize_grafana_provisioned_file(path: Path) -> None:
 
 
 def _write_bytes(path: Path, data: Union[str, bytes]) -> None:
-    """Write ``data`` to ``path``, using ``sudo cp`` when needed for /etc."""
+    """Write ``data`` to ``path``, using ``sudo cp`` when needed for /etc.
+
+    Args:
+        path: Destination file.
+        data: Text or bytes to write (text is encoded as UTF-8).
+    """
     raw = data.encode("utf-8") if isinstance(data, str) else data
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -126,7 +154,11 @@ def _write_bytes(path: Path, data: Union[str, bytes]) -> None:
 
 
 def _charon_metrics_port() -> int:
-    """Read Charon ``--monitoring-address`` port from charon.service, default 3620."""
+    """Read Charon ``--monitoring-address`` port from charon.service.
+
+    Returns:
+        Metrics port from ``charon.service``, or 3620 when the unit is absent.
+    """
     try:
         from deploy.charon import parse_monitoring_port
 
@@ -167,7 +199,15 @@ def ensure_charon_scrape(prometheus_yml: Path, metrics_port: Optional[int] = Non
 
 
 def download_charon_dashboard(dest: Path, url: str) -> None:
-    """Download a Grafana dashboard JSON to ``dest``."""
+    """Download a Grafana dashboard JSON to ``dest``.
+
+    Args:
+        dest: Local path to write the JSON file.
+        url: HTTP URL of the dashboard JSON.
+
+    Raises:
+        RuntimeError: When the download returns an empty body.
+    """
     req = urllib.request.Request(url, headers={"User-Agent": "ethpillar"})
     with urllib.request.urlopen(req, timeout=60) as resp:
         data = resp.read()
@@ -180,7 +220,12 @@ def download_charon_overview_dashboard(
     dest: Path,
     url: str = CHARON_OVERVIEW_URL,
 ) -> None:
-    """Download Obol Charon Overview dashboard JSON to ``dest``."""
+    """Download Obol Charon Overview dashboard JSON to ``dest``.
+
+    Args:
+        dest: Local path to write the JSON file.
+        url: Overview dashboard JSON URL (defaults to :data:`CHARON_OVERVIEW_URL`).
+    """
     download_charon_dashboard(dest, url)
 
 
@@ -211,6 +256,10 @@ def provision_charon_overview_dashboard(
     url: str = CHARON_OVERVIEW_URL,
 ) -> bool:
     """Write Charon Overview into Grafana's file-provisioning directory.
+
+    Args:
+        dashboards_dir: Grafana file-provisioning directory.
+        url: Overview dashboard JSON URL (defaults to :data:`CHARON_OVERVIEW_URL`).
 
     Returns:
         True if the dashboard file was written.
@@ -300,7 +349,14 @@ def provision_charon_monitoring(
 
 
 def main(argv: Optional[list] = None) -> int:
-    """CLI entry for Bash install hooks."""
+    """CLI entry for Bash install hooks.
+
+    Args:
+        argv: Argument list; defaults to ``sys.argv[1:]``.
+
+    Returns:
+        ``0`` on success, ``1`` when no known subcommand is given.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 

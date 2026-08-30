@@ -161,7 +161,11 @@ class CdvnMigrationPlan:
     fee_recipient: str = ""
 
     def summary(self) -> str:
-        """Human-readable plan for confirmation / dry-run."""
+        """Human-readable plan for confirmation / dry-run.
+
+        Returns:
+            Multi-line text describing role, clients, moves, and deploy argv.
+        """
         arrow = "->"
         lines = [
             f"CDVN {arrow} EthPillar migration plan",
@@ -223,7 +227,11 @@ class CdvnMigrationPlan:
         return "\n".join(lines)
 
     def deploy_argv(self) -> List[str]:
-        """Build ``deploy-node.py`` arguments for this plan."""
+        """Build ``deploy-node.py`` arguments for this plan.
+
+        Returns:
+            argv tokens (no executable), including ``--skip_prompts true``.
+        """
         argv = [
             "--skip_prompts",
             "true",
@@ -252,7 +260,17 @@ class CdvnMigrationPlan:
 
 
 def _read_charon_file_text(path: str) -> str:
-    """Read a file under ``.charon``, using ``sudo cat`` when not user-readable."""
+    """Read a file under ``.charon``, using ``sudo cat`` when not user-readable.
+
+    Args:
+        path: Absolute path to a cluster file (e.g. ``cluster-lock.json``).
+
+    Returns:
+        File text.
+
+    Raises:
+        OSError: When the file cannot be read even via sudo.
+    """
     if os.path.isfile(path) and os.access(path, os.R_OK):
         with open(path, encoding="utf-8") as handle:
             return handle.read()
@@ -268,7 +286,11 @@ def _read_charon_file_text(path: str) -> str:
 
 
 def _fee_recipient_from_ethpillar_env() -> str:
-    """Resolve fee recipient from EthPillar ``env`` / ``.env.overrides``."""
+    """Resolve fee recipient from EthPillar ``env`` / ``.env.overrides``.
+
+    Returns:
+        ``0x`` address, or ``""`` when unset/invalid.
+    """
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
         from dotenv import dotenv_values
@@ -294,7 +316,15 @@ def _fee_recipient_from_ethpillar_env() -> str:
 
 
 def _resolve_fee_recipient(env: Dict[str, str], charon_dir: Optional[str]) -> str:
-    """Resolve fee recipient from CDVN assets and EthPillar env overrides."""
+    """Resolve fee recipient from CDVN assets and EthPillar env overrides.
+
+    Args:
+        env: Parsed CDVN ``.env`` map.
+        charon_dir: Path to ``.charon`` (cluster-lock / deposit-data), or None.
+
+    Returns:
+        ``0x`` address, or ``""`` when none could be resolved.
+    """
     addr = _fee_recipient_from_cdvn(env, charon_dir)
     if addr:
         return addr
@@ -302,7 +332,15 @@ def _resolve_fee_recipient(env: Dict[str, str], charon_dir: Optional[str]) -> st
 
 
 def _require_fee_recipient(fee_recipient: str, vc_name: Optional[str]) -> None:
-    """Raise when a VC deploy is planned but no fee recipient could be resolved."""
+    """Raise when a VC deploy is planned but no fee recipient could be resolved.
+
+    Args:
+        fee_recipient: Address from :func:`_resolve_fee_recipient` (may be empty).
+        vc_name: Planned signer VC, or None when no VC will be installed.
+
+    Raises:
+        ValueError: When *vc_name* is set and *fee_recipient* is empty.
+    """
     if vc_name and not fee_recipient:
         raise ValueError(
             "Fee recipient address is required for validator deploy. Set "
@@ -313,7 +351,14 @@ def _require_fee_recipient(fee_recipient: str, vc_name: Optional[str]) -> None:
 
 
 def _valid_eth_address(val: object) -> str:
-    """Return *val* when it looks like a 20-byte hex address, else ``""``."""
+    """Return *val* when it looks like a 20-byte hex address, else ``""``.
+
+    Args:
+        val: Candidate value from JSON or env (any type).
+
+    Returns:
+        Normalized ``0x`` + 40 hex chars, or ``""``.
+    """
     if not isinstance(val, str):
         return ""
     candidate = val.strip().strip('"')
@@ -327,7 +372,14 @@ def _valid_eth_address(val: object) -> str:
 
 
 def _fee_recipient_from_cluster_lock(charon_dir: str) -> str:
-    """Read fee recipient from Obol ``cluster-lock.json`` (primary CDVN source)."""
+    """Read fee recipient from Obol ``cluster-lock.json`` (primary CDVN source).
+
+    Args:
+        charon_dir: Path to the ``.charon`` directory.
+
+    Returns:
+        ``0x`` address from the lock file, or ``""`` when missing/unreadable.
+    """
     lock_path = os.path.join(charon_dir, "cluster-lock.json")
     if not path_exists(lock_path):
         return ""
@@ -368,7 +420,15 @@ def _fee_recipient_from_cluster_lock(charon_dir: str) -> str:
 
 
 def _fee_recipient_from_cdvn(env: Dict[str, str], charon_dir: Optional[str]) -> str:
-    """Resolve fee recipient from CDVN ``.env``, ``cluster-lock.json``, or ``deposit-data.json``."""
+    """Resolve fee recipient from CDVN ``.env``, ``cluster-lock.json``, or ``deposit-data.json``.
+
+    Args:
+        env: Parsed CDVN ``.env`` map.
+        charon_dir: Path to ``.charon``, or None.
+
+    Returns:
+        First valid ``0x`` address found, or ``""``.
+    """
     for key in ("FEE_RECIPIENT_ADDRESS", "FEE_RECIPIENT", "CHARON_FEE_RECIPIENT"):
         addr = _valid_eth_address(env.get(key))
         if addr:
@@ -396,15 +456,40 @@ def _fee_recipient_from_cdvn(env: Dict[str, str], charon_dir: Optional[str]) -> 
 
 
 def _norm_profile(value: str) -> str:
+    """Normalize a CDVN compose profile token for comparison.
+
+    Args:
+        value: Raw ``EL=`` / ``CL=`` / ``VC=`` / ``MEV=`` string.
+
+    Returns:
+        Lowercased, stripped token (empty string when *value* is None/blank).
+    """
     return (value or "").strip().lower()
 
 
 def _is_none_profile(value: str, kind: str) -> bool:
+    """Return True when a profile means “no local client” (``el-none``, empty, …).
+
+    Args:
+        value: Raw profile token from CDVN ``.env``.
+        kind: Prefix such as ``el``, ``cl``, or ``mev``.
+
+    Returns:
+        True for empty, ``none``, or ``{kind}-none``.
+    """
     v = _norm_profile(value)
     return not v or v in {f"{kind}-none", "none"}
 
 
 def _truthy(value: str) -> bool:
+    """Return True for common truthy env strings.
+
+    Args:
+        value: Raw env value (e.g. ``BUILDER_API_ENABLED``).
+
+    Returns:
+        True for ``1``, ``true``, ``yes``, or ``on`` (case-insensitive).
+    """
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -601,6 +686,12 @@ def _dir_nonempty(path: str) -> bool:
 
     Uses sudo listing when the path is not readable as the current user (Docker
     volumes are often root- or container-uid-owned).
+
+    Args:
+        path: Directory to inspect.
+
+    Returns:
+        True when the directory exists and has at least one entry.
     """
     if path_exists(path, directory=True):
         return bool(list_dir_basenames(path))
@@ -613,7 +704,14 @@ def _dir_nonempty(path: str) -> bool:
 
 
 def _dest_has_data(path: str) -> bool:
-    """True when destination already looks occupied (skip move)."""
+    """True when destination already looks occupied (skip move).
+
+    Args:
+        path: EthPillar ``/var/lib/…`` destination directory.
+
+    Returns:
+        True when *path* exists and is non-empty (or cannot be listed).
+    """
     if path_exists(path, directory=True):
         return bool(list_dir_basenames(path))
     if not os.path.isdir(path):
@@ -678,7 +776,17 @@ def detect_docker_compose_status(
 
 
 def detect_docker_compose_running(compose_file: Optional[str], root: str) -> bool:
-    """Return True if compose reports running services (False when unknown/absent)."""
+    """Return True if compose reports running services.
+
+    Args:
+        compose_file: Path to ``docker-compose.yml``, or None.
+        root: CDVN checkout used as the compose working directory.
+
+    Returns:
+        True only when the check succeeded and services are up. False when
+        compose is absent or the check could not run (see
+        :func:`detect_docker_compose_status` for the error string).
+    """
     running, _err = detect_docker_compose_status(compose_file, root)
     return running
 
@@ -893,7 +1001,16 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
 
 
 def move_client_datadir(src: str, dest: str, owner: str) -> None:
-    """Move ``src`` contents into ``dest`` and chown to ``owner``."""
+    """Move ``src`` contents into ``dest`` and chown to ``owner``.
+
+    Args:
+        src: CDVN Docker datadir (must exist).
+        dest: EthPillar ``/var/lib/…`` destination.
+        owner: Systemd service user for ``chown``.
+
+    Raises:
+        FileNotFoundError: When *src* is not a directory.
+    """
     if not os.path.isdir(src):
         raise FileNotFoundError(src)
     subprocess.run(["sudo", "mkdir", "-p", dest], check=True)
@@ -947,7 +1064,15 @@ def apply_datadir_moves(plan: CdvnMigrationPlan, selected: Optional[Sequence[str
 
 
 def detect_ethpillar_vc_name(service_path: str = "/etc/systemd/system/validator.service") -> Optional[str]:
-    """Return the EthPillar VC name from ``validator.service`` Description/ExecStart."""
+    """Return the EthPillar VC name from ``validator.service`` Description/ExecStart.
+
+    Args:
+        service_path: Path to ``validator.service`` (overridable in tests).
+
+    Returns:
+        Canonical VC name (e.g. ``Lodestar``), or None when the unit is missing
+        or the client cannot be identified.
+    """
     try:
         text = Path(service_path).read_text(encoding="utf-8")
     except OSError:
@@ -967,15 +1092,32 @@ def detect_ethpillar_vc_name(service_path: str = "/etc/systemd/system/validator.
 
 
 def _repo_root() -> str:
+    """Return the EthPillar checkout root (parent of ``deploy/``).
+
+    Returns:
+        Absolute path to the repository root.
+    """
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _charon_cluster_dest() -> str:
+    """Return EthPillar's Charon ``.charon`` datadir.
+
+    Returns:
+        ``{BASE_DATA_DIR}/charon/.charon``.
+    """
     return os.path.join(BASE_DATA_DIR, "charon", ".charon")
 
 
 def _vc_key_material_paths(vc_name: str) -> List[str]:
-    """Return EthPillar VC paths that hold imported key shares for *vc_name*."""
+    """Return EthPillar VC paths that hold imported key shares for *vc_name*.
+
+    Args:
+        vc_name: Signer client (``Lighthouse``, ``Lodestar``, …).
+
+    Returns:
+        Paths under ``/var/lib`` that a fresh migrate should clear.
+    """
     paths: List[str] = []
     if vc_name in VC_COPY_KEY_DIRS:
         paths.append(VC_COPY_KEY_DIRS[vc_name])
@@ -1009,7 +1151,11 @@ def _vc_key_material_paths(vc_name: str) -> List[str]:
 
 
 def reset_cdvn_migration_state(plan: CdvnMigrationPlan) -> None:
-    """Stop Charon/VC and clear migrated cluster + VC key material for a clean re-run."""
+    """Stop Charon/VC and clear migrated cluster + VC key material for a clean re-run.
+
+    Args:
+        plan: Plan whose ``vc_name`` selects which VC key paths to remove.
+    """
     for unit in ("validator", "charon"):
         subprocess.run(["sudo", "systemctl", "stop", unit], check=False)
 
@@ -1027,7 +1173,15 @@ def reset_cdvn_migration_state(plan: CdvnMigrationPlan) -> None:
 
 
 def run_deploy(plan: CdvnMigrationPlan, *, dry_run: bool = False) -> int:
-    """Invoke ``deploy/install-node.sh`` with the plan's argv."""
+    """Invoke ``deploy/install-node.sh`` with the plan's argv.
+
+    Args:
+        plan: Resolved migration plan.
+        dry_run: When True, print the command and return 0 without running it.
+
+    Returns:
+        Process exit code (0 on dry-run).
+    """
     root = _repo_root()
     script = os.path.join(root, "deploy", "install-node.sh")
     cmd = ["bash", script, *plan.deploy_argv()]
@@ -1139,7 +1293,12 @@ def run_migration(
 
 
 def enable_migrated_units(plan: CdvnMigrationPlan) -> None:
-    """Enable systemd units so the migrated stack survives reboot."""
+    """Enable systemd units so the migrated stack survives reboot.
+
+    Args:
+        plan: Plan used to decide which of execution/consensus/mevboost/charon/validator
+            units exist and should be enabled.
+    """
     units: List[str] = []
     if plan.ec_name:
         units.append("execution")
@@ -1167,10 +1326,19 @@ def _apply_charon_cluster_overlay(
     skip: bool = False,
     force: bool = False,
 ) -> None:
-    """Copy or move CDVN ``.charon`` into EthPillar's Charon datadir.
+    """Copy CDVN ``.charon`` into EthPillar's Charon datadir.
 
     Always runs when the plan has a cluster lock. Optional Docker ``data/``
-    moves (--moves) do not control this step.
+    moves (``--moves``) do not control this step.
+
+    Args:
+        plan: Plan with ``charon_dir`` / lock / keyshare flags.
+        skip: When True, print a skip message and return.
+        force: When True, overwrite an existing EthPillar cluster copy.
+
+    Raises:
+        RuntimeError: When the overlay is required but the copy fails or
+            ``cluster-lock.json`` is missing afterward.
     """
     dest = _charon_cluster_dest()
     dest_lock = os.path.join(dest, "cluster-lock.json")
@@ -1226,6 +1394,15 @@ def _apply_charon_cluster_overlay(
 
 
 def main(argv: Optional[list] = None) -> int:
+    """CLI entry for ``python -m deploy.cdvn_migrate``.
+
+    Args:
+        argv: Argument list; defaults to ``sys.argv[1:]``.
+
+    Returns:
+        ``0`` on success, ``1`` on plan/run error, ``2`` when Docker is still
+        running or its status cannot be verified.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 

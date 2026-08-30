@@ -14,7 +14,11 @@ DEFAULT_GRAFANA_HTTP_PORT = 3000
 
 
 def read_grafana_ini() -> Optional[str]:
-    """Read ``/etc/grafana/grafana.ini`` (directly or via sudo when needed)."""
+    """Read ``/etc/grafana/grafana.ini`` (directly or via sudo when needed).
+
+    Returns:
+        File text, or None when Grafana is not installed / unreadable.
+    """
     if GRAFANA_INI_PATH.is_file():
         try:
             return GRAFANA_INI_PATH.read_text(encoding="utf-8")
@@ -32,7 +36,14 @@ def read_grafana_ini() -> Optional[str]:
 
 
 def _parse_grafana_http_port_from_ini(content: str) -> Optional[int]:
-    """Return active ``http_port`` from ``grafana.ini`` ``[server]`` section."""
+    """Return active ``http_port`` from ``grafana.ini`` ``[server]`` section.
+
+    Args:
+        content: Existing ``grafana.ini`` text.
+
+    Returns:
+        Active (uncommented) port, else the commented ``[server]`` default, else None.
+    """
     in_server = False
     commented: Optional[int] = None
     for line in content.splitlines():
@@ -54,7 +65,14 @@ def _parse_grafana_http_port_from_ini(content: str) -> Optional[int]:
 
 
 def read_grafana_http_port(default: int = DEFAULT_GRAFANA_HTTP_PORT) -> int:
-    """Return Grafana ``http_port`` from ``grafana.ini``, or *default* when unset."""
+    """Return Grafana ``http_port`` from ``grafana.ini``, or *default* when unset.
+
+    Args:
+        default: Port to use when the ini is missing or has no ``http_port``.
+
+    Returns:
+        Configured Grafana HTTP port.
+    """
     content = read_grafana_ini()
     if content is None:
         return default
@@ -63,9 +81,14 @@ def read_grafana_http_port(default: int = DEFAULT_GRAFANA_HTTP_PORT) -> int:
 
 
 def apply_grafana_http_port(port: int) -> bool:
-    """Set Grafana ``http_port`` in ``grafana.ini`` and restart.
+    """Set Grafana ``http_port`` in ``grafana.ini`` and restart grafana-server.
 
-    Returns True when the port was applied (ini updated or already matched).
+    Args:
+        port: TCP port for the Grafana HTTP UI.
+
+    Returns:
+        True when the ini was written (or already matched). False when the ini
+        is missing (Grafana not installed).
     """
     content = read_grafana_ini()
     if content is None:
