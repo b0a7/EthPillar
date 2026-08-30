@@ -970,6 +970,271 @@ def _find_passphrase_file(keys_dir: str) -> Optional[str]:
     return None
 
 
+def _passphrase_path_for_keystore(keys_dir: str, keystore_name: str) -> str:
+    """Return the ``keystore-N.txt`` path paired with ``keystore-N.json``."""
+    return os.path.join(keys_dir, keystore_name.replace(".json", ".txt"))
+
+
+def _has_per_keystore_passphrase_files(keys_dir: str, keystores: List[str]) -> bool:
+    """Return True when every keystore has a matching ``keystore-N.txt`` file."""
+    return all(path_exists(_passphrase_path_for_keystore(keys_dir, name)) for name in keystores)
+
+
+def _read_passphrase(path: str) -> str:
+    """Read and normalize a Charon keystore passphrase file."""
+    if os.path.isfile(path) and os.access(path, os.R_OK):
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().rstrip("\n")
+    return _sudo_read_text(path).rstrip("\n")
+
+
+def _passphrases_all_equal(keys_dir: str, keystores: List[str]) -> bool:
+    """Return True when all paired ``keystore-N.txt`` files contain the same password."""
+    passphrases = {
+        _read_passphrase(_passphrase_path_for_keystore(keys_dir, name)) for name in keystores
+    }
+    return len(passphrases) <= 1
+
+
+def _stage_single_charon_keystore(import_dir: str, keystore_name: str) -> str:
+    """Stage one Charon keystore+json pair for VC import CLI (single-key directory)."""
+    txt_name = keystore_name.replace(".json", ".txt")
+    staging = tempfile.mkdtemp(prefix="ethpillar-charon-key-import-one-")
+    os.chmod(staging, 0o700)
+    subprocess.run(
+        [
+            "sudo",
+            "cp",
+            "-a",
+            os.path.join(import_dir, keystore_name),
+            os.path.join(staging, keystore_name),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "sudo",
+            "cp",
+            "-a",
+            os.path.join(import_dir, txt_name),
+            os.path.join(staging, txt_name),
+        ],
+        check=True,
+    )
+    subprocess.run(["sudo", "chown", "-R", f"{VC_RUN_USER}:{VC_RUN_USER}", staging], check=True)
+    subprocess.run(["sudo", "chmod", "-R", "700", staging], check=True)
+    return staging
+
+
+def _import_lodestar_charon_keyshares(
+    data_dir: str,
+    import_dir: str,
+    keystores: List[str],
+    *,
+    keys_dir: str,
+) -> None:
+    """Import Charon DKG shares into Lodestar.
+
+    Lodestar bulk import applies one ``--passphraseFile`` to every keystore in the
+    directory. Charon DKG emits ``keystore-N.json`` + ``keystore-N.txt`` pairs that
+    often use different passwords, so import one keystore at a time when needed
+    (same approach as Obol CDVN).
+    """
+    lodestar_bin = f"{INSTALL_DIR}/lodestar"
+    per_key_passphrases = _has_per_keystore_passphrase_files(keys_dir, keystores)
+    bulk_passphrase = _find_passphrase_file(keys_dir)
+
+    if per_key_passphrases and not _passphrases_all_equal(keys_dir, keystores):
+        for name in keystores:
+            txt_name = name.replace(".json", ".txt")
+            single_dir = _stage_single_charon_keystore(import_dir, name)
+            try:
+                subprocess.run(
+                    [
+                        "sudo",
+                        "-u",
+                        VC_RUN_USER,
+                        lodestar_bin,
+                        "validator",
+                        "import",
+                        f"--dataDir={data_dir}",
+                        f"--keystore={single_dir}",
+                        f"--passphraseFile={os.path.join(single_dir, txt_name)}",
+                    ],
+                    check=True,
+                )
+            finally:
+                subprocess.run(["sudo", "rm", "-rf", single_dir], check=False)
+        return
+
+    if not bulk_passphrase and not per_key_passphrases:
+        raise FileNotFoundError(
+            "Lodestar import needs keystore-*.txt passphrase files in .charon/validator_keys"
+        )
+
+    passphrase = os.path.join(
+        import_dir,
+        os.path.basename(bulk_passphrase or _passphrase_path_for_keystore(keys_dir, keystores[0])),
+    )
+    subprocess.run(
+        [
+            "sudo",
+            "-u",
+            VC_RUN_USER,
+            lodestar_bin,
+            "validator",
+            "import",
+            f"--dataDir={data_dir}",
+            f"--keystore={import_dir}",
+            f"--passphraseFile={passphrase}",
+        ],
+        check=True,
+    )
+
+
+def _import_lighthouse_charon_keyshares(
+    data_dir: str,
+    import_dir: str,
+    keystores: List[str],
+    *,
+    keys_dir: str,
+) -> None:
+    """Import Charon DKG shares into Lighthouse (per-keystore passwords when needed)."""
+    lighthouse_bin = f"{INSTALL_DIR}/lighthouse"
+    per_key_passphrases = _has_per_keystore_passphrase_files(keys_dir, keystores)
+    bulk_passphrase = _find_passphrase_file(keys_dir)
+
+    if per_key_passphrases and not _passphrases_all_equal(keys_dir, keystores):
+        for name in keystores:
+            txt_name = name.replace(".json", ".txt")
+            single_dir = _stage_single_charon_keystore(import_dir, name)
+            try:
+                subprocess.run(
+                    [
+                        "sudo",
+                        "-u",
+                        VC_RUN_USER,
+                        lighthouse_bin,
+                        "account",
+                        "validator",
+                        "import",
+                        f"--datadir={data_dir}",
+                        f"--directory={single_dir}",
+                        "--reuse-password",
+                        f"--password-file={os.path.join(single_dir, txt_name)}",
+                    ],
+                    check=True,
+                )
+            finally:
+                subprocess.run(["sudo", "rm", "-rf", single_dir], check=False)
+        return
+
+    if not bulk_passphrase and not per_key_passphrases:
+        raise FileNotFoundError(
+            "Lighthouse import needs keystore-*.txt passphrase files in .charon/validator_keys"
+        )
+
+    passphrase = os.path.join(
+        import_dir,
+        os.path.basename(bulk_passphrase or _passphrase_path_for_keystore(keys_dir, keystores[0])),
+    )
+    subprocess.run(
+        [
+            "sudo",
+            "-u",
+            VC_RUN_USER,
+            lighthouse_bin,
+            "account",
+            "validator",
+            "import",
+            f"--datadir={data_dir}",
+            f"--directory={import_dir}",
+            "--reuse-password",
+            f"--password-file={passphrase}",
+        ],
+        check=True,
+    )
+
+
+def _prysm_wallet_exists(wallet_dir: str) -> bool:
+    """Return True when a Prysm direct wallet already exists under *wallet_dir*."""
+    if path_exists(os.path.join(wallet_dir, "auth-token")):
+        return True
+    return _dir_nonempty(wallet_dir)
+
+
+def _import_prysm_charon_keyshares(
+    data_dir: str,
+    import_dir: str,
+    keystores: List[str],
+    *,
+    keys_dir: str,
+) -> None:
+    """Import Charon DKG shares into Prysm (per-keystore passwords when needed)."""
+    wallet_dir = f"{BASE_DATA_DIR}/prysm_validator/validator_keys"
+    prysm_bin = f"{INSTALL_DIR}/prysm-validator"
+    per_key_passphrases = _has_per_keystore_passphrase_files(keys_dir, keystores)
+    bulk_passphrase = _find_passphrase_file(keys_dir)
+
+    if per_key_passphrases and not _passphrases_all_equal(keys_dir, keystores):
+        wallet_exists = _prysm_wallet_exists(wallet_dir)
+        wallet_passphrase = os.path.join(
+            import_dir,
+            os.path.basename(_passphrase_path_for_keystore(keys_dir, keystores[0])),
+        )
+        for name in keystores:
+            txt_name = name.replace(".json", ".txt")
+            single_dir = _stage_single_charon_keystore(import_dir, name)
+            account_passphrase = os.path.join(single_dir, txt_name)
+            try:
+                subprocess.run(
+                    [
+                        "sudo",
+                        "-u",
+                        VC_RUN_USER,
+                        prysm_bin,
+                        "accounts",
+                        "import",
+                        "--accept-terms-of-use",
+                        f"--wallet-dir={wallet_dir}",
+                        f"--keys-dir={single_dir}",
+                        f"--account-password-file={account_passphrase}",
+                        f"--wallet-password-file={wallet_passphrase if wallet_exists else account_passphrase}",
+                    ],
+                    check=True,
+                )
+                wallet_exists = True
+            finally:
+                subprocess.run(["sudo", "rm", "-rf", single_dir], check=False)
+        return
+
+    if not bulk_passphrase and not per_key_passphrases:
+        raise FileNotFoundError(
+            "Prysm import needs keystore-*.txt passphrase files in .charon/validator_keys"
+        )
+
+    passphrase = os.path.join(
+        import_dir,
+        os.path.basename(bulk_passphrase or _passphrase_path_for_keystore(keys_dir, keystores[0])),
+    )
+    subprocess.run(
+        [
+            "sudo",
+            "-u",
+            VC_RUN_USER,
+            prysm_bin,
+            "accounts",
+            "import",
+            "--accept-terms-of-use",
+            f"--wallet-dir={wallet_dir}",
+            f"--keys-dir={import_dir}",
+            f"--account-password-file={passphrase}",
+            f"--wallet-password-file={passphrase}",
+        ],
+        check=True,
+    )
+
+
 def _sudo_read_text(path: str) -> str:
     """Read a root-owned file via ``sudo cat``."""
     result = subprocess.run(
@@ -1225,47 +1490,19 @@ def _sync_import_keyshares(
     )
     try:
         if vc_name == "Lighthouse":
-            if not passphrase:
+            if not passphrase and not _has_per_keystore_passphrase_files(src, keystores):
                 return {
                     "status": "skipped",
                     "reason": "Lighthouse import needs keystore-*.txt passphrase files in .charon/validator_keys",
                 }
-            subprocess.run(
-                [
-                    "sudo",
-                    "-u",
-                    VC_RUN_USER,
-                    f"{INSTALL_DIR}/lighthouse",
-                    "account",
-                    "validator",
-                    "import",
-                    f"--datadir={data_dir}",
-                    f"--directory={import_dir}",
-                    "--reuse-password",
-                    f"--password-file={passphrase}",
-                ],
-                check=True,
-            )
+            _import_lighthouse_charon_keyshares(data_dir, import_dir, keystores, keys_dir=src)
         elif vc_name == "Lodestar":
-            if not passphrase:
+            if not passphrase and not _has_per_keystore_passphrase_files(src, keystores):
                 return {
                     "status": "skipped",
                     "reason": "Lodestar import needs keystore-*.txt passphrase files in .charon/validator_keys",
                 }
-            subprocess.run(
-                [
-                    "sudo",
-                    "-u",
-                    VC_RUN_USER,
-                    f"{INSTALL_DIR}/lodestar",
-                    "validator",
-                    "import",
-                    f"--dataDir={data_dir}",
-                    f"--keystore={import_dir}",
-                    f"--passphraseFile={passphrase}",
-                ],
-                check=True,
-            )
+            _import_lodestar_charon_keyshares(data_dir, import_dir, keystores, keys_dir=src)
         elif vc_name == "Nimbus":
             if not passphrase:
                 return {
@@ -1274,28 +1511,12 @@ def _sync_import_keyshares(
                 }
             _import_nimbus_keyshares_layout(data_dir, import_dir, keystores)
         elif vc_name == "Prysm":
-            if not passphrase:
+            if not passphrase and not _has_per_keystore_passphrase_files(src, keystores):
                 return {
                     "status": "skipped",
                     "reason": "Prysm import needs keystore-*.txt passphrase files in .charon/validator_keys",
                 }
-            wallet_dir = f"{BASE_DATA_DIR}/prysm_validator/validator_keys"
-            subprocess.run(
-                [
-                    "sudo",
-                    "-u",
-                    VC_RUN_USER,
-                    f"{INSTALL_DIR}/prysm-validator",
-                    "accounts",
-                    "import",
-                    "--accept-terms-of-use",
-                    f"--wallet-dir={wallet_dir}",
-                    f"--keys-dir={import_dir}",
-                    f"--account-password-file={passphrase}",
-                    f"--wallet-password-file={passphrase}",
-                ],
-                check=True,
-            )
+            _import_prysm_charon_keyshares(data_dir, import_dir, keystores, keys_dir=src)
         else:
             return {"status": "unsupported", "vc": vc_name}
     except subprocess.CalledProcessError as exc:

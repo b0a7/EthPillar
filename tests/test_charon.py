@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -271,6 +272,56 @@ def test_sync_charon_keyshares_lodestar_import(tmp_path, monkeypatch):
     assert any("--passphraseFile=" in str(c) for c in calls)
 
 
+def test_sync_charon_keyshares_lodestar_per_keystore_passphrases(tmp_path, monkeypatch):
+    """Charon DKG uses keystore-N.txt pairs; Lodestar must not reuse keystore-0.txt for all keys."""
+    from deploy import charon as charon_mod
+    from deploy.charon import sync_charon_keyshares_to_vc
+
+    keys = tmp_path / "validator_keys"
+    keys.mkdir()
+    for idx in range(3):
+        (keys / f"keystore-{idx}.json").write_text("{}", encoding="utf-8")
+        (keys / f"keystore-{idx}.txt").write_text(f"password-{idx}\n", encoding="utf-8")
+    dest = tmp_path / "lodestar_validator"
+    monkeypatch.setattr(charon_mod, "BASE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_IMPORT_DATA_DIRS",
+        {"Lodestar": str(dest)},
+    )
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "find":
+            names = ""
+            if "validator_keys" in cmd[2] or "charon-key-import" in cmd[2]:
+                names = "\n".join(
+                    sorted(
+                        name
+                        for name in os.listdir(keys)
+                        if name.startswith("keystore-")
+                    )
+                )
+                names += "\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=names)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
+
+    result = sync_charon_keyshares_to_vc("Lodestar", keys_dir=str(keys))
+    assert result["status"] == "copied"
+    import_calls = [
+        c
+        for c in calls
+        if "lodestar" in str(c) and "validator" in str(c) and "import" in str(c)
+    ]
+    assert len(import_calls) == 3
+    assert any("keystore-0.txt" in str(c) for c in import_calls)
+    assert any("keystore-1.txt" in str(c) for c in import_calls)
+    assert any("keystore-2.txt" in str(c) for c in import_calls)
+
+
 def test_sync_charon_keyshares_lighthouse_uses_password_file(tmp_path, monkeypatch):
     from deploy import charon as charon_mod
     from deploy.charon import sync_charon_keyshares_to_vc
@@ -347,6 +398,94 @@ def test_sync_charon_keyshares_nimbus_uses_layout_import(tmp_path, monkeypatch):
     pubkey = "0x88a471158d618a8f9997dcb2cc1921411392d82d00e339ccf912fd9335bd42f97c9de046280d9d5f681a8e73a7d3baad"
     assert "validators" in joined and "secrets" in joined and pubkey in joined
     assert not any("nimbus_beacon_node" in str(c) for c in calls)
+
+
+def test_sync_charon_keyshares_prysm_per_keystore_passphrases(tmp_path, monkeypatch):
+    from deploy import charon as charon_mod
+    from deploy.charon import sync_charon_keyshares_to_vc
+
+    keys = tmp_path / "validator_keys"
+    keys.mkdir()
+    for idx in range(2):
+        (keys / f"keystore-{idx}.json").write_text("{}", encoding="utf-8")
+        (keys / f"keystore-{idx}.txt").write_text(f"password-{idx}\n", encoding="utf-8")
+    dest = tmp_path / "prysm_validator"
+    monkeypatch.setattr(charon_mod, "BASE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_IMPORT_DATA_DIRS",
+        {"Prysm": str(dest)},
+    )
+    monkeypatch.setattr(charon_mod, "_prysm_wallet_exists", lambda _p: False)
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "test":
+            flag, target = cmd[2], cmd[3]
+            if flag == "-d":
+                ok = os.path.isdir(target)
+            else:
+                ok = os.path.isfile(target)
+            return subprocess.CompletedProcess(cmd, 0 if ok else 1)
+        if len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "find":
+            names = ""
+            if "validator_keys" in cmd[2] or "charon-key-import" in cmd[2]:
+                names = "\n".join(
+                    sorted(
+                        name
+                        for name in os.listdir(keys)
+                        if name.startswith("keystore-")
+                    )
+                )
+                names += "\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout=names)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
+
+    result = sync_charon_keyshares_to_vc("Prysm", keys_dir=str(keys))
+    assert result["status"] == "copied"
+    import_calls = [c for c in calls if "prysm-validator" in str(c) and "import" in str(c)]
+    assert len(import_calls) == 2
+    assert any("keystore-0.txt" in str(c) for c in import_calls)
+    assert any("keystore-1.txt" in str(c) for c in import_calls)
+
+
+def test_sync_charon_keyshares_teku_copies_per_keystore_passphrases(tmp_path, monkeypatch):
+    from deploy import charon as charon_mod
+    from deploy.charon import sync_charon_keyshares_to_vc
+
+    keys = tmp_path / "validator_keys"
+    keys.mkdir()
+    for idx in range(2):
+        (keys / f"keystore-{idx}.json").write_text('{"crypto":{}}', encoding="utf-8")
+        (keys / f"keystore-{idx}.txt").write_text(f"password-{idx}\n", encoding="utf-8")
+    dest = tmp_path / "teku_validator" / "validator_keys"
+    monkeypatch.setattr(charon_mod, "BASE_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        charon_mod,
+        "VC_COPY_KEY_DIRS",
+        {"Teku": str(dest)},
+    )
+    monkeypatch.setattr(charon_mod, "_chown_vc_tree", lambda *_a, **_k: None)
+
+    def _fake_run(cmd, **kwargs):
+        if len(cmd) >= 3 and cmd[0] == "sudo" and cmd[1] == "mkdir":
+            os.makedirs(cmd[-1], exist_ok=True)
+        elif len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "cp":
+            import shutil
+
+            shutil.copy2(cmd[3], cmd[4])
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(charon_mod.subprocess, "run", _fake_run)
+
+    result = sync_charon_keyshares_to_vc("Teku", keys_dir=str(keys))
+    assert result["status"] == "copied"
+    assert result["count"] == 2
+    assert (dest / "keystore-0.txt").read_text(encoding="utf-8") == "password-0\n"
+    assert (dest / "keystore-1.txt").read_text(encoding="utf-8") == "password-1\n"
 
 
 def test_vc_already_has_keys_after_lodestar_merge(tmp_path, monkeypatch):
