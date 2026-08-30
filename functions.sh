@@ -300,7 +300,11 @@ print_node_info() {
   execution_status=$(if systemctl is-active --quiet execution ; then printf "Online" ; elif [ -f /etc/systemd/system/execution.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
   [[ $EL == "Erigon-Caplin" ]] && consensus_status=$execution_status
   validator_status=$(if systemctl is-active --quiet validator ; then printf "Online" ; elif [ -f /etc/systemd/system/validator.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
-  charon_status=$(if systemctl is-active --quiet charon ; then printf "Online" ; elif [ -f /etc/systemd/system/charon.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
+  charon_line=""
+  if [[ -f /etc/systemd/system/charon.service ]]; then
+    charon_status=$(if systemctl is-active --quiet charon ; then printf "Online" ; else printf "Offline" ; fi)
+    charon_line="Charon Status    :  ${charon_status}"$'\n'
+  fi
   mevboost_status=$(if systemctl is-active --quiet mevboost ; then printf "Online" ; elif [ -f /etc/systemd/system/mevboost.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
   ethpillar_commit=$(git -C "${BASE_DIR}" rev-parse HEAD)
   ethpillar_version=$(grep ^EP_VERSION= $BASE_DIR/ethpillar.sh | sed 's/EP_VERSION=//g')
@@ -324,8 +328,7 @@ Chrony           :  $chrony_status
 Consensus Status :  $consensus_status
 Execution Status :  $execution_status
 Validator Status :  $validator_status
-Charon Status    :  $charon_status
-Mevboost Status  :  $mevboost_status
+${charon_line}Mevboost Status  :  $mevboost_status
 Autostart at Boot:  ${autostart_status[@]}
 
 EthPillar Version:  $ethpillar_version

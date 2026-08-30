@@ -28,10 +28,9 @@ fi
 if ! ensure_journal_access; then
   clear
   current_user=$(whoami)
-  echo -e "\033[1m########## Journal access unavailable ############"
-  echo "Could not grant journal access for ${current_user}."
-  echo "Try: sudo usermod -aG systemd-journal ${current_user}"
-  echo "Then open a new terminal and run ethpillar again."
+  echo -e "\033[1m########## New Terminal Session Required ############"
+  echo "To view logs, $current_user needs an active systemd-journal group session."
+  echo "Open a new terminal, run 'ethpillar', then check logs again."
   echo "Press ENTER to continue"
   read
   exit 0

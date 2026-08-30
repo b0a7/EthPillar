@@ -48,12 +48,42 @@ from manage.service_parse import (
 
 SIDECAR_MARKERS = ("127.0.0.1:18550", "localhost:18550", "[::1]:18550")
 PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
-COMPLETE_ROLLBACK_HINT = (
-    "If you completed too early: restore the newest consensus.service.bak.epbs.* "
-    "over consensus.service (and charon.service.bak.epbs.* if Charon had "
-    "--builder-api), then: sudo systemctl enable --now mevboost && "
-    "sudo systemctl daemon-reload && sudo systemctl restart consensus charon validator"
-)
+
+
+def complete_rollback_hint(fs: "EpbsFilesystem") -> str:
+    """Build a complete-step rollback hint that only names installed units.
+
+    Args:
+        fs: Filesystem used to test whether consensus/charon/validator/mevboost
+            units exist.
+
+    Returns:
+        Operator-facing rollback text. Restore/restart lists omit missing units.
+    """
+    restore: List[str] = []
+    if fs.exists(fs.unit_path("consensus")):
+        restore.append("consensus.service.bak.epbs.* over consensus.service")
+    if fs.exists(fs.unit_path("charon")):
+        restore.append("charon.service.bak.epbs.* over charon.service")
+    restore_txt = " and ".join(restore) if restore else "the newest *.bak.epbs.* backups"
+
+    steps: List[str] = []
+    if fs.exists(fs.unit_path("mevboost")):
+        steps.append("sudo systemctl enable --now mevboost")
+    steps.append("sudo systemctl daemon-reload")
+    restart = [
+        name
+        for name in ("consensus", "charon", "validator")
+        if fs.exists(fs.unit_path(name))
+    ]
+    if restart:
+        steps.append("sudo systemctl restart " + " ".join(restart))
+    return (
+        "If you completed too early: restore the newest "
+        f"{restore_txt}, then: " + " && ".join(steps)
+    )
+
+
 CHARON_EPBS_NOTE = (
     "Obol Charon has no stable ePBS/Gloas release yet; EthPillar removes "
     "--builder-api on complete (MEV-Boost proxy path). Watch "
@@ -164,6 +194,7 @@ class MigrationPlan:
         services_to_restart: Unit names to bounce after ``--apply``.
         disable_mevboost: True when complete will stop/disable MEV-Boost.
         applied: True after a successful ``--apply`` write.
+        rollback_hint: Complete-only operator rollback text (installed units only).
     """
 
     command: str
@@ -175,6 +206,7 @@ class MigrationPlan:
     services_to_restart: List[str] = field(default_factory=list)
     disable_mevboost: bool = False
     applied: bool = False
+    rollback_hint: str = ""
 
     def format_text(self) -> str:
         """Render a TUI/CLI dry-run or apply summary.
@@ -200,8 +232,8 @@ class MigrationPlan:
         if self.disable_mevboost:
             lines.append("MEV-Boost will be stopped and disabled (unit file kept).")
             lines.append("")
-        if self.command == "complete":
-            lines.append(COMPLETE_ROLLBACK_HINT)
+        if self.command == "complete" and self.rollback_hint:
+            lines.append(self.rollback_hint)
             lines.append("")
         if self.services_to_restart:
             lines.append("Restart after apply: " + ", ".join(self.services_to_restart))
@@ -1077,6 +1109,7 @@ def complete(
         pass
 
     plan.applied = apply
+    plan.rollback_hint = complete_rollback_hint(fs)
     return plan
 
 
@@ -1170,8 +1203,8 @@ def _print_plan(plan: MigrationPlan, as_json: bool) -> None:
             "disable_mevboost": plan.disable_mevboost,
             "applied": plan.applied,
         }
-        if plan.command == "complete":
-            payload["rollback"] = COMPLETE_ROLLBACK_HINT
+        if plan.command == "complete" and plan.rollback_hint:
+            payload["rollback"] = plan.rollback_hint
         print(json.dumps(payload, indent=2))
         return
     print(plan.format_text(), end="")

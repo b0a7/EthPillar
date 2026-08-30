@@ -18,8 +18,8 @@ from deploy.charon import generate_charon_service
 from manage.epbs import (
     CHARON_EPBS_NOTE,
     COMPLETE_REFUSED,
-    COMPLETE_ROLLBACK_HINT,
     EpbsError,
+    complete_rollback_hint,
     EpbsFilesystem,
     charon_has_builder_api,
     complete,
@@ -173,7 +173,11 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
     assert not has_flag(_args(bn), "--http-mev-relay")
     # VC relays remain
     assert json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))["default_config"]["builder"]["relays"]
-    assert COMPLETE_ROLLBACK_HINT in done.format_text()
+    hint = complete_rollback_hint(fs)
+    assert hint in done.format_text()
+    assert "restart consensus validator" in hint
+    assert "charon" not in hint
+    assert "enable --now mevboost" in hint
 
     # Idempotent complete + status after a successful cutover
     again_done = complete(fs, apply=True)
@@ -231,9 +235,25 @@ def test_prysm_charon_prepare_and_complete(tmp_path: Path) -> None:
     assert not charon_has_builder_api(ch_after)
     assert "charon" in done.services_to_restart
     assert CHARON_EPBS_NOTE in done.warnings
+    hint = complete_rollback_hint(fs)
+    assert hint in done.format_text()
+    assert "charon.service.bak.epbs" in hint
+    assert "restart consensus charon validator" in hint
     st = status(fs)
     assert "Charon: installed" in st
     assert "builder-api=no" in st
+
+
+def test_complete_rollback_hint_omits_missing_units(tmp_path: Path) -> None:
+    """Rollback hint only names units that exist on the filesystem."""
+    fs = _fs(tmp_path)
+    _write(fs, "consensus", "[Service]\nExecStart=/bin/true\n")
+    hint = complete_rollback_hint(fs)
+    assert "consensus.service.bak.epbs" in hint
+    assert "restart consensus" in hint
+    assert "charon" not in hint
+    assert "validator" not in hint
+    assert "mevboost" not in hint
 
 
 def test_strip_charon_builder_api() -> None:

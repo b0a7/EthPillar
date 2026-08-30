@@ -652,24 +652,6 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                 from deploy.charon import CHARON_LOCK_FILE
                 if os.path.isfile(CHARON_LOCK_FILE):
                     subprocess.run(['sudo', 'systemctl', 'start', 'charon'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    elif not skip_prompts and validator_only and (charon_enabled or validator_enabled):
-        if charon_enabled and validator_enabled:
-            message = (
-                "\nInstallation successful!\n"
-                "Would you like to start Charon and the validator now?"
-            )
-        elif charon_enabled:
-            message = "\nInstallation successful!\nWould you like to start Charon now?"
-        else:
-            message = "\nInstallation successful!\nWould you like to start the validator now?"
-        answer = PromptUtils(Screen()).prompt_for_yes_or_no(message)
-        if answer:
-            if charon_enabled:
-                from deploy.charon import CHARON_LOCK_FILE
-                if os.path.isfile(CHARON_LOCK_FILE):
-                    subprocess.run(['sudo', 'systemctl', 'start', 'charon'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            if validator_enabled:
-                subprocess.run(['sudo', 'systemctl', 'start', 'validator'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     # Prompt to enable autostart services
     if not skip_prompts:

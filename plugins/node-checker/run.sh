@@ -698,10 +698,10 @@ check_mevboost_version() {
 }
 
 check_charon_version() {
-    ((total_checks++))
     if ! isCharonEnabled; then
         return 0
     fi
+    ((total_checks++))
     if getCharonCurrentVersion; then
         TAG_URL=${client_github_url["Charon"]}
         LATEST_VERSION=$(curl -s "$TAG_URL" | jq -r .tag_name 2>/dev/null || true)
