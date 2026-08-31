@@ -33,11 +33,14 @@ from checkpoint_cache_common import checkpoint_sync_url_for_network  # noqa: E40
 from latest_snapshot import ENV_VAR as LATEST_SNAPSHOT_ENV, SNAPSHOT_PATH, write_snapshot  # noqa: E402
 from port_bindings import (  # noqa: E402
     client_from_service,
+    cl_enables_quic_by_default,
+    cl_supports_rpc_expose,
     default_port_expectations,
     el_supports_rpc_expose,
-    cl_supports_rpc_expose,
+    expected_cl_quic_unit_flag,
     has_caplin_execution,
     read_env_ports,
+    verify_cl_quic_unit_flag,
     verify_port_expectations,
     wait_for_port_scope,
 )
@@ -708,22 +711,40 @@ def _verify_default_port_bindings(args: Any, expected_services: List[str]) -> bo
     has_caplin = has_caplin_execution() or (
         has_execution and not has_consensus and ("caplin" in (args.combo or "").lower() or "caplin" in (args.cc or "").lower())
     )
+    cl_name = client_from_service("consensus") if has_consensus else ""
+    expect_cl_quic = has_consensus and cl_enables_quic_by_default(cl_name)
 
     expectations = default_port_expectations(
         el_p2p_port=ports["el_p2p"],
         el_rpc_port=ports["el_rpc"],
         cl_p2p_port=ports["cl_p2p"],
+        cl_p2p_port_2=ports["cl_p2p_2"],
         cl_rest_port=ports["cl_rest"],
         has_execution=has_execution,
         has_consensus=has_consensus,
         has_caplin=has_caplin,
+        expect_cl_quic=expect_cl_quic,
     )
     if not expectations:
         print("  ℹ️  Skipping port binding checks (no EL/CL services)", flush=True)
         return True
 
-    print("\n🔌 Verifying default port bindings (RPC localhost, P2P public)...", flush=True)
+    print("\n🔌 Verifying default port bindings (RPC localhost, P2P/QUIC public)...", flush=True)
     ok, errors = verify_port_expectations(expectations)
+    if expect_cl_quic:
+        expected_flag = expected_cl_quic_unit_flag(cl_name, ports["cl_p2p_2"])
+        flag_ok, flag_msg = verify_cl_quic_unit_flag(cl_name, ports["cl_p2p_2"])
+        if not flag_ok:
+            ok = False
+            errors.append(flag_msg)
+        elif expected_flag:
+            print(f"  ✅ CL QUIC unit has {expected_flag}", flush=True)
+        else:
+            print(
+                f"  ✅ CL QUIC uses {cl_name} default "
+                f"(UDP {ports['cl_p2p_2']}; no EthPillar pin)",
+                flush=True,
+            )
     if ok:
         for item in expectations:
             print(f"  ✅ {item.label} (:{item.port}) bound as expected ({item.scope})", flush=True)
