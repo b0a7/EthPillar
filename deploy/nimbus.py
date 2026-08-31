@@ -6,7 +6,7 @@ from typing import Tuple, Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
 def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
-                               cl_rest_port: str, cl_p2p_port: str, cl_max_peer_count: str,
+                               cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
                                fee_parameters: str = '', mev_parameters: str = '',
                                network_override: Optional[str] = None) -> str:
     """Generate Nimbus beacon node systemd service file content.
@@ -16,6 +16,7 @@ def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
         jwtsecret_path: Path to JWT secret file
         cl_rest_port: CL REST port
         cl_p2p_port: CL P2P port
+        cl_p2p_port_2: CL QUIC port (UDP)
         cl_max_peer_count: CL max peer count
         fee_parameters: Optional fee recipient parameters
         mev_parameters: Optional MEV relay parameters
@@ -37,6 +38,7 @@ def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
         f"--data-dir={BASE_DATA_DIR}/nimbus",
         f"--tcp-port={cl_p2p_port}",
         f"--udp-port={cl_p2p_port}",
+        f"--quic-port={cl_p2p_port_2}",
         f"--max-peers={cl_max_peer_count}",
         f"--rest-port={cl_rest_port}",
         "--enr-auto-update=true",
@@ -172,7 +174,7 @@ def download_nimbus(eth_network: str) -> str:
     return nimbus_version
 
 def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
-                     cl_rest_port: str, cl_p2p_port: str, cl_max_peer_count: str,
+                     cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
                      fee_parameters: str = '', mev_parameters: str = '') -> str:
     """Generate and write Nimbus beacon node service file.
 
@@ -181,6 +183,7 @@ def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
         jwtsecret_path: Path to JWT secret file.
         cl_rest_port: Consensus client REST port.
         cl_p2p_port: Consensus client P2P port.
+        cl_p2p_port_2: Consensus client QUIC port.
         cl_max_peer_count: Consensus client max peer count.
         fee_parameters: Optional fee recipient parameters.
         mev_parameters: Optional MEV relay parameters.
@@ -190,7 +193,7 @@ def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
     """
     service_content = generate_nimbus_bn_service(
         eth_network, jwtsecret_path,
-        cl_rest_port, cl_p2p_port, cl_max_peer_count,
+        cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peer_count,
         fee_parameters, mev_parameters
     )
     service_file_path = '/etc/systemd/system/consensus.service'

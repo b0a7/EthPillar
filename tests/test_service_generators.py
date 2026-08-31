@@ -618,7 +618,7 @@ class TestLodestarService:
         mev_params = '--builder --builder.urls http://127.0.0.1:18550'
         result = generate_lodestar_bn_service(
             "mainnet", SYNC_URL, JWTSECRET_PATH,
-            CL_REST_PORT, CL_P2P_PORT, CL_MAX_PEER_COUNT,
+            CL_REST_PORT, CL_P2P_PORT, CL_P2P_PORT_2, CL_MAX_PEER_COUNT,
             fee_parameters=fee_params, mev_parameters=mev_params
         )
         assert "Description=Lodestar Consensus Client service for MAINNET" in result
@@ -626,6 +626,7 @@ class TestLodestarService:
         assert f"--checkpointSyncUrl={SYNC_URL}" in result
         assert f"--rest.port={CL_REST_PORT}" in result
         assert f"--port={CL_P2P_PORT}" in result
+        assert f"--quicPort={CL_P2P_PORT_2}" in result
         assert "--builder" in result
         assert f"--suggestedFeeRecipient={FEE_RECIPIENT_ADDRESS}" in result
         assert f"WorkingDirectory={INSTALL_DIR}" in result
@@ -637,7 +638,7 @@ class TestLodestarService:
         custom_network = '--paramsFile=/opt/ethpillar/testnet/config.yaml --genesisStateFile=/opt/ethpillar/testnet/genesis.ssz --bootnodes=enr1 --network.connectToDiscv5Bootnodes --ignoreWeakSubjectivityCheck'
         result = generate_lodestar_bn_service(
             "ephemery", SYNC_URL, JWTSECRET_PATH,
-            CL_REST_PORT, CL_P2P_PORT, CL_MAX_PEER_COUNT,
+            CL_REST_PORT, CL_P2P_PORT, CL_P2P_PORT_2, CL_MAX_PEER_COUNT,
             network_override=custom_network
         )
         assert "--paramsFile=/opt/ethpillar/testnet/config.yaml" in result
@@ -673,13 +674,14 @@ class TestNimbusService:
         mev_params = '--payload-builder=true --payload-builder-url=http://127.0.0.1:18550'
         result = generate_nimbus_bn_service(
             "mainnet", JWTSECRET_PATH,
-            CL_REST_PORT, CL_P2P_PORT, CL_MAX_PEER_COUNT,
+            CL_REST_PORT, CL_P2P_PORT, CL_P2P_PORT_2, CL_MAX_PEER_COUNT,
             fee_parameters=fee_params, mev_parameters=mev_params
         )
         assert "Description=Nimbus Beacon Node Consensus Client service for MAINNET" in result
         assert f"--network=mainnet" in result
         assert f"--tcp-port={CL_P2P_PORT}" in result
         assert f"--udp-port={CL_P2P_PORT}" in result
+        assert f"--quic-port={CL_P2P_PORT_2}" in result
         assert f"--rest-port={CL_REST_PORT}" in result
         assert "--payload-builder=true" in result
         assert "--in-process-validators=false" in result
@@ -690,7 +692,7 @@ class TestNimbusService:
         custom_network = '--network=/opt/ethpillar/testnet --bootstrap-node=enr1,enr2'
         result = generate_nimbus_bn_service(
             "ephemery", JWTSECRET_PATH,
-            CL_REST_PORT, CL_P2P_PORT, CL_MAX_PEER_COUNT,
+            CL_REST_PORT, CL_P2P_PORT, CL_P2P_PORT_2, CL_MAX_PEER_COUNT,
             network_override=custom_network
         )
         assert "--network=/opt/ethpillar/testnet" in result
@@ -867,6 +869,7 @@ class TestPrysmService:
         assert "--mainnet" in result
         assert f"--p2p-tcp-port={CL_P2P_PORT}" in result
         assert f"--p2p-udp-port={CL_P2P_PORT}" in result
+        assert f"--p2p-quic-port={CL_P2P_PORT_2}" in result
         assert f"--http-port={CL_REST_PORT}" in result
         assert f"--p2p-max-peers={CL_MAX_PEER_COUNT}" in result
         assert f"--checkpoint-sync-url={SYNC_URL}" in result

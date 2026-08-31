@@ -1248,6 +1248,13 @@ while true; do
         # Teku 26.7.0+ enables QUIC by default: UDP 9001 (IPv4) and UDP 9091 (IPv6)
         [[ $CL == "Teku" ]] && sudo ufw allow 9001/udp comment 'Allow teku QUIC port (IPv4)'
         [[ $CL == "Teku" ]] && sudo ufw allow 9091/udp comment 'Allow teku QUIC port (IPv6)'
+        # Nimbus v26.8.0+ enables QUIC gossip by default on UDP 9001 (--quic-port)
+        [[ $CL == "Nimbus" ]] && sudo ufw allow 9001/udp comment 'Allow nimbus QUIC port'
+        # Lodestar v1.42.0+ enables QUIC by default on UDP 9001 (--quicPort, default port+1)
+        [[ $CL == "Lodestar" ]] && sudo ufw allow 9001/udp comment 'Allow lodestar QUIC port'
+        [[ $CL == "Grandine" ]] && sudo ufw allow 9001/udp comment 'Allow grandine QUIC port'
+        # Prysm v5.2.0+ enables QUIC by default; without --p2p-quic-port it uses UDP 13000
+        [[ $CL == "Prysm" ]] && sudo ufw allow 9001/udp comment 'Allow prysm QUIC port'
         [[ $EL == "Reth" ]] && sudo ufw allow 30304/udp comment 'Allow reth discv5 port'
         [[ $EL =~ "Erigon" ]] && sudo ufw allow 42069 comment 'Allow erigon torrent port'
         [[ $EL =~ "Erigon" ]] && sudo ufw allow 30304 comment 'Allow erigon p2p port'
