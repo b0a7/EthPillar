@@ -152,16 +152,68 @@ def has_caplin_execution() -> bool:
         return False
 
 
+# Beacon clients that enable libp2p QUIC by default. Caplin does not.
+# Value is the ExecStart flag EthPillar pins (empty = client default only; Teku).
+CL_QUIC_UNIT_FLAGS: Dict[str, str] = {
+    "Lighthouse": "--quic-port=",
+    "Nimbus": "--quic-port=",
+    "Grandine": "--quic-port=",
+    "Lodestar": "--quicPort=",
+    "Prysm": "--p2p-quic-port=",
+    "Teku": "",
+}
+
+
+def cl_enables_quic_by_default(cl_name: str) -> bool:
+    """Return True when *cl_name* listens for QUIC without an opt-in flag."""
+    return cl_name in CL_QUIC_UNIT_FLAGS
+
+
+def expected_cl_quic_unit_flag(cl_name: str, quic_port: int) -> Optional[str]:
+    """Return the consensus.service substring EthPillar should pin for QUIC.
+
+    Teku enables QUIC by default without a pinned EthPillar flag, so this
+    returns ``None``. Unknown clients also return ``None``.
+    """
+    prefix = CL_QUIC_UNIT_FLAGS.get(cl_name)
+    if prefix is None or prefix == "":
+        return None
+    return f"{prefix}{quic_port}"
+
+
+def verify_cl_quic_unit_flag(cl_name: str, quic_port: int) -> Tuple[bool, str]:
+    """Check ``consensus.service`` pins the EthPillar QUIC port when required.
+
+    Returns:
+        ``(True, "")`` when no pin is required or the flag is present.
+        ``(False, message)`` when a pin is required but missing.
+    """
+    expected = expected_cl_quic_unit_flag(cl_name, quic_port)
+    if expected is None:
+        return True, ""
+    path = "/etc/systemd/system/consensus.service"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            content = handle.read()
+    except OSError as exc:
+        return False, f"CL QUIC unit flag: cannot read {path}: {exc}"
+    if expected in content:
+        return True, ""
+    return False, f"CL QUIC unit flag missing: expected {expected!r} in consensus.service"
+
+
 def default_port_expectations(
     *,
     el_p2p_port: int = 30303,
     el_rpc_port: int = 8545,
     cl_p2p_port: int = 9000,
+    cl_p2p_port_2: int = 9001,
     cl_rest_port: int = 5052,
     engine_port: int = 8551,
     has_execution: bool = False,
     has_consensus: bool = False,
     has_caplin: bool = False,
+    expect_cl_quic: bool = False,
 ) -> List[PortExpectation]:
     """Build default bind expectations for a deployed node."""
     expectations: List[PortExpectation] = []
@@ -180,6 +232,10 @@ def default_port_expectations(
                 PortExpectation(cl_rest_port, "localhost", ("tcp",), "CL REST"),
             ]
         )
+        if expect_cl_quic:
+            expectations.append(
+                PortExpectation(cl_p2p_port_2, "public", ("udp",), "CL QUIC"),
+            )
     elif has_caplin:
         expectations.extend(
             [
@@ -224,12 +280,14 @@ def read_env_ports(env_path: str) -> Dict[str, int]:
         "el_p2p": 30303,
         "el_rpc": 8545,
         "cl_p2p": 9000,
+        "cl_p2p_2": 9001,
         "cl_rest": 5052,
     }
     mapping = {
         "EL_P2P_PORT": "el_p2p",
         "EL_RPC_PORT": "el_rpc",
         "CL_P2P_PORT": "cl_p2p",
+        "CL_P2P_PORT_2": "cl_p2p_2",
         "CL_REST_PORT": "cl_rest",
     }
     ports = dict(defaults)
