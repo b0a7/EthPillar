@@ -30,8 +30,6 @@ setup() {
 @test "integration matrix has Prysm and Lodestar ePBS migration cases" {
     grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
-    grep -q 'ETHPILLAR_LODESTAR_VERSION' tests/integration/run_docker_tests.py
-    grep -q 'ETHPILLAR_LODESTAR_VERSION' tests/integration/check_client_versions.sh
   grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_inside_docker.py
   grep -q -- '--force-validator' tests/integration/run_inside_docker.py

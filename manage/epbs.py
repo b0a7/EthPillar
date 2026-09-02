@@ -12,7 +12,7 @@ Two-step operator flow (EthStaker Glamsterdam guidance):
 
 Support levels:
 
-* ``full`` — Prysm (proposer-settings relays) and Lodestar v1.47.0-rc.0+
+* ``full`` — Prysm (proposer-settings relays) and Lodestar v1.47.0+
   (VC ``--builder.urls`` / ``--builder.minBid``). Lodestar prepare still
   probes ``lodestar validator --help`` so older binaries are skipped.
 * ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
@@ -83,7 +83,7 @@ SUPPORT_NOTES: Dict[str, str] = {
     ),
     "Lodestar": (
         "Full: VC flags --builder.urls / --builder.minBid from "
-        "ChainSafe/lodestar#9832 (v1.47.0-rc.0+). Prepare writes them only "
+        "ChainSafe/lodestar#9832 (v1.47.0+). Prepare writes them only "
         "when `lodestar validator --help` lists --builder.urls."
     ),
     "Lighthouse": (
@@ -640,7 +640,7 @@ def eth_min_bid_to_gwei(eth: str) -> str:
 
 
 def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
-    """Add Lodestar VC builder URL / min-bid flags (v1.47.0-rc.0+, PR #9832).
+    """Add Lodestar VC builder URL / min-bid flags (v1.47.0+, PR #9832).
 
     Args:
         vc_content: Current ``validator.service`` text.
@@ -870,13 +870,13 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
             plan.actions.append(
                 PlanAction(
                     "Lodestar VC",
-                    "skipped: binary --help has no --builder.urls (need v1.47.0-rc.0+)",
+                    "skipped: binary --help has no --builder.urls (need v1.47.0+)",
                 )
             )
             plan.warnings.append(
                 "Prepare: no-op on this Lodestar build — Complete will stop "
                 "MEV-Boost without a VC relay replacement. Install Lodestar "
-                "v1.47.0-rc.0 or later (ChainSafe/lodestar#9832)."
+                "v1.47.0 or later (ChainSafe/lodestar#9832)."
             )
         else:
             new_vc = apply_relays_lodestar(vc_content, relays)

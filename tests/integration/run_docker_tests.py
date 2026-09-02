@@ -82,8 +82,6 @@ switch_tests = [
 ]
 
 # Post-install ePBS migration cases (empty-wallet VC start).
-# Lodestar is pinned to v1.47.0-rc.0 (Gloas builder API / --builder.urls).
-LODESTAR_EPBS_VERSION = "v1.47.0-rc.0"
 epbs_tests = [
     (
         "Prysm-Reth-ePBS-Migration-SEPOLIA",
@@ -91,8 +89,7 @@ epbs_tests = [
     ),
     (
         "Lodestar-Reth-ePBS-Migration-SEPOLIA",
-        f"env ETHPILLAR_LODESTAR_VERSION={LODESTAR_EPBS_VERSION} {RUN_TEST} "
-        "deploy/deploy-node.py --ec Reth --cc Lodestar --vc Lodestar --network SEPOLIA "
+        f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lodestar --vc Lodestar --network SEPOLIA "
         "--mev --config 'Custom Setup' --test-epbs",
     ),
 ]
