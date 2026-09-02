@@ -48,6 +48,15 @@ def _write_cdvn(tmp_path: Path, env: str, *, with_lock: bool = True, data_dirs: 
     return root
 
 
+def _plan(root: Path, tmp_path: Path, **kwargs):
+    """Plan against an isolated EthPillar datadir root (no host /var/lib)."""
+    return plan_cdvn_migration(
+        str(root),
+        base_data_dir=str(tmp_path / "ethpillar-varlib"),
+        **kwargs,
+    )
+
+
 def test_plan_lodestar_datadir_merges_state(tmp_path: Path):
     root = _write_cdvn(
         tmp_path,
@@ -65,7 +74,7 @@ def test_plan_lodestar_datadir_merges_state(tmp_path: Path):
     (base / "validator-db" / "db").write_text("x", encoding="utf-8")
     (base / "validator-2026-08-28.log").write_text("log", encoding="utf-8")
 
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     move = next(m for m in plan.datadir_moves if m.relative_src == "data/lodestar")
     assert move.will_move
     assert "auto-sync to Lodestar" in plan.summary()
@@ -85,7 +94,7 @@ def test_plan_vc_teku_logs_only_skips_datadir_move(tmp_path: Path):
     logs.mkdir(parents=True)
     (logs / "teku.log").write_text("x", encoding="utf-8")
 
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     vc_move = next(m for m in plan.datadir_moves if m.relative_src == "data/vc-teku")
     assert not vc_move.will_move
     assert "only logs present" in vc_move.skip_reason
@@ -125,7 +134,7 @@ def test_plan_symlink_charon(tmp_path: Path):
     )
     (root / ".charon").symlink_to(real, target_is_directory=True)
 
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.charon_is_symlink is True
     assert plan.charon_dir == str(real.resolve())
     summary = plan.summary()
@@ -145,7 +154,7 @@ def test_plan_validator_only_external_bn(tmp_path: Path):
         "BUILDER_API_ENABLED=true\n"
         "CHARON_BEACON_NODE_ENDPOINTS=http://192.168.1.50:5052\n",
     )
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.role == "Validator Client Only"
     assert plan.network == "mainnet"
     assert plan.ec_name is None
@@ -187,7 +196,7 @@ def test_fee_recipient_from_cluster_lock(tmp_path: Path):
         __import__("json").dumps(lock),
         encoding="utf-8",
     )
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.fee_recipient.lower() == fee.lower()
     argv = plan.deploy_argv()
     assert argv[argv.index("--fee_address") + 1].lower() == fee.lower()
@@ -212,7 +221,7 @@ def test_fee_recipient_ignores_withdrawal_credentials(tmp_path: Path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="Fee recipient address is required"):
-        plan_cdvn_migration(str(root))
+        _plan(root, tmp_path)
 
 
 def test_fee_recipient_from_root_owned_cluster_lock(tmp_path: Path, monkeypatch):
@@ -267,7 +276,7 @@ def test_fee_recipient_from_root_owned_cluster_lock(tmp_path: Path, monkeypatch)
     assert _resolve_fee_recipient(env, str(charon)) == fee
     assert any(cmd[:3] == ["sudo", "cat", str(lock_path)] for cmd in calls)
 
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.fee_recipient == fee
 
 
@@ -280,7 +289,7 @@ def test_plan_vc_lighthouse(tmp_path: Path):
         "VC=vc-lighthouse\n"
         "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
     )
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.vc_name == "Lighthouse"
     assert "--vc" in plan.deploy_argv()
     assert plan.deploy_argv()[plan.deploy_argv().index("--vc") + 1] == "Lighthouse"
@@ -297,7 +306,7 @@ def test_plan_full_stack_with_local_mev(tmp_path: Path):
         "BUILDER_API_ENABLED=true\n",
         data_dirs=["data/nethermind", "data/lighthouse", "data/lodestar"],
     )
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.role == "Custom Setup"
     assert plan.network == "hoodi"
     assert plan.ec_name == "Nethermind"
@@ -327,7 +336,7 @@ def test_plan_rewrites_docker_bn(tmp_path: Path):
         "MEV=mev-none\n"
         "CHARON_BEACON_NODE_ENDPOINTS=http://lighthouse:5052\n",
     )
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.vc_name == "Teku"
     assert plan.bn_address == "http://127.0.0.1:5052"
     assert any("Rewrote" in w or "lighthouse" in w for w in plan.warnings)
@@ -343,7 +352,7 @@ def test_plan_unknown_el_treated_as_external(tmp_path: Path):
         "MEV=mev-none\n",
     )
     with pytest.raises(ValueError, match="unsupported"):
-        plan_cdvn_migration(str(root))
+        _plan(root, tmp_path)
 
 
 def test_plan_custom_external_profiles_vc_only(tmp_path: Path):
@@ -359,7 +368,7 @@ def test_plan_custom_external_profiles_vc_only(tmp_path: Path):
         "CHARON_BEACON_NODE_ENDPOINTS=http://100.116.116.75:5052\n"
         "MONITORING_PORT_GRAFANA=3701\n",
     )
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.role == "Validator Client Only"
     assert plan.ec_name is None
     assert plan.cc_name is None
@@ -384,7 +393,7 @@ def test_plan_cl_without_el_fails(tmp_path: Path):
         "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n",
     )
     with pytest.raises(ValueError, match="unsupported"):
-        plan_cdvn_migration(str(root))
+        _plan(root, tmp_path)
 
 
 def test_plan_orphan_data_warning(tmp_path: Path):
@@ -398,7 +407,7 @@ def test_plan_orphan_data_warning(tmp_path: Path):
         "CHARON_BEACON_NODE_ENDPOINTS=http://10.0.0.2:5052\n",
         data_dirs=["data/lighthouse"],
     )
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert any("data/lighthouse" in w and "cl-none" in w for w in plan.warnings)
     assert not any(m.relative_src == "data/lighthouse" and m.will_move for m in plan.datadir_moves)
 
@@ -412,7 +421,7 @@ def test_plan_lodestar_bn_incompatible_vc_warns(tmp_path: Path):
         "VC=vc-prysm\n"
         "MEV=mev-mevboost\n",
     )
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.cc_name == "Lodestar"
     assert plan.vc_name == "Prysm"
     assert any("Lodestar beacon node" in w and "Prysm" in w for w in plan.warnings)
@@ -437,7 +446,7 @@ def test_plan_docker_absent_cli_assumes_stopped(tmp_path: Path, monkeypatch):
     )
     (root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     monkeypatch.setattr("deploy.cdvn_migrate.shutil.which", lambda _name: None)
-    plan = plan_cdvn_migration(str(root))
+    plan = _plan(root, tmp_path)
     assert plan.docker_running is False
     assert not plan.docker_check_error
     assert any("Docker CLI not found" in w for w in plan.warnings)

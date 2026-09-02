@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from manage.charon_monitoring import (
     CDVN_GRAFANA_DASHBOARDS,
     CHARON_SCRAPE_JOB,
@@ -118,4 +120,28 @@ def test_provision_charon_monitoring_scrape_only(tmp_path: Path):
     )
     assert results["scrape"] is True
     assert results["dashboard"] is False
+    assert results["datasource"] is False
     assert has_charon_scrape(yml.read_text(encoding="utf-8"))
+
+
+def test_provision_charon_monitoring_permission_error_propagates(tmp_path: Path):
+    yml = tmp_path / "prometheus.yml"
+    yml.write_text(_BASE_YML, encoding="utf-8")
+    dash = tmp_path / "dashboards"
+    dash.mkdir()
+    ds_parent = tmp_path / "datasources"
+    ds_parent.mkdir()
+    ds = ds_parent / "datasources.yml"
+    ds.write_text("apiVersion: 1\ndatasources: []\n", encoding="utf-8")
+
+    with patch(
+        "manage.charon_monitoring.ensure_prometheus_datasource_uid",
+        side_effect=PermissionError("Permission denied: datasources.yml"),
+    ):
+        with pytest.raises(PermissionError, match="Permission denied"):
+            provision_charon_monitoring(
+                prometheus_yml=yml,
+                grafana_dashboards=dash,
+                datasources_yml=ds,
+                restart=False,
+            )

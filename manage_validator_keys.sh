@@ -164,15 +164,19 @@ function _getAmount(){
 }
 
 function importCharonKeyShares(){
-    local CHARON_KEYS="/var/lib/charon/.charon/validator_keys"
+    # Optional: pass "skip_confirm" to run after Import .charon already asked.
+    local skip_confirm="${1:-}"
+    local CHARON_KEYS
+    CHARON_KEYS="$(getCharonValidatorKeysDir)"
     if ! charonKeysharesPresent; then
         whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
 "No Charon key shares found at:
 ${CHARON_KEYS}
 
 Copy your CDVN (or DKG) .charon folder first:
-  sudo cp -a /path/to/.charon/. /var/lib/charon/.charon/
-  sudo chown -R charon:charon /var/lib/charon/.charon
+  EthPillar → ${OBOL_CHARON_DV} → Import .charon cluster folder
+  (or: sudo cp -a /path/to/.charon/. $(getCharonClusterDir)/
+       sudo chown -R charon:charon $(getCharonClusterDir))
 
 Then import the key shares into the validator client." 18 78
         return
@@ -188,7 +192,8 @@ Then import the key shares into the validator client." 18 78
 Install a signer VC first, then retry." 10 70
         return 1
     fi
-    if ! whiptail --title "${OBOL_IMPORT_KEY_SHARES}" --yesno \
+    if [[ "$skip_confirm" != "skip_confirm" ]]; then
+        if ! whiptail --title "${OBOL_IMPORT_KEY_SHARES}" --yesno \
 "Import EIP-2335 key shares from:
 ${CHARON_KEYS}
 
@@ -199,7 +204,8 @@ keystore-*.txt passphrases (no password prompt). After import, Charon
 is started, then the validator client.
 
 Continue?" 18 78; then
-        return
+            return
+        fi
     fi
     ohai "Importing ${OBOL_MARK} Obol Charon key shares into ${VC}…"
     if [[ "$VC" == "Grandine" ]]; then
@@ -1246,20 +1252,9 @@ menuKeymanager() {
 }
 
 menuMain(){
-# Define the options for the main menu
-OPTIONS=(
-  1 "Generate new validator keys"
-  2 "Import validator keys from offline key generation or backup"
-  3 "Add new or regenerate existing validator keys from Secret Recovery Phrase"
-  4 "${OBOL_IMPORT_KEY_SHARES} (/var/lib/charon/.charon)"
-  - ""
-  10 "List Keys (Keymanager API)"
-  11 "Import Keystores (Keymanager API)"
-  12 "Delete Keystores (Keymanager API)"
-  13 "Enable Keymanager API"
-  - ""
-  99 "Exit"
-)
+# Solo key tooling is unsafe for Charon DV shares — hide it when Charon is installed.
+buildValidatorKeyMenuOptions
+OPTIONS=("${VALIDATOR_KEY_MENU_OPTIONS[@]}")
 
 while true; do
     # Display the main menu and get the user's choice
@@ -1277,16 +1272,17 @@ while true; do
     # Handle the user's choice
     case $CHOICE in
       1)
-        generateNewValidatorKeys
+        if isCharonEnabled; then
+          importCharonKeyShares
+        else
+          generateNewValidatorKeys
+        fi
         ;;
       2)
         importValidatorKeys
        ;;
       3)
         addRestoreValidatorKeys
-        ;;
-      4)
-        importCharonKeyShares
         ;;
       10)
         keymanagerListKeys
@@ -1307,12 +1303,39 @@ while true; do
 done
 }
 
+# Populate VALIDATOR_KEY_MENU_OPTIONS for menuMain (and bats).
+# Charon installs hide solo Generate/Import/Restore.
+buildValidatorKeyMenuOptions(){
+  VALIDATOR_KEY_MENU_OPTIONS=()
+  if isCharonEnabled; then
+    VALIDATOR_KEY_MENU_OPTIONS+=(
+      1 "${OBOL_IMPORT_KEY_SHARES} ($(getCharonClusterDir))"
+    )
+  else
+    VALIDATOR_KEY_MENU_OPTIONS+=(
+      1 "Generate new validator keys"
+      2 "Import validator keys from offline key generation or backup"
+      3 "Add new or regenerate existing validator keys from Secret Recovery Phrase"
+    )
+  fi
+  VALIDATOR_KEY_MENU_OPTIONS+=(
+    - ""
+    10 "List Keys (Keymanager API)"
+    11 "Import Keystores (Keymanager API)"
+    12 "Delete Keystores (Keymanager API)"
+    13 "Enable Keymanager API"
+    - ""
+    99 "Exit"
+  )
+}
+
 # Args:
 #   (none)              → full key management menu
 #   true | plugin_*     → skip menu (CSM plugin source mode)
 #   helpers-only        → define functions only (no download/menu; for unit tests)
 #   keymanager          → open Keymanager API submenu only
 #   charon-import       → import Obol Charon key shares only
+#   charon-import-yes   → same, skip the yes/no confirm (caller already asked)
 _skip_or_mode="${1:-}"
 setMessage
 if [[ "$_skip_or_mode" == "keymanager" ]]; then
@@ -1322,6 +1345,9 @@ elif [[ "$_skip_or_mode" == "charon-import" ]]; then
     downloadEthstakerDepositCli
     checkLido
     importCharonKeyShares
+elif [[ "$_skip_or_mode" == "charon-import-yes" ]]; then
+    checkLido
+    importCharonKeyShares skip_confirm
 elif [[ "$_skip_or_mode" == "helpers-only" ]]; then
     # Unit tests / pure source — do not download deposit-cli or open menus.
     :

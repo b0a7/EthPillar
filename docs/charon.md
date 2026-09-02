@@ -19,6 +19,13 @@ Artifacts:
 | `/var/lib/charon/.charon/` | `charon` | Cluster lock, ENR private key, deposit data, key-share backup |
 | `/var/lib/<vc>_validator/` | `validator` | Operational keystores after import |
 
+After a fresh Charon install (not CDVN migrate):
+
+1. **Obol Charon DV → Import .charon cluster folder** — copies the cluster; if `validator_keys` are present, prompts to import shares into the signer VC (same as CDVN migrate)
+2. Start Charon (and the validator, if key shares were imported)
+
+Standalone re-import: **Validator → Import Obol Charon key shares** (solo Generate/Import keys is hidden while Charon is installed).
+
 ---
 
 ## Migrate from CDVN

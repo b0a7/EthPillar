@@ -666,6 +666,16 @@ isCharonEnabled(){
     [[ -f "$charon_svc" ]]
 }
 
+# EthPillar Charon cluster datadir (overridable in tests via CHARON_CLUSTER_DIR).
+getCharonClusterDir(){
+    echo "${CHARON_CLUSTER_DIR:-/var/lib/charon/.charon}"
+}
+
+# Charon DKG key-share directory (overridable via CHARON_VALIDATOR_KEYS_DIR).
+getCharonValidatorKeysDir(){
+    echo "${CHARON_VALIDATOR_KEYS_DIR:-$(getCharonClusterDir)/validator_keys}"
+}
+
 # Parse Charon libp2p TCP port from charon.service (--p2p-tcp-address=host:port).
 # Prints nothing when charon.service is missing; defaults to 3610 when flag absent.
 getCharonP2pPort(){
@@ -927,8 +937,10 @@ _migrateCdvnPromptStartMonitoring(){
 
 # Return 0 when Charon key shares exist under the EthPillar Charon datadir.
 charonKeysharesPresent(){
-    sudo test -d /var/lib/charon/.charon/validator_keys 2>/dev/null || return 1
-    [[ "$(sudo find /var/lib/charon/.charon/validator_keys -maxdepth 1 -name 'keystore-*.json' 2>/dev/null | wc -l)" -gt 0 ]]
+    local keys
+    keys="$(getCharonValidatorKeysDir)"
+    sudo test -d "$keys" 2>/dev/null || return 1
+    [[ "$(sudo find "$keys" -maxdepth 1 -name 'keystore-*.json' 2>/dev/null | wc -l)" -gt 0 ]]
 }
 
 # Return 0 when Lodestar already has imported validator keystores.
@@ -1220,6 +1232,110 @@ importCharonCdvnEnv(){
     migrateCdvnFull "$@"
 }
 
+# Copy a .charon tree via deploy.charon (overridable in bats).
+runCopyCharonCluster(){
+    local src="$1" dest="$2" force_flag="${3:-}"
+    # shellcheck disable=SC2086
+    PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon copy_charon \
+        --src "$src" --dest "$dest" ${force_flag}
+}
+
+# Run Validator Charon key-share import without the yes/no confirm.
+# Overridable in bats (avoids spawning manage_validator_keys.sh).
+runImportCharonKeySharesYes(){
+    bash "${BASE_DIR}/manage_validator_keys.sh" charon-import-yes
+}
+
+# Manual setup: copy a CDVN/DKG .charon tree into EthPillar's Charon datadir.
+importCharonClusterFolder(){
+    local SRC DEST
+    DEST="$(getCharonClusterDir)"
+    local vc_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    SRC=$(whiptail --title "Import .charon cluster folder" --inputbox \
+"Path to your CDVN or DKG .charon directory:
+
+Copies cluster-lock.json, validator_keys, and related
+cluster files into:
+  ${DEST}
+
+If key shares are present, you will be asked whether to
+import them into the signer VC (same as CDVN migrate)." 18 78 --ok-button "Submit" 3>&1 1>&2 2>&3) || return
+
+    SRC="${SRC/#\~/$HOME}"
+    # Accept either .../.charon or a parent that contains .charon
+    if [[ -d "${SRC}/.charon" ]]; then
+        SRC="${SRC}/.charon"
+    fi
+    if [[ ! -d "$SRC" ]]; then
+        whiptail --title "Import .charon cluster folder" --msgbox \
+"Directory not found:
+${SRC}" 9 70
+        return 1
+    fi
+    if [[ ! -f "${SRC}/cluster-lock.json" ]]; then
+        whiptail --title "Import .charon cluster folder" --msgbox \
+"Missing cluster-lock.json in:
+${SRC}" 9 70
+        return 1
+    fi
+
+    local force_flag=""
+    if sudo test -f "${DEST}/cluster-lock.json" 2>/dev/null; then
+        if ! whiptail --title "Import .charon cluster folder" --yesno \
+"Destination already has a cluster:
+${DEST}
+
+Overwrite with:
+${SRC}?" 12 70; then
+            return
+        fi
+        force_flag="--force"
+    elif ! whiptail --title "Import .charon cluster folder" --yesno \
+"Copy .charon cluster:
+  ${SRC}
+→ ${DEST}
+
+Continue?" 12 70; then
+        return
+    fi
+
+    ohai "Importing ${OBOL_MARK} .charon cluster folder…"
+    set +e
+    runCopyCharonCluster "$SRC" "$DEST" "$force_flag"
+    local rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Import .charon cluster folder" --msgbox \
+"Failed to copy .charon into ${DEST}.
+Check the terminal output for details." 10 70
+        return 1
+    fi
+
+    # Same UX as CDVN migrate: offer key-share import when shares are on disk.
+    if charonKeysharesPresent && [[ -f "$vc_svc" ]]; then
+        local vc_label=""
+        getClientVC 2>/dev/null || true
+        getValidatorClient >/dev/null 2>&1 || true
+        vc_label="${VC:-${VALIDATOR_CLIENT:-signer VC}}"
+        if whiptail --title "Import .charon cluster folder" --yesno \
+"Copied .charon into ${DEST}.
+
+Key shares were found under validator_keys.
+Also import them into ${vc_label} now?
+
+(You can re-run later via Validator → ${OBOL_IMPORT_KEY_SHARES})" 14 70; then
+            runImportCharonKeySharesYes
+            return
+        fi
+    fi
+
+    whiptail --title "Import .charon cluster folder" --msgbox \
+"Copied .charon into ${DEST}.
+
+Next:
+  1. Start Charon (this menu → Start Charon)
+  2. Validator → ${OBOL_IMPORT_KEY_SHARES} (if not imported yet)" 14 70
+}
 
 # Get execution client datadir from systemd config (for reth)
 getExecutionDatadir(){

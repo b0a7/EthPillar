@@ -590,15 +590,15 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         print(f'{charon_service_path}')
 
     if charon_enabled:
-        from deploy.charon import CHARON_CLUSTER_DIR, CHARON_VALIDATOR_KEYS_DIR
+        from deploy.charon import CHARON_CLUSTER_DIR
         from deploy.orchestrator import obol_mark
         print(f'\n{obol_mark()} Obol Charon next steps:')
         print(f'  1. Copy your existing .charon folder to {CHARON_CLUSTER_DIR}')
-        print(f'     sudo cp -a /path/to/.charon/. {CHARON_CLUSTER_DIR}/')
-        print(f'     sudo chown -R charon:charon {CHARON_CLUSTER_DIR}')
+        print(f'     EthPillar → {obol_mark()} Obol Charon DV → Import .charon cluster folder')
+        print('     (prompts to import key shares into the signer VC when present)')
+        print(f'     (or: sudo cp -a /path/to/.charon/. {CHARON_CLUSTER_DIR}/ && sudo chown -R charon:charon {CHARON_CLUSTER_DIR})')
         print('  2. sudo systemctl start charon')
-        print(f'  3. Import key shares from {CHARON_VALIDATOR_KEYS_DIR}')
-        print(f'     EthPillar → Validator → Generate / Import Validator Keys → Import {obol_mark()} Obol Charon key shares')
+        print(f'  3. If key shares were not imported in step 1: Validator → Import {obol_mark()} Obol Charon key shares')
         print('  4. sudo systemctl start validator')
         try:
             from deploy.charon import parse_p2p_tcp_port
@@ -625,7 +625,11 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                 print('  Grafana: http://127.0.0.1:3000/d/charon_overview/')
             elif not os.path.isfile('/etc/prometheus/prometheus.yml'):
                 print('Tip: Install Monitoring (Logging & Monitoring) to auto-provision Charon Overview.')
-        except Exception as exc:  # noqa: BLE001 — install must not fail on optional monitoring
+        except PermissionError as exc:
+            # Grafana present but /etc/grafana not writable — must not look like a soft skip.
+            print(f'ERROR: Charon Grafana/Prometheus provisioning failed (permission denied): {exc}')
+            print('  Retry as a user with sudo, or fix ownership under /etc/grafana/provisioning.')
+        except Exception as exc:  # noqa: BLE001 — other optional-monitoring failures
             print(f'Note: Charon Grafana/Prometheus provisioning skipped ({exc}).')
 
     if skip_prompts:

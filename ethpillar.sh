@@ -554,7 +554,13 @@ while true; do
     fi
     SUBOPTIONS+=(
       - ""
-      10 "Generate / Import Validator Keys"
+    )
+    if isCharonEnabled; then
+      SUBOPTIONS+=(10 "${OBOL_IMPORT_KEY_SHARES}")
+    else
+      SUBOPTIONS+=(10 "Generate / Import Validator Keys")
+    fi
+    SUBOPTIONS+=(
       11 "View validator pubkeys and indices"
       12 "🆕 Validator Actions: Compound/consolidate, partial withdrawals, top up, force exit"
       13 "Keymanager API: List / Import / Delete / Enable"
@@ -610,7 +616,11 @@ while true; do
         runScript update_validator.sh
         ;;
       10)
-        runScript manage_validator_keys.sh
+        if isCharonEnabled; then
+          runScript manage_validator_keys.sh charon-import
+        else
+          runScript manage_validator_keys.sh
+        fi
         ;;
       11)
         getPubKeys && getIndices
@@ -662,6 +672,7 @@ while true; do
       4 "Restart Charon"
       5 "Edit configuration"
       6 "Update to latest release"
+      7 "Import .charon cluster folder"
       - ""
       9 "Back to main menu"
     )
@@ -699,6 +710,9 @@ while true; do
         ;;
       6)
         runScript update_charon.sh
+        ;;
+      7)
+        importCharonClusterFolder
         ;;
       9)
         break

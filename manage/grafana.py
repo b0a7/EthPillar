@@ -169,6 +169,36 @@ def finalize_grafana_provisioned_file(path: Path) -> None:
     subprocess.run(["sudo", "chmod", "644", str(path)], check=False)
 
 
+def read_privileged_text(path: Path) -> Optional[str]:
+    """Read text from *path*, falling back to ``sudo cat`` on permission errors.
+
+    Args:
+        path: File to read.
+
+    Returns:
+        File contents, or None when the file is missing / unreadable even with sudo.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except PermissionError:
+        result = subprocess.run(
+            ["sudo", "cat", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        raise PermissionError(
+            f"Permission denied reading {path} (sudo cat failed: "
+            f"{(result.stderr or result.stdout or '').strip() or f'exit {result.returncode}'})"
+        ) from None
+    except OSError:
+        return None
+
+
 def write_privileged_file(path: Path, data: Union[str, bytes]) -> None:
     """Write ``data`` to ``path``, using ``sudo cp`` when /etc is not writable.
 
@@ -204,20 +234,25 @@ def write_privileged_file(path: Path, data: Union[str, bytes]) -> None:
 def ensure_prometheus_datasource_uid(datasources_yml: Path) -> bool:
     """Ensure Grafana Prometheus datasource uses ``uid: prometheus``.
 
+    Gates on the passed *datasources_yml* path only (parent dir or existing file).
+    Does not consult a hardcoded ``/etc/grafana`` override.
+
     Args:
         datasources_yml: Grafana datasources provisioning file path.
 
     Returns:
         True if the file was created or modified.
     """
-    grafana_etc = Path("/etc/grafana")
-    if not datasources_yml.is_file():
-        if not grafana_etc.is_dir():
+    text = read_privileged_text(datasources_yml)
+    if text is None:
+        # Create only when the provisioning datasources dir already exists for
+        # these paths (monitoring stack present). Avoid host /etc/grafana checks
+        # so tests can pass isolated tmp paths.
+        if not datasources_yml.parent.is_dir():
             return False
         write_privileged_file(datasources_yml, _DEFAULT_PROMETHEUS_DATASOURCE)
         return True
 
-    text = datasources_yml.read_text(encoding="utf-8")
     if re.search(r"uid:\s*['\"]?prometheus['\"]?", text):
         return False
 

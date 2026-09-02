@@ -44,3 +44,18 @@ def test_ensure_prometheus_datasource_uid_inserts(tmp_path):
     text = ds.read_text(encoding="utf-8")
     assert "uid: prometheus" in text
     assert ensure_prometheus_datasource_uid(ds) is False
+
+
+def test_ensure_prometheus_datasource_uid_creates_when_parent_exists(tmp_path):
+    parent = tmp_path / "provisioning" / "datasources"
+    parent.mkdir(parents=True)
+    ds = parent / "datasources.yml"
+    assert ensure_prometheus_datasource_uid(ds) is True
+    assert ds.is_file()
+    assert "uid: prometheus" in ds.read_text(encoding="utf-8")
+
+
+def test_ensure_prometheus_datasource_uid_noop_without_parent(tmp_path):
+    ds = tmp_path / "missing" / "datasources.yml"
+    assert ensure_prometheus_datasource_uid(ds) is False
+    assert not ds.exists()

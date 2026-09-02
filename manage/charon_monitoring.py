@@ -19,6 +19,7 @@ from manage.grafana import (
     DEFAULT_GRAFANA_DASHBOARDS,
     download_grafana_dashboard,
     ensure_prometheus_datasource_uid,
+    read_privileged_text,
     write_privileged_file,
 )
 
@@ -100,7 +101,9 @@ def ensure_charon_scrape(prometheus_yml: Path, metrics_port: Optional[int] = Non
         return False
     port = metrics_port if metrics_port is not None else _charon_metrics_port()
     job = charon_scrape_job(port)
-    text = prometheus_yml.read_text(encoding="utf-8")
+    text = read_privileged_text(prometheus_yml)
+    if text is None:
+        return False
     if has_charon_scrape(text):
         updated, count = re.subn(
             r"(job_name:\s*['\"]charon['\"][\s\S]*?targets:\s*\[')localhost:\d+('\])",
@@ -214,8 +217,11 @@ def provision_charon_monitoring(
 ) -> Dict[str, bool]:
     """Ensure Charon scrape job and CDVN Grafana dashboards when monitoring exists.
 
-    No-ops quietly when Prometheus/Grafana paths are absent (monitoring not
-    installed yet).
+    No-ops quietly when the passed Prometheus/Grafana paths are absent
+    (monitoring not installed yet). Grafana work is gated only on
+    *grafana_dashboards* / *datasources_yml* — never on a hardcoded
+    ``/etc/grafana`` host path. Permission errors while writing Grafana
+    files propagate (they are not soft-skipped).
 
     Args:
         prometheus_yml: Prometheus config path.
@@ -232,8 +238,14 @@ def provision_charon_monitoring(
 
     results["scrape"] = ensure_charon_scrape(prometheus_yml)
 
-    grafana_etc = Path("/etc/grafana")
-    if grafana_dashboards.is_dir() or grafana_etc.is_dir():
+    # Gate solely on the caller-supplied paths — never treat host /etc/grafana as
+    # an override when tests (or callers) pass isolated destinations.
+    grafana_present = (
+        grafana_dashboards.is_dir()
+        or datasources_yml.is_file()
+        or datasources_yml.parent.is_dir()
+    )
+    if grafana_present:
         results["datasource"] = ensure_prometheus_datasource_uid(datasources_yml)
         try:
             results["dashboard"] = provision_charon_dashboards(
@@ -241,7 +253,10 @@ def provision_charon_monitoring(
                 all_cdvn=all_cdvn_dashboards,
                 dashboard_url=dashboard_url,
             )
-        except Exception as exc:  # noqa: BLE001 — surface soft failure to caller
+        except PermissionError:
+            # Installed Grafana with unreadable/unwritable paths must not soft-skip.
+            raise
+        except Exception as exc:  # noqa: BLE001 — soft-fail download / non-perm errors
             print(f"Warning: Charon Grafana dashboard provision failed: {exc}", file=sys.stderr)
 
     if restart and results["scrape"]:

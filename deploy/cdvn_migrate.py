@@ -159,6 +159,8 @@ class CdvnMigrationPlan:
     mev_profile: str = ""
     grafana_port: Optional[int] = None
     fee_recipient: str = ""
+    # EthPillar datadir root used when planning dest checks (injectable for tests).
+    base_data_dir: str = BASE_DATA_DIR
 
     def summary(self) -> str:
         """Human-readable plan for confirmation / dry-run.
@@ -207,7 +209,7 @@ class CdvnMigrationPlan:
             else:
                 lines.append(f"  SKIP  {move.src}  ({move.skip_reason})")
         if self.has_lock and self.charon_dir:
-            dest_charon = os.path.join(BASE_DATA_DIR, "charon", ".charon")
+            dest_charon = os.path.join(self.base_data_dir, "charon", ".charon")
             lines.extend(
                 [
                     "",
@@ -791,12 +793,20 @@ def detect_docker_compose_running(compose_file: Optional[str], root: str) -> boo
     return running
 
 
-def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigrationPlan:
+def plan_cdvn_migration(
+    path: str,
+    *,
+    local_host: str = "127.0.0.1",
+    base_data_dir: Optional[str] = None,
+) -> CdvnMigrationPlan:
     """Build a migration plan from a CDVN checkout path or ``.env`` file.
 
     Args:
         path: CDVN checkout directory or ``.env`` file path.
         local_host: Host used when rewriting Docker Compose service URLs to loopback.
+        base_data_dir: EthPillar datadir root for destination occupancy checks
+            (default: :data:`BASE_DATA_DIR` / ``/var/lib``). Inject a temp root
+            in tests so planner dest checks do not depend on the host.
 
     Returns:
         :class:`CdvnMigrationPlan` with datadir moves, warnings, and deploy argv.
@@ -805,6 +815,7 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         ValueError: When ``.env``/profiles are missing or incompatible.
         FileNotFoundError: When *path* does not exist.
     """
+    data_root = base_data_dir if base_data_dir is not None else BASE_DATA_DIR
     info = resolve_cdvn_checkout(path)
     root = str(info["root"])
     env_path = info.get("env_path")
@@ -948,7 +959,7 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
     for rel in active_rels:
         dest_name, owner = DATADIR_MOVES[rel]
         src = os.path.join(root, rel.replace("/", os.sep))
-        dest = os.path.join(BASE_DATA_DIR, dest_name)
+        dest = os.path.join(data_root, dest_name)
         skip = ""
         if rel in VC_DATADIR_RELS:
             skip = _vc_datadir_skip_reason(src)
@@ -997,6 +1008,7 @@ def plan_cdvn_migration(path: str, *, local_host: str = "127.0.0.1") -> CdvnMigr
         mev_profile=mev_raw,
         grafana_port=grafana_port,
         fee_recipient=fee_recipient,
+        base_data_dir=data_root,
     )
 
 
