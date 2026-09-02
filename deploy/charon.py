@@ -1267,6 +1267,56 @@ def _normalize_eth_pubkey(pubkey: str) -> str:
     return value
 
 
+def read_cluster_lock_text(cluster_dir: str = CHARON_CLUSTER_DIR) -> Optional[str]:
+    """Read ``cluster-lock.json`` from a Charon cluster directory.
+
+    Args:
+        cluster_dir: Path to ``.charon`` (default EthPillar datadir).
+
+    Returns:
+        Lock file text, or None when missing / unreadable.
+    """
+    lock_path = os.path.join(cluster_dir, "cluster-lock.json")
+    if not path_exists(lock_path):
+        return None
+    try:
+        if os.path.isfile(lock_path) and os.access(lock_path, os.R_OK):
+            with open(lock_path, encoding="utf-8") as handle:
+                return handle.read()
+        return _sudo_read_text(lock_path)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def list_distributed_validator_pubkeys(cluster_dir: str = CHARON_CLUSTER_DIR) -> List[str]:
+    """Return composite DV pubkeys from ``cluster-lock.json``.
+
+    Key shares imported into the signer VC expose *share* pubkeys via client
+    CLIs; beacon APIs and explorers use ``distributed_public_key`` from the lock.
+
+    Args:
+        cluster_dir: Path to ``.charon`` (default EthPillar datadir).
+
+    Returns:
+        Normalized ``0x`` pubkeys for each ``distributed_validators`` entry.
+    """
+    text = read_cluster_lock_text(cluster_dir)
+    if not text:
+        return []
+    try:
+        lock = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    pubkeys: List[str] = []
+    for dv in lock.get("distributed_validators") or []:
+        if not isinstance(dv, dict):
+            continue
+        pk = dv.get("distributed_public_key")
+        if isinstance(pk, str) and pk.strip():
+            pubkeys.append(_normalize_eth_pubkey(pk))
+    return pubkeys
+
+
 def _keystore_pubkey(keystore_path: str) -> str:
     """Extract the validator pubkey from an EIP-2335 keystore JSON file."""
     payload = json.loads(_sudo_read_text(keystore_path))

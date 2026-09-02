@@ -1354,6 +1354,23 @@ getPubKeys(){
     TEMP=""
     local ARGUMENT=${1:-"default"}
 
+    # Charon DV: VC CLIs list key-share pubkeys; on-chain identity is the
+    # composite distributed_public_key from cluster-lock.json.
+    if isCharonEnabled; then
+        local cluster_dir
+        cluster_dir="$(getCharonClusterDir)"
+        TEMP=$(PYTHONPATH="${BASE_DIR}" python3 - <<PY
+from deploy.charon import list_distributed_validator_pubkeys
+for pk in list_distributed_validator_pubkeys("${cluster_dir}"):
+    print(pk)
+PY
+)
+        if [[ -n "$TEMP" ]]; then
+            convertLIST
+            return 0
+        fi
+    fi
+
     # Use modern client detection first
     getValidatorClient
     local client="${VALIDATOR_CLIENT:-$VC}"
@@ -1476,6 +1493,9 @@ viewPubkeyAndIndices(){
 
     ohai "==========================================="
     ohai "Total # Validator Keys: $COUNT"
+    if isCharonEnabled; then
+        ohai "Charon DV: composite validator pubkeys from cluster-lock.json"
+    fi
     ohai "==========================================="
     ohai "Pubkeys:"
 
@@ -1488,6 +1508,8 @@ viewPubkeyAndIndices(){
 
     if [[ ${#INDICES[@]} -gt 0 ]]; then
         echo "${INDICES[@]}"
+    elif isCharonEnabled; then
+        echo "No validator index on chain yet. After the distributed validator is deposited and activated, retry this view."
     else
         echo "No validators currently active. Once a validator is activated, an index is assigned."
     fi

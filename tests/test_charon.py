@@ -667,3 +667,23 @@ def test_copy_charon_cluster_and_skip(tmp_path):
     forced = copy_charon_cluster(str(src), str(dest), force=True)
     assert forced["status"] == "copied"
     assert (dest / "cluster-lock.json").read_text(encoding="utf-8") == '{"cluster":2}'
+
+
+def test_list_distributed_validator_pubkeys_from_cluster_lock(tmp_path: Path):
+    from deploy.charon import list_distributed_validator_pubkeys
+
+    cluster = tmp_path / ".charon"
+    cluster.mkdir()
+    pk = "0x88A471158D618A8F9997DCB2CC1921411392D82D00E339CCF912FD9335BD42F97C9DE046280D9D5F681A8E73A7D3BAAD"
+    (cluster / "cluster-lock.json").write_text(
+        '{"distributed_validators": [{"distributed_public_key": "' + pk + '"}]}',
+        encoding="utf-8",
+    )
+    pubkeys = list_distributed_validator_pubkeys(str(cluster))
+    assert pubkeys == [pk.lower()]
+
+
+def test_list_distributed_validator_pubkeys_empty_when_missing(tmp_path: Path):
+    from deploy.charon import list_distributed_validator_pubkeys
+
+    assert list_distributed_validator_pubkeys(str(tmp_path / "nope")) == []
