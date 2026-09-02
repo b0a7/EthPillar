@@ -112,7 +112,7 @@ Relays and `-min-bid` are read from `mevboost.service`. Sidecar URLs are those c
 | Client | Behavior |
 |--------|----------|
 | **Prysm** (v7.1.7+) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema v2) with `default_config.builder.enabled`, `relays`, and `max_execution_payment: "0"` (Gloas execution-payment cap; `0` is the public-bid / proto default and does not disable builder payments). Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Upserts VC `--enable-builder` and `--proposer-settings-file`. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
-| **Lodestar** (v1.47.0+) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls` ([ChainSafe/lodestar#9832](https://github.com/ChainSafe/lodestar/pull/9832)). Older builds are skipped so the VC can still start. |
+| **Lodestar** (v1.47.0+) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. Older builds are skipped so the VC can still start. |
 | **Lighthouse, Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |
 
 BN sidecar flags stay until `complete`.

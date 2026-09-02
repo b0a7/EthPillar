@@ -82,9 +82,9 @@ SUPPORT_NOTES: Dict[str, str] = {
         "Requires Prysm v7.1.7+."
     ),
     "Lodestar": (
-        "Full: VC flags --builder.urls / --builder.minBid from "
-        "ChainSafe/lodestar#9832 (v1.47.0+). Prepare writes them only "
-        "when `lodestar validator --help` lists --builder.urls."
+        "Full: VC flags --builder.urls / --builder.minBid (v1.47.0+). "
+        "Prepare writes them only when `lodestar validator --help` lists "
+        "--builder.urls."
     ),
     "Lighthouse": (
         "Placeholder: VC has --builder-proposals only; no released relay-list "
@@ -640,7 +640,7 @@ def eth_min_bid_to_gwei(eth: str) -> str:
 
 
 def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
-    """Add Lodestar VC builder URL / min-bid flags (v1.47.0+, PR #9832).
+    """Add Lodestar VC builder URL / min-bid flags (v1.47.0+).
 
     Args:
         vc_content: Current ``validator.service`` text.
@@ -693,7 +693,7 @@ def lodestar_has_builder_urls_flag(fs: EpbsFilesystem, vc_content: str) -> bool:
         vc_content: Current ``validator.service`` text (binary + subcommand).
 
     Returns:
-        True if help text contains ``--builder.urls`` (ChainSafe/lodestar#9832).
+        True if help text contains ``--builder.urls`` (Lodestar v1.47.0+).
     """
     args = normalize_cli_args(parse_unit(vc_content).exec_args)
     if not args:
@@ -876,7 +876,7 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
             plan.warnings.append(
                 "Prepare: no-op on this Lodestar build — Complete will stop "
                 "MEV-Boost without a VC relay replacement. Install Lodestar "
-                "v1.47.0 or later (ChainSafe/lodestar#9832)."
+                "v1.47.0 or later."
             )
         else:
             new_vc = apply_relays_lodestar(vc_content, relays)
@@ -884,7 +884,7 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
                 plan.actions.append(
                     PlanAction(
                         vc_path,
-                        "add --builder --builder.urls --builder.minBid (PR #9832)",
+                        "add --builder --builder.urls --builder.minBid",
                     )
                 )
                 plan.services_to_restart.append("validator")
