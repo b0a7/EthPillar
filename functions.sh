@@ -1461,24 +1461,113 @@ do
 done
 }
 
-# Convert pubkeys to validator indices using the beacon node API
-getIndices(){
-    local API_URL_INDICES="${API_BN_ENDPOINT}/eth/v1/beacon/states/head/validators"
-    INDICES=()
+# Probe whether a beacon REST base answers (node/version).
+_probeBeaconApi(){
+    local base="${1%/}"
+    [[ -n "$base" ]] || return 1
+    curl -sf -m 2 -H "Accept: application/json" "${base}/eth/v1/node/version" >/dev/null 2>&1
+}
 
-    for PUBKEY in "${LIST[@]}"; do
-        local response
-        response=$(curl -s --max-time 5 "${API_URL_INDICES}/${PUBKEY}")
+# First Charon upstream BN URL from charon.service (--beacon-node-endpoints).
+getCharonUpstreamBeacon(){
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+    local raw=""
+    [[ -f "$charon_svc" ]] || return 0
+    raw=$(grep -oE -- '--beacon-node-endpoints=[^[:space:]\\]+' "$charon_svc" 2>/dev/null | head -1 | cut -d= -f2-)
+    [[ -n "$raw" ]] || return 0
+    # Comma-separated list → first URL
+    echo "${raw%%,*}"
+}
 
-        local index
-        index=$(echo "$response" | jq -r '.data.index // empty' 2>/dev/null)
-
-        if [[ -z "$index" || "$index" == "null" ]]; then
-            echo "INFO: $PUBKEY not yet activated."
-        else
-            INDICES+=("$index")
+# Pick a reachable beacon REST URL for index / duty queries.
+# Prefers API_BN_ENDPOINT, then local consensus scrape, then Charon upstream.
+resolveBeaconApiEndpoint(){
+    local candidates=()
+    local u=""
+    [[ -n "${API_BN_ENDPOINT:-}" ]] && candidates+=("${API_BN_ENDPOINT}")
+    if [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]; then
+        u=$(getBeaconNodeEndpoint 2>/dev/null || true)
+        [[ -n "$u" ]] && candidates+=("$u")
+    fi
+    if isCharonEnabled; then
+        u=$(getCharonUpstreamBeacon 2>/dev/null || true)
+        [[ -n "$u" ]] && candidates+=("$u")
+    fi
+    # Deduplicate while preserving order
+    local seen="|"
+    local unique=()
+    for u in "${candidates[@]}"; do
+        u="${u%/}"
+        [[ -n "$u" ]] || continue
+        [[ "$seen" == *"|$u|"* ]] && continue
+        seen+="${u}|"
+        unique+=("$u")
+    done
+    for u in "${unique[@]}"; do
+        if _probeBeaconApi "$u"; then
+            echo "$u"
+            return 0
         fi
     done
+    # Fall back to first candidate (or default) even if probe failed
+    if [[ ${#unique[@]} -gt 0 ]]; then
+        echo "${unique[0]}"
+    else
+        echo "http://127.0.0.1:5052"
+    fi
+}
+
+# Convert pubkeys to validator indices using the beacon node API (batch).
+getIndices(){
+    INDICES=()
+    local beacon=""
+    beacon=$(resolveBeaconApiEndpoint)
+    export API_BN_ENDPOINT="$beacon"
+
+    if [[ ${#LIST[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    local json_out err_file
+    err_file=$(mktemp)
+    json_out=$(
+        printf '%s\n' "${LIST[@]}" | PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon lookup_indices \
+            --beacon "$beacon" --json 2>"$err_file"
+    )
+    local rc=$?
+    local stderr_txt=""
+    stderr_txt=$(cat "$err_file" 2>/dev/null || true)
+    rm -f "$err_file"
+
+    if [[ $rc -ne 0 || -z "$json_out" ]]; then
+        echo "WARNING: Beacon index lookup failed via ${beacon}"
+        [[ -n "$stderr_txt" ]] && echo "$stderr_txt"
+        return 0
+    fi
+
+    local found
+    found=$(echo "$json_out" | jq -r '.found // 0' 2>/dev/null || echo 0)
+    INDICES=()
+    local pk idx
+    for pk in "${LIST[@]}"; do
+        idx=$(echo "$json_out" | jq -r --arg pk "$pk" '.indices[$pk] // empty' 2>/dev/null || true)
+        [[ -n "$idx" && "$idx" != "null" ]] && INDICES+=("$idx")
+    done
+
+    if [[ "${found}" -eq 0 ]]; then
+        local err
+        err=$(echo "$json_out" | jq -r '.error // empty' 2>/dev/null || true)
+        echo "WARNING: No validator indices returned from ${beacon} for ${#LIST[@]} pubkey(s)."
+        if [[ -n "$err" ]]; then
+            echo "  ${err}"
+        else
+            echo "  Confirm the beacon node is synced on the correct network and reachable."
+            if isCharonEnabled; then
+                echo "  Charon DV pubkeys come from cluster-lock.json (composite keys, not key shares)."
+            fi
+        fi
+        [[ -n "$stderr_txt" ]] && echo "$stderr_txt"
+    fi
 }
 
 # Prints list of pubkeys and indices
@@ -1496,6 +1585,7 @@ viewPubkeyAndIndices(){
     if isCharonEnabled; then
         ohai "Charon DV: composite validator pubkeys from cluster-lock.json"
     fi
+    ohai "Beacon API: ${API_BN_ENDPOINT:-unknown}"
     ohai "==========================================="
     ohai "Pubkeys:"
 
@@ -1504,12 +1594,13 @@ viewPubkeyAndIndices(){
     done
 
     ohai "==========================================="
-    ohai "Indices:"
+    ohai "Indices (${#INDICES[@]} found):"
 
     if [[ ${#INDICES[@]} -gt 0 ]]; then
         echo "${INDICES[@]}"
     elif isCharonEnabled; then
-        echo "No validator index on chain yet. After the distributed validator is deposited and activated, retry this view."
+        echo "No validator index on chain yet (or beacon API unreachable — see warnings above)."
+        echo "After the distributed validator is deposited and activated on this network, retry."
     else
         echo "No validators currently active. Once a validator is activated, an index is assigned."
     fi

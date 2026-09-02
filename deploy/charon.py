@@ -1312,9 +1312,153 @@ def list_distributed_validator_pubkeys(cluster_dir: str = CHARON_CLUSTER_DIR) ->
         if not isinstance(dv, dict):
             continue
         pk = dv.get("distributed_public_key")
+        if not isinstance(pk, str) or not pk.strip():
+            # Older / alternate lock shapes
+            deposit = dv.get("partial_deposit_data") or dv.get("deposit_data")
+            if isinstance(deposit, list) and deposit:
+                deposit = deposit[0]
+            if isinstance(deposit, dict):
+                pk = deposit.get("pubkey")
         if isinstance(pk, str) and pk.strip():
             pubkeys.append(_normalize_eth_pubkey(pk))
     return pubkeys
+
+
+def lookup_validator_indices(
+    pubkeys: Sequence[str],
+    beacon_base: str,
+    *,
+    timeout: float = 20.0,
+    chunk_size: int = 50,
+) -> Dict[str, object]:
+    """Resolve validator indices via the beacon node REST API (batch ``id=``).
+
+    Args:
+        pubkeys: Validator pubkeys (``0x``-prefixed).
+        beacon_base: Beacon REST base URL (e.g. ``http://127.0.0.1:5052``).
+        timeout: Per-request timeout seconds.
+        chunk_size: Max ``id`` query params per request.
+
+    Returns:
+        Dict with ``indices`` (pubkey → index str), ``beacon``, ``error`` (optional),
+        and ``found`` count.
+    """
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    normalized = [_normalize_eth_pubkey(pk) for pk in pubkeys if pk and str(pk).strip()]
+    base = (beacon_base or "").strip().rstrip("/")
+    result: Dict[str, object] = {
+        "beacon": base,
+        "indices": {},
+        "found": 0,
+        "queried": len(normalized),
+    }
+    if not normalized:
+        return result
+    if not base.startswith("http"):
+        result["error"] = f"invalid beacon URL: {beacon_base!r}"
+        return result
+
+    indices: Dict[str, str] = {}
+    last_err = ""
+    for offset in range(0, len(normalized), max(1, chunk_size)):
+        chunk = normalized[offset : offset + max(1, chunk_size)]
+        query = urllib.parse.urlencode([("id", pk) for pk in chunk])
+        url = f"{base}/eth/v1/beacon/states/head/validators?{query}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
+            last_err = f"HTTP {exc.code} from {base}: {(body or exc.reason)[:200]}"
+            # Fall back to per-pubkey path for this chunk (some BNs dislike large id lists)
+            for pk in chunk:
+                single = f"{base}/eth/v1/beacon/states/head/validators/{urllib.parse.quote(pk, safe='')}"
+                try:
+                    with urllib.request.urlopen(
+                        urllib.request.Request(single, headers={"Accept": "application/json"}),
+                        timeout=timeout,
+                    ) as resp:
+                        payload = json.loads(resp.read().decode("utf-8"))
+                except Exception as single_exc:  # noqa: BLE001
+                    last_err = f"{single_exc}"
+                    continue
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if isinstance(data, dict) and data.get("index") is not None:
+                    indices[pk] = str(data["index"])
+            continue
+        except Exception as exc:  # noqa: BLE001
+            last_err = f"{type(exc).__name__}: {exc}"
+            result["error"] = last_err
+            result["indices"] = indices
+            result["found"] = len(indices)
+            return result
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            last_err = f"non-JSON response from {base}"
+            continue
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if isinstance(data, dict):
+            data = [data]
+        if not isinstance(data, list):
+            last_err = f"unexpected validators payload from {base}"
+            continue
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            idx = item.get("index")
+            validator = item.get("validator") if isinstance(item.get("validator"), dict) else {}
+            pk = validator.get("pubkey") if isinstance(validator, dict) else None
+            if idx is None or not isinstance(pk, str):
+                continue
+            indices[_normalize_eth_pubkey(pk)] = str(idx)
+
+    result["indices"] = indices
+    result["found"] = len(indices)
+    if last_err and not indices:
+        result["error"] = last_err
+    elif last_err and indices:
+        result["warning"] = last_err
+    return result
+
+
+def _cmd_lookup_indices(args: argparse.Namespace) -> int:
+    """CLI: resolve indices for pubkeys (one per stdin line or --pubkey)."""
+    pubkeys: List[str] = list(args.pubkey or [])
+    if not pubkeys and not sys.stdin.isatty():
+        pubkeys.extend(line.strip() for line in sys.stdin if line.strip())
+    result = lookup_validator_indices(pubkeys, args.beacon)
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        indices = result.get("indices") or {}
+        if not isinstance(indices, dict):
+            indices = {}
+        for pk in pubkeys:
+            norm = _normalize_eth_pubkey(pk)
+            idx = indices.get(norm, "")
+            if idx:
+                print(idx)
+            else:
+                print("")
+        err = result.get("error")
+        if err:
+            print(f"ERROR: {err}", file=sys.stderr)
+            return 1
+        if result.get("found", 0) == 0 and pubkeys:
+            print(
+                f"WARNING: no indices for {len(pubkeys)} pubkey(s) via {result.get('beacon')}",
+                file=sys.stderr,
+            )
+    return 0
 
 
 def _keystore_pubkey(keystore_path: str) -> str:
@@ -1920,6 +2064,28 @@ def main(argv: Optional[list] = None) -> int:
         help="Overwrite destination even if cluster-lock.json exists",
     )
     copy_parser.set_defaults(func=_cmd_copy_charon)
+
+    indices_parser = subparsers.add_parser(
+        "lookup_indices",
+        help="Resolve validator indices from a beacon node REST API",
+    )
+    indices_parser.add_argument(
+        "--beacon",
+        required=True,
+        help="Beacon REST base URL (e.g. http://127.0.0.1:5052)",
+    )
+    indices_parser.add_argument(
+        "--pubkey",
+        action="append",
+        default=[],
+        help="Validator pubkey (repeatable); else read pubkeys from stdin",
+    )
+    indices_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print full JSON result instead of one index per pubkey line",
+    )
+    indices_parser.set_defaults(func=_cmd_lookup_indices)
 
     parsed = parser.parse_args(argv)
     return parsed.func(parsed)

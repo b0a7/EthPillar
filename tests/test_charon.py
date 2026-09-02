@@ -687,3 +687,53 @@ def test_list_distributed_validator_pubkeys_empty_when_missing(tmp_path: Path):
     from deploy.charon import list_distributed_validator_pubkeys
 
     assert list_distributed_validator_pubkeys(str(tmp_path / "nope")) == []
+
+
+def test_lookup_validator_indices_batch(monkeypatch):
+    from deploy.charon import lookup_validator_indices
+    from urllib.request import Request
+    import urllib.request as ur
+
+    pk1 = "0x" + "11" * 48
+    pk2 = "0x" + "22" * 48
+    payload = {
+        "data": [
+            {"index": "101", "validator": {"pubkey": pk1}},
+            {"index": "202", "validator": {"pubkey": pk2.upper()}},
+        ]
+    }
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    def fake_urlopen(req, timeout=0):  # noqa: ARG001
+        assert isinstance(req, Request)
+        assert "validators?" in req.full_url
+        return _Resp()
+
+    monkeypatch.setattr(ur, "urlopen", fake_urlopen)
+    result = lookup_validator_indices([pk1, pk2], "http://127.0.0.1:5052")
+    assert result["found"] == 2
+    assert result["indices"][pk1] == "101"
+    assert result["indices"][pk2] == "202"
+
+
+def test_lookup_validator_indices_connection_error(monkeypatch):
+    from deploy.charon import lookup_validator_indices
+    import urllib.error
+    import urllib.request as ur
+
+    def boom(*_a, **_k):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(ur, "urlopen", boom)
+    result = lookup_validator_indices(["0x" + "aa" * 48], "http://127.0.0.1:5052")
+    assert result["found"] == 0
+    assert "error" in result
