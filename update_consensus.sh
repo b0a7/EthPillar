@@ -67,7 +67,9 @@ function selectCustomTag(){
 
 function promptViewLogs(){
     if whiptail --title "Update complete" --yesno "Would you like to view logs and confirm everything is running properly?" 8 78; then
-		if [[ ${NODE_MODE} =~ "Validator Client Only" ]]; then
+		if isCharonEnabled; then
+			view_journal_logs -u charon -u validator --no-hostname -f
+		elif [[ ${NODE_MODE} =~ "Validator Client Only" ]]; then
 			view_journal_logs -fu validator
 		else
 			view_journal_logs -fu consensus
@@ -118,11 +120,9 @@ function updateClient(){
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lighthouse")
-		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator stop
+		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "lighthouse" "$EXEC_PATH" "binary" 0
-		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator start
+		startConsensusStackAfterUpdate
 	    ;;
 	  Lodestar)
 		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
@@ -131,11 +131,9 @@ function updateClient(){
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lodestar")
-		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator stop
+		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "lodestar" "$EXEC_PATH" "binary" 0 --binary-name "lodestar"
-		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator start
+		startConsensusStackAfterUpdate
 	    ;;
 	  Teku)
 		# Ensure JDK 25 is available BEFORE touching the running client; abort
@@ -151,11 +149,9 @@ function updateClient(){
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/teku/bin/teku")
 		DEST_DIR=$(dirname "$(dirname "$EXEC_PATH")")
-		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator stop
+		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "teku" "$DEST_DIR" "directory" 1
-		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator start
+		startConsensusStackAfterUpdate
 	    ;;
 	  Nimbus)
 		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
@@ -164,11 +160,9 @@ function updateClient(){
 		cd "$HOME" || true
 		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
 		BN_EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/nimbus_beacon_node")
-		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator stop
+		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "nimbus" "$BN_EXEC_PATH" "binary" 1 --binary-name "nimbus_beacon_node"
-		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator start
+		startConsensusStackAfterUpdate
 	    ;;
   	  Prysm)
 		cd "$HOME" || true
@@ -184,14 +178,12 @@ function updateClient(){
 		chmod +x beacon-chain prysmctl
 		BN_EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/prysm-beacon-chain")
 		PRYSMCTL_EXEC_PATH="$(dirname "$BN_EXEC_PATH")/prysmctl"
-		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator stop
+		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		sudo rm -f "$BN_EXEC_PATH" "$PRYSMCTL_EXEC_PATH"
 		sudo mkdir -p "$(dirname "$BN_EXEC_PATH")"
 		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_binary; install_system_binary('$(pwd)/beacon-chain', '${BN_EXEC_PATH}')"
 		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_binary; install_system_binary('$(pwd)/prysmctl', '${PRYSMCTL_EXEC_PATH}')"
-		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
-		test -f /etc/systemd/system/validator.service && sudo systemctl start validator
+		startConsensusStackAfterUpdate
 	    ;;
 	  Grandine)
 		BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
@@ -201,14 +193,12 @@ function updateClient(){
 		wget -O grandine "$BINARIES_URL" || error "❌ Unable to wget file"
 		chmod +x grandine
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/grandine")
-		test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator stop
+		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		sudo rm -f "$EXEC_PATH"
 		sudo mkdir -p "$(dirname "$EXEC_PATH")"
 		# install_system_binary will move and configure the binary at the full exec path
 		PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_binary; install_system_binary('$HOME/grandine', '${EXEC_PATH}')"
-		test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus
-		test -f /etc/systemd/system/validator.service && sudo service validator start
+		startConsensusStackAfterUpdate
 	    ;;
 	esac
 	true

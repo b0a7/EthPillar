@@ -29,6 +29,18 @@ r="\033[31m" # Red
 nc="\033[0m" # No-color
 bold="\033[1m"
 
+# Obol Charon branding (UTF-8 infinity). Guard so re-sourcing functions.sh
+# (e.g. switch_client.sh after a bats setup already sourced this file) is safe.
+if [[ ! -v OBOL_INF ]]; then
+  readonly OBOL_INF='∞'
+  readonly OBOL_MARK="${g}${OBOL_INF}${nc}"  # green ∞ for terminal output only (not whiptail)
+  # Plain labels for whiptail / menus (no ANSI or UTF-8 symbols)
+  readonly OBOL_CHARON_DV="Obol Charon DV"
+  readonly OBOL_CHARON="Obol Charon"
+  readonly OBOL_CHARON_KEY_SHARES="Obol Charon key shares"
+  readonly OBOL_IMPORT_KEY_SHARES="Import Obol Charon key shares"
+fi
+
 function info {
   echo -e "${g}INFO: $1${nc}"
 }
@@ -146,6 +158,38 @@ parse_execution_client_commit() {
   echo "$commit"
 }
 
+# Parse ``charon version`` stdout (e.g. ``v1.10.3 [git_commit_hash=abc,...]``).
+# Requires a leading ``v`` so greedy ``1.10.3`` cannot collapse to ``0.3``.
+parse_charon_version() {
+  local output="$1"
+  grep -oiE 'v[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$output" | head -1 || true
+}
+
+parse_charon_commit() {
+  local output="$1"
+  sed -nE 's/.*git_commit_hash=([a-fA-F0-9]+).*/\1/p' <<< "$output" | head -1 || true
+}
+
+# Sets VERSION (and INSTALLED_COMMIT when known) from the installed Charon binary.
+getCharonCurrentVersion() {
+  local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+  local bin output
+  VERSION=""
+  INSTALLED_COMMIT=""
+  bin=$(get_systemd_exec_path "$charon_svc" "/usr/local/bin/charon")
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    VERSION="Unable to query Charon version from binary."
+    return 1
+  fi
+  output=$("$bin" version 2>/dev/null || true)
+  VERSION=$(parse_charon_version "$output")
+  INSTALLED_COMMIT=$(parse_charon_commit "$output")
+  if [[ -z "$VERSION" ]]; then
+    VERSION="Unable to query Charon version from binary."
+    return 1
+  fi
+}
+
 # Sets VERSION (and INSTALLED_COMMIT when known) from the installed execution client binary.
 getExecutionCurrentVersion() {
   local el="${1:-$EL}"
@@ -258,10 +302,15 @@ print_node_info() {
   execution_status=$(if systemctl is-active --quiet execution ; then printf "Online" ; elif [ -f /etc/systemd/system/execution.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
   [[ $EL == "Erigon-Caplin" ]] && consensus_status=$execution_status
   validator_status=$(if systemctl is-active --quiet validator ; then printf "Online" ; elif [ -f /etc/systemd/system/validator.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
+  charon_line=""
+  if [[ -f /etc/systemd/system/charon.service ]]; then
+    charon_status=$(if systemctl is-active --quiet charon ; then printf "Online" ; else printf "Offline" ; fi)
+    charon_line="Charon Status    :  ${charon_status}"$'\n'
+  fi
   mevboost_status=$(if systemctl is-active --quiet mevboost ; then printf "Online" ; elif [ -f /etc/systemd/system/mevboost.service ]; then printf "Offline" ; else printf "Not Installed"; fi)
   ethpillar_commit=$(git -C "${BASE_DIR}" rev-parse HEAD)
   ethpillar_version=$(grep ^EP_VERSION= $BASE_DIR/ethpillar.sh | sed 's/EP_VERSION=//g')
-  SERVICES=(execution consensus validator mevboost)
+  SERVICES=(execution consensus validator charon mevboost)
   autostart_status=()
   for UNIT in ${SERVICES[@]}
       do
@@ -281,7 +330,7 @@ Chrony           :  $chrony_status
 Consensus Status :  $consensus_status
 Execution Status :  $execution_status
 Validator Status :  $validator_status
-Mevboost Status  :  $mevboost_status
+${charon_line}Mevboost Status  :  $mevboost_status
 Autostart at Boot:  ${autostart_status[@]}
 
 EthPillar Version:  $ethpillar_version
@@ -338,10 +387,47 @@ getEphemeryChainID(){
     EPH_CHAIN_ID=$(expr 39438000 + "$ITERATION_NUMBER")
 }
 
+# Infer network from installed systemd units when no local execution client exists.
+_network_from_systemd_units(){
+    local svc path net_raw
+    for svc in validator consensus charon execution; do
+        path="/etc/systemd/system/${svc}.service"
+        [[ -f "$path" ]] || continue
+        net_raw=$(grep -oEi '\-\-network[= ]([a-zA-Z0-9_-]+)' "$path" 2>/dev/null | head -1 \
+            | sed -E 's/^.*=//; s/^.* //')
+        if [[ -z "$net_raw" ]]; then
+            net_raw=$(grep -oEi 'for ([A-Z][A-Z0-9_-]+)' "$path" 2>/dev/null | head -1 | awk '{print $2}')
+        fi
+        [[ -n "$net_raw" ]] || continue
+        case "${net_raw,,}" in
+        mainnet)  NETWORK="Mainnet";;
+        holesky)  NETWORK="Holesky";;
+        hoodi)    NETWORK="Hoodi";;
+        sepolia)  NETWORK="Sepolia";;
+        ephemery) NETWORK="Ephemery";;
+        *)
+            NETWORK="$(echo "$net_raw" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')"
+            ;;
+        esac
+        return 0
+    done
+    return 1
+}
+
 getNetwork(){
-    # Get network name from execution client
-    result=$(curl -sS --fail --connect-timeout 1 --max-time 2 -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"net_version","params":[],"id":67}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
-    if [[ -z $result ]]; then NETWORK="Network Syncing"; return; fi
+    local exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    local result=""
+
+    if [[ -f "$exec_svc" ]]; then
+        result=$(curl -sf --connect-timeout 1 --max-time 2 -X POST -H "Content-Type: application/json" \
+            --data '{"jsonrpc":"2.0","method":"net_version","params":[],"id":67}' \
+            "${EL_RPC_ENDPOINT}" 2>/dev/null | jq -r '.result')
+    elif _network_from_systemd_units; then
+        export NETWORK
+        return
+    fi
+
+    if [[ -z $result ]]; then NETWORK="Network Syncing"; export NETWORK; return; fi
     case $result in
     1)
       NETWORK="Mainnet"
@@ -574,6 +660,92 @@ getClient(){
 
 # ── Validator mode helpers (used by CC switch, update_validator.sh, TUI) ──
 
+# Return whether Obol Charon middleware is installed (charon.service present).
+isCharonEnabled(){
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+    [[ -f "$charon_svc" ]]
+}
+
+# EthPillar Charon cluster datadir (overridable in tests via CHARON_CLUSTER_DIR).
+getCharonClusterDir(){
+    echo "${CHARON_CLUSTER_DIR:-/var/lib/charon/.charon}"
+}
+
+# Charon DKG key-share directory (overridable via CHARON_VALIDATOR_KEYS_DIR).
+getCharonValidatorKeysDir(){
+    echo "${CHARON_VALIDATOR_KEYS_DIR:-$(getCharonClusterDir)/validator_keys}"
+}
+
+# Parse Charon libp2p TCP port from charon.service (--p2p-tcp-address=host:port).
+# Prints nothing when charon.service is missing; defaults to 3610 when flag absent.
+getCharonP2pPort(){
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+    local bind="" port=""
+    [[ -f "$charon_svc" ]] || return 0
+    bind=$(grep -oE -- '--p2p-tcp-address=[^[:space:]\\]+' "$charon_svc" 2>/dev/null | head -1 | cut -d= -f2-)
+    if [[ -n "$bind" ]]; then
+        port="${bind##*:}"
+    else
+        port="3610"
+    fi
+    if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )); then
+        echo "$port"
+    fi
+}
+
+# Stop validator → charon → consensus before BN maintenance (update/resync).
+stopConsensusStackForUpdate(){
+    test -f /etc/systemd/system/validator.service && sudo systemctl stop validator 2>/dev/null || true
+    isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+    test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus 2>/dev/null || true
+}
+
+# Start consensus → charon → validator after BN maintenance.
+startConsensusStackAfterUpdate(){
+    test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus 2>/dev/null || true
+    isCharonEnabled && sudo systemctl start charon 2>/dev/null || true
+    test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
+}
+
+# Stop validator (and Charon when DVT) before VC binary update.
+stopValidatorStackForUpdate(){
+    test -f /etc/systemd/system/validator.service && sudo systemctl stop validator 2>/dev/null || true
+    isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+}
+
+# Start charon → validator after VC binary update.
+startValidatorStackAfterUpdate(){
+    isCharonEnabled && sudo systemctl start charon 2>/dev/null || true
+    test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
+}
+
+# Ensure Charon is up before starting the VC (key import / loadKeys).
+ensureCharonBeforeValidator(){
+    isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || sudo systemctl start charon 2>/dev/null || true
+}
+
+# Reload systemd units after .env.overrides edits (Charon + core stack).
+reloadEnvOverridesAndMaybeRestart(){
+    sudo systemctl daemon-reload
+    if ! whiptail --title "Reload Environment values" --yesno \
+        "Reload systemd and restart affected services?\n\n(execution, consensus, charon, validator, mevboost — whichever is installed)" 10 78; then
+        return 0
+    fi
+    test -f /etc/systemd/system/execution.service && sudo systemctl try-restart execution 2>/dev/null || true
+    test -f /etc/systemd/system/consensus.service && sudo systemctl try-restart consensus 2>/dev/null || true
+    test -f /etc/systemd/system/mevboost.service && sudo systemctl try-restart mevboost 2>/dev/null || true
+    isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || true
+    test -f /etc/systemd/system/validator.service && sudo systemctl try-restart validator 2>/dev/null || true
+}
+
+# Allow inbound TCP on Charon P2P port in UFW (no-op when Charon not installed).
+ufwAllowCharonP2p(){
+    local port
+    port=$(getCharonP2pPort)
+    [[ -n "$port" ]] || return 0
+    sudo ufw allow "${port}/tcp" comment 'Allow Charon P2P port'
+}
+
 # Classify how this node runs validator duties.
 # Returns: none | separate | integrated_grandine
 getValidatorMode(){
@@ -682,10 +854,12 @@ startValidatorService(){
     esac
 }
 
-# Update the beacon-node flag in validator.service after a consensus client switch.
+# Update the beacon-node flag after a consensus client switch.
+# When Charon is installed, patch Charon's upstream BN URL (VC stays on :3600).
 # No-op unless validator mode is separate.
 patchValidatorBeaconEndpoint(){
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
     local mode
     mode=$(getValidatorMode)
 
@@ -693,8 +867,16 @@ patchValidatorBeaconEndpoint(){
         return 0
     fi
 
-    getValidatorClient
     getBeaconNodeEndpoint
+
+    if isCharonEnabled; then
+        PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon patch_beacon \
+            --endpoint "$BEACON_NODE_ENDPOINT" \
+            --service-path "$charon_svc"
+        return $?
+    fi
+
+    getValidatorClient
 
     if [[ -z "$VALIDATOR_CLIENT" ]]; then
         echo "WARNING: Could not determine validator client for beacon endpoint patch." >&2
@@ -705,6 +887,454 @@ patchValidatorBeaconEndpoint(){
         --vc "$VALIDATOR_CLIENT" \
         --endpoint "$BEACON_NODE_ENDPOINT" \
         --service-path "$validator_svc"
+}
+
+# Start Charon + validator after CDVN migration (before optional monitoring install).
+_migrateCdvnStartValidatorStack(){
+    [[ -f /etc/systemd/system/charon.service ]] \
+        || [[ -f /etc/systemd/system/validator.service ]] || return 0
+    ohai "Starting Charon and validator services…"
+    [[ -f /etc/systemd/system/charon.service ]] \
+        && sudo systemctl start charon 2>/dev/null || true
+    [[ -f /etc/systemd/system/validator.service ]] \
+        && sudo systemctl start validator 2>/dev/null || true
+}
+
+# Legacy prompt wrapper (unused by migrate; kept for manual use).
+_migrateCdvnPromptStartValidatorStack(){
+    [[ -f /etc/systemd/system/charon.service ]] \
+        || [[ -f /etc/systemd/system/validator.service ]] || return 0
+    if ! whiptail --title "Start services" --yesno \
+"Start Charon (and validator if installed) now?" 9 70; then
+        return 0
+    fi
+    _migrateCdvnStartValidatorStack
+}
+
+# Return 0 when EthPillar monitoring units are present (deb or custom systemd paths).
+_migrateCdvnMonitoringPresent(){
+    [[ -f /etc/systemd/system/ethereum-metrics-exporter.service ]] && return 0
+    systemctl cat grafana-server.service >/dev/null 2>&1 && return 0
+    return 1
+}
+
+# Start Grafana/Prometheus stack after monitoring is installed during CDVN migration.
+_migrateCdvnPromptStartMonitoring(){
+    _migrateCdvnMonitoringPresent || return 0
+    if ! whiptail --title "Start monitoring" --yesno \
+"Start Grafana, Prometheus, and metrics exporter now?" 9 70; then
+        return 0
+    fi
+    sudo systemctl start grafana-server prometheus prometheus-node-exporter 2>/dev/null || true
+    [[ -f /etc/systemd/system/ethereum-metrics-exporter.service ]] \
+        && sudo systemctl start ethereum-metrics-exporter 2>/dev/null || true
+    if whiptail --title "View monitoring logs" --yesno \
+"View Grafana/Prometheus/metrics exporter logs now?" 9 70; then
+        view_journal_logs -u grafana-server -u prometheus -u ethereum-metrics-exporter \
+            -u prometheus-node-exporter --no-hostname -f
+    fi
+}
+
+# Return 0 when Charon key shares exist under the EthPillar Charon datadir.
+charonKeysharesPresent(){
+    local keys
+    keys="$(getCharonValidatorKeysDir)"
+    sudo test -d "$keys" 2>/dev/null || return 1
+    [[ "$(sudo find "$keys" -maxdepth 1 -name 'keystore-*.json' 2>/dev/null | wc -l)" -gt 0 ]]
+}
+
+# Return 0 when Lodestar already has imported validator keystores.
+lodestarValidatorKeysPresent(){
+    sudo test -d /var/lib/lodestar_validator/keystores 2>/dev/null || return 1
+    [[ "$(sudo find /var/lib/lodestar_validator/keystores -maxdepth 1 -name 'keystore-*.json' 2>/dev/null | wc -l)" -gt 0 ]]
+}
+
+# Return 0 when the installed EthPillar VC already has imported keystores (any client).
+_ethpillarVcHasImportedKeys(){
+    PYTHONPATH="${BASE_DIR}" python3 - <<'PY'
+from deploy.charon import _vc_already_has_keys
+from deploy.cdvn_migrate import detect_ethpillar_vc_name
+
+vc = detect_ethpillar_vc_name()
+raise SystemExit(0 if vc and _vc_already_has_keys(vc) else 1)
+PY
+}
+
+# Append a timestamped line to the active CDVN migration log (if set).
+_migrateCdvnLog(){
+    [[ -n "${_migrate_log:-}" ]] || return 0
+    printf '%s %s\n' "$(date -Is)" "$*" >>"$_migrate_log"
+}
+
+# Full CDVN → EthPillar migration (CLI + TUI). Detects active EL/CL/VC/MEV.
+migrateCdvnFull(){
+    local default_root path_in plan_file moves_file selected_moves line rel src dest
+    local docker_up=0 _cdvn_env _grafana_port=""
+    local _migrate_log_dir _migrate_log
+
+    default_root="${HOME}/charon-distributed-validator-node"
+    [[ -d "$default_root" ]] || default_root="${HOME}/git/charon-distributed-validator-node"
+    [[ -d "$default_root" ]] || default_root="${HOME}"
+
+    path_in="${1:-}"
+    if [[ -z "$path_in" ]] || [[ ! -e "$path_in" ]]; then
+        path_in=$(whiptail --title "Migrate from CDVN" --inputbox \
+            "Path to your CDVN checkout directory (or .env file):" \
+            10 78 "${path_in:-$default_root}" 3>&1 1>&2 2>&3) || return 0
+    fi
+    if [[ ! -e "$path_in" ]]; then
+        whiptail --title "Migrate from CDVN" --msgbox "Path not found:\n${path_in}" 9 70
+        return 1
+    fi
+
+    if ! whiptail --title "Migrate from CDVN" --yesno \
+"Migrate charon-distributed-validator-node to EthPillar:
+
+  - Detect active EL / CL / VC / MEV / network from .env
+  - Install matching EthPillar clients (if needed)
+  - Move Docker datadirs into /var/lib when confirmed
+  - Overlay .charon + Charon systemd flags
+  - Fresh EthPillar monitoring; CDVN dashboards re-provisioned
+
+WARNING: Stop CDVN Docker Compose first (slashing risk).
+
+Continue?" 20 78; then
+        return 0
+    fi
+
+    # Ensure ethpillar CLI symlink + Python deps
+    if [[ ! -e /usr/local/bin/ethpillar ]]; then
+        ohai "Installing ethpillar symlink"
+        sudo ln -sf "${BASE_DIR}/ethpillar.sh" /usr/local/bin/ethpillar
+    fi
+    ensure_python_deps
+
+    plan_file=$(mktemp)
+    set +e
+    PYTHONPATH="${BASE_DIR}" python3 -m deploy.cdvn_migrate plan --path "$path_in" \
+        >"$plan_file" 2>/tmp/ethpillar-cdvn-migrate-err
+    local rc=$?
+    set -e
+    if [[ $rc -eq 2 ]]; then
+        whiptail --title "CDVN migration abort" --msgbox \
+"CDVN Docker is still running, or its status could not be verified
+(missing docker/docker-compose, permission denied, or timeout).
+
+Stop CDVN first, then re-run:
+  cd <cdvn-root> && docker compose down
+  # or: docker-compose down
+
+Then: ethpillar --migrate_cdvn" 16 72
+        rm -f "$plan_file"
+        return 1
+    fi
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "CDVN migration error" --msgbox \
+"$(cat /tmp/ethpillar-cdvn-migrate-err 2>/dev/null || echo "Failed to build plan.")" 14 78
+        rm -f "$plan_file"
+        return 1
+    fi
+
+    whiptail --title "CDVN migration plan" --textbox "$plan_file" 24 88
+
+    _migrate_log_dir="${HOME}/.ethpillar/logs"
+    mkdir -p "$_migrate_log_dir"
+    _migrate_log="${_migrate_log_dir}/cdvn-migrate-$(date +%Y%m%d-%H%M%S).log"
+    {
+        echo "=== EthPillar CDVN migration $(date -Is) ==="
+        echo "checkout: ${path_in}"
+        echo "log: ${_migrate_log}"
+        echo ""
+        cat "$plan_file"
+        echo ""
+    } >>"$_migrate_log"
+    ohai "Migration log: ${_migrate_log}"
+
+    if ! whiptail --title "Migrate from CDVN" --yesno \
+"Proceed with deploy using this plan?
+
+Optional Docker data/ moves are confirmed next.
+(.charon cluster copy always runs when cluster-lock.json is present.)" 12 70; then
+        rm -f "$plan_file"
+        return 0
+    fi
+
+    local _migrate_fresh=0
+    if sudo test -f /var/lib/charon/.charon/cluster-lock.json 2>/dev/null \
+        || [[ -f /etc/systemd/system/charon.service ]] \
+        || [[ -f /etc/systemd/system/validator.service ]]; then
+        local _fresh_default="--defaultno"
+        if charonKeysharesPresent && ! _ethpillarVcHasImportedKeys; then
+            _fresh_default=""
+        fi
+        if whiptail --title "Fresh migration" "${_fresh_default}" --yesno \
+"Previous EthPillar Charon/VC state detected.
+
+Reset Charon cluster + VC keys and run a clean end-to-end migration?
+
+(Stops charon/validator, clears /var/lib/charon/.charon and VC keystores)" 14 78; then
+            _migrate_fresh=1
+        fi
+    fi
+
+    # Build checklist of movable datadirs
+    selected_moves=""
+    local prompted_moves=0
+    moves_file=$(mktemp)
+    PYTHONPATH="${BASE_DIR}" python3 - <<PY >"$moves_file"
+import os
+from deploy.cdvn_migrate import plan_cdvn_migration
+plan = plan_cdvn_migration("$path_in")
+for m in plan.datadir_moves:
+    if m.relative_src == ".charon":
+        continue
+    if m.will_move:
+        dest_name = os.path.basename(m.dest.rstrip(os.sep)) or m.dest
+        print(m.relative_src)
+        print(f"-> {dest_name} ({m.owner})")
+PY
+    if [[ -s "$moves_file" ]]; then
+        local checklist=() rel_line dest_line
+        while IFS= read -r rel_line && IFS= read -r dest_line; do
+            checklist+=("$rel_line" "$dest_line" "ON")
+        done <"$moves_file"
+        if [[ ${#checklist[@]} -gt 0 ]]; then
+            prompted_moves=1
+            selected_moves=$(whiptail --title "Confirm datadir moves" --checklist \
+                "Move optional CDVN Docker data/ into /var/lib (uncheck = skip).\n.charon cluster copy is always applied separately." \
+                22 76 10 "${checklist[@]}" 3>&1 1>&2 2>&3) || selected_moves=""
+            selected_moves=$(echo "$selected_moves" | tr -d '"')
+            selected_moves=$(echo "$selected_moves" | tr ' ' ',')
+            _migrateCdvnLog "datadir checklist selection: ${selected_moves:-<none>}"
+        fi
+    else
+        _migrateCdvnLog "datadir checklist: not shown (no optional Docker data/ moves)"
+    fi
+    rm -f "$moves_file" "$plan_file"
+
+    # After checklist: pass explicit --moves (empty = none). If no prompt, omit = all eligible.
+    local moves_arg=() fresh_arg=()
+    if [[ "$prompted_moves" -eq 1 ]]; then
+        moves_arg=(--moves "$selected_moves")
+    fi
+    if [[ "$_migrate_fresh" -eq 1 ]]; then
+        fresh_arg=(--fresh)
+        _migrateCdvnLog "fresh reset: enabled"
+    fi
+
+    ohai "Deploying EthPillar clients from CDVN plan…"
+    _migrateCdvnLog "=== deploy.cdvn_migrate run ==="
+    set +e
+    PYTHONPATH="${BASE_DIR}" python3 -m deploy.cdvn_migrate run --path "$path_in" \
+        "${moves_arg[@]}" "${fresh_arg[@]}" 2>&1 | tee -a "$_migrate_log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    _migrateCdvnLog "deploy.cdvn_migrate exit=${rc}"
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "CDVN migration failed" --msgbox \
+"Migration failed (exit ${rc}).
+
+Full log:
+${_migrate_log}" 12 78
+        return 1
+    fi
+
+    ensure_journal_access || ohai "Journal access ready (sg systemd-journal used when needed)"
+    _migrateCdvnLog "journal access: $(can_read_journal && echo ok || echo re-login-required)"
+
+    # Key shares: auto-synced during deploy.cdvn_migrate run; retry if still missing.
+    if [[ -f /etc/systemd/system/validator.service ]] \
+        && charonKeysharesPresent \
+        && ! _ethpillarVcHasImportedKeys; then
+        ohai "Importing ${OBOL_MARK} Obol Charon key shares into validator client…"
+        PYTHONPATH="${BASE_DIR}" python3 - <<'PY' 2>&1 | tee -a "$_migrate_log"
+from deploy.charon import sync_charon_keyshares_to_vc
+from deploy.cdvn_migrate import detect_ethpillar_vc_name
+
+vc = detect_ethpillar_vc_name() or "Lodestar"
+result = sync_charon_keyshares_to_vc(vc, force=True)
+print(result)
+if result.get("status") == "failed":
+    raise SystemExit(1)
+if result.get("status") == "skipped" and not str(result.get("reason", "")).startswith("destination already has"):
+    raise SystemExit(1)
+PY
+        rc=${PIPESTATUS[0]}
+        if [[ $rc -ne 0 ]]; then
+            whiptail --title "CDVN migration failed" --msgbox \
+"Key share import failed. See log:
+${_migrate_log}" 12 78
+            return 1
+        fi
+    fi
+
+    # Start Charon/VC before optional monitoring (monitoring install can block on log prompts).
+    _migrateCdvnStartValidatorStack
+
+    if [[ -d "$path_in" ]]; then
+        _cdvn_env="$path_in/.env"
+    else
+        _cdvn_env="$path_in"
+    fi
+    [[ -f "$_cdvn_env" ]] || _cdvn_env=""
+
+    # Fresh EthPillar monitoring + Charon dashboard
+    if [[ ! -f /etc/systemd/system/ethereum-metrics-exporter.service ]]; then
+        if whiptail --title "Monitoring" --yesno \
+"Install EthPillar Monitoring (Grafana/Prometheus) with CDVN ${OBOL_CHARON} dashboards?" 10 70; then
+            export ETHPILLAR_CDVN_MIGRATE=1
+            [[ -n "$_cdvn_env" ]] && export ETHPILLAR_CDVN_ENV="$_cdvn_env"
+            runScript ethereum-metrics-exporter.sh -i
+            unset ETHPILLAR_CDVN_ENV ETHPILLAR_CDVN_MIGRATE
+        fi
+    fi
+    if [[ -f /etc/prometheus/prometheus.yml ]] || [[ -d /etc/grafana ]]; then
+        PYTHONPATH="${BASE_DIR}" python3 -m manage.charon_monitoring provision --restart >/dev/null 2>&1 || true
+    fi
+    if [[ -f "$_cdvn_env" ]]; then
+        _grafana_port=$(PYTHONPATH="${BASE_DIR}" python3 -c \
+            "from deploy.cdvn_migrate import apply_cdvn_monitoring_from_env; import sys; print(apply_cdvn_monitoring_from_env(sys.argv[1]) or '')" \
+            "$_cdvn_env")
+    elif [[ -d /etc/grafana ]]; then
+        _grafana_port=$(PYTHONPATH="${BASE_DIR}" python3 -c \
+            "from manage.grafana import read_grafana_http_port; print(read_grafana_http_port())")
+    fi
+    if [[ -n "${_grafana_port:-}" ]]; then
+        _migrateCdvnLog "Grafana http_port: ${_grafana_port}"
+        ohai "Grafana: http://127.0.0.1:${_grafana_port}/"
+    fi
+
+    _migrateCdvnPromptStartMonitoring
+
+    local _grafana_url="http://127.0.0.1:${_grafana_port:-3000}/d/charon_overview/"
+
+    whiptail --title "CDVN migration done" --msgbox \
+"Reminders:
+- Keep CDVN Docker Charon/VC stopped
+- Open Charon P2P TCP if peers need access
+  (port in charon.service)
+- Start order: EL -> CL -> Charon -> VC
+- Grafana Charon dashboards:
+  ${_grafana_url}
+  Also: clusterview-user, node_overview
+- Logs dashboard needs Loki (not installed)
+
+Migration log:
+${_migrate_log}" 20 76
+}
+
+# Charon TUI menu + legacy alias
+migrateCharonFromCdvn(){
+    migrateCdvnFull "$@"
+}
+
+importCharonCdvnEnv(){
+    migrateCdvnFull "$@"
+}
+
+# Copy a .charon tree via deploy.charon (overridable in bats).
+runCopyCharonCluster(){
+    local src="$1" dest="$2" force_flag="${3:-}"
+    # shellcheck disable=SC2086
+    PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon copy_charon \
+        --src "$src" --dest "$dest" ${force_flag}
+}
+
+# Run Validator Charon key-share import without the yes/no confirm.
+# Overridable in bats (avoids spawning manage_validator_keys.sh).
+runImportCharonKeySharesYes(){
+    bash "${BASE_DIR}/manage_validator_keys.sh" charon-import-yes
+}
+
+# Manual setup: copy a CDVN/DKG .charon tree into EthPillar's Charon datadir.
+importCharonClusterFolder(){
+    local SRC DEST
+    DEST="$(getCharonClusterDir)"
+    local vc_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    SRC=$(whiptail --title "Import .charon cluster folder" --inputbox \
+"Path to your CDVN or DKG .charon directory:
+
+Copies cluster-lock.json, validator_keys, and related
+cluster files into:
+  ${DEST}
+
+If key shares are present, you will be asked whether to
+import them into the signer VC (same as CDVN migrate)." 18 78 --ok-button "Submit" 3>&1 1>&2 2>&3) || return
+
+    SRC="${SRC/#\~/$HOME}"
+    # Accept either .../.charon or a parent that contains .charon
+    if [[ -d "${SRC}/.charon" ]]; then
+        SRC="${SRC}/.charon"
+    fi
+    if [[ ! -d "$SRC" ]]; then
+        whiptail --title "Import .charon cluster folder" --msgbox \
+"Directory not found:
+${SRC}" 9 70
+        return 1
+    fi
+    if [[ ! -f "${SRC}/cluster-lock.json" ]]; then
+        whiptail --title "Import .charon cluster folder" --msgbox \
+"Missing cluster-lock.json in:
+${SRC}" 9 70
+        return 1
+    fi
+
+    local force_flag=""
+    if sudo test -f "${DEST}/cluster-lock.json" 2>/dev/null; then
+        if ! whiptail --title "Import .charon cluster folder" --yesno \
+"Destination already has a cluster:
+${DEST}
+
+Overwrite with:
+${SRC}?" 12 70; then
+            return
+        fi
+        force_flag="--force"
+    elif ! whiptail --title "Import .charon cluster folder" --yesno \
+"Copy .charon cluster:
+  ${SRC}
+→ ${DEST}
+
+Continue?" 12 70; then
+        return
+    fi
+
+    ohai "Importing ${OBOL_MARK} .charon cluster folder…"
+    set +e
+    runCopyCharonCluster "$SRC" "$DEST" "$force_flag"
+    local rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Import .charon cluster folder" --msgbox \
+"Failed to copy .charon into ${DEST}.
+Check the terminal output for details." 10 70
+        return 1
+    fi
+
+    # Same UX as CDVN migrate: offer key-share import when shares are on disk.
+    if charonKeysharesPresent && [[ -f "$vc_svc" ]]; then
+        local vc_label=""
+        getClientVC 2>/dev/null || true
+        getValidatorClient >/dev/null 2>&1 || true
+        vc_label="${VC:-${VALIDATOR_CLIENT:-signer VC}}"
+        if whiptail --title "Import .charon cluster folder" --yesno \
+"Copied .charon into ${DEST}.
+
+Key shares were found under validator_keys.
+Also import them into ${vc_label} now?
+
+(You can re-run later via Validator → ${OBOL_IMPORT_KEY_SHARES})" 14 70; then
+            runImportCharonKeySharesYes
+            return
+        fi
+    fi
+
+    whiptail --title "Import .charon cluster folder" --msgbox \
+"Copied .charon into ${DEST}.
+
+Next:
+  1. Start Charon (this menu → Start Charon)
+  2. Validator → ${OBOL_IMPORT_KEY_SHARES} (if not imported yet)" 14 70
 }
 
 # Get execution client datadir from systemd config (for reth)
@@ -723,6 +1353,23 @@ getExecutionStaticFiles(){
 getPubKeys(){
     TEMP=""
     local ARGUMENT=${1:-"default"}
+
+    # Charon DV: VC CLIs list key-share pubkeys; on-chain identity is the
+    # composite distributed_public_key from cluster-lock.json.
+    if isCharonEnabled; then
+        local cluster_dir
+        cluster_dir="$(getCharonClusterDir)"
+        TEMP=$(PYTHONPATH="${BASE_DIR}" python3 - <<PY
+from deploy.charon import list_distributed_validator_pubkeys
+for pk in list_distributed_validator_pubkeys("${cluster_dir}"):
+    print(pk)
+PY
+)
+        if [[ -n "$TEMP" ]]; then
+            convertLIST
+            return 0
+        fi
+    fi
 
     # Use modern client detection first
     getValidatorClient
@@ -814,24 +1461,113 @@ do
 done
 }
 
-# Convert pubkeys to validator indices using the beacon node API
-getIndices(){
-    local API_URL_INDICES="${API_BN_ENDPOINT}/eth/v1/beacon/states/head/validators"
-    INDICES=()
+# Probe whether a beacon REST base answers (node/version).
+_probeBeaconApi(){
+    local base="${1%/}"
+    [[ -n "$base" ]] || return 1
+    curl -sf -m 2 -H "Accept: application/json" "${base}/eth/v1/node/version" >/dev/null 2>&1
+}
 
-    for PUBKEY in "${LIST[@]}"; do
-        local response
-        response=$(curl -s --max-time 5 "${API_URL_INDICES}/${PUBKEY}")
+# First Charon upstream BN URL from charon.service (--beacon-node-endpoints).
+getCharonUpstreamBeacon(){
+    local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
+    local raw=""
+    [[ -f "$charon_svc" ]] || return 0
+    raw=$(grep -oE -- '--beacon-node-endpoints=[^[:space:]\\]+' "$charon_svc" 2>/dev/null | head -1 | cut -d= -f2-)
+    [[ -n "$raw" ]] || return 0
+    # Comma-separated list → first URL
+    echo "${raw%%,*}"
+}
 
-        local index
-        index=$(echo "$response" | jq -r '.data.index // empty' 2>/dev/null)
-
-        if [[ -z "$index" || "$index" == "null" ]]; then
-            echo "INFO: $PUBKEY not yet activated."
-        else
-            INDICES+=("$index")
+# Pick a reachable beacon REST URL for index / duty queries.
+# Prefers API_BN_ENDPOINT, then local consensus scrape, then Charon upstream.
+resolveBeaconApiEndpoint(){
+    local candidates=()
+    local u=""
+    [[ -n "${API_BN_ENDPOINT:-}" ]] && candidates+=("${API_BN_ENDPOINT}")
+    if [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]; then
+        u=$(getBeaconNodeEndpoint 2>/dev/null || true)
+        [[ -n "$u" ]] && candidates+=("$u")
+    fi
+    if isCharonEnabled; then
+        u=$(getCharonUpstreamBeacon 2>/dev/null || true)
+        [[ -n "$u" ]] && candidates+=("$u")
+    fi
+    # Deduplicate while preserving order
+    local seen="|"
+    local unique=()
+    for u in "${candidates[@]}"; do
+        u="${u%/}"
+        [[ -n "$u" ]] || continue
+        [[ "$seen" == *"|$u|"* ]] && continue
+        seen+="${u}|"
+        unique+=("$u")
+    done
+    for u in "${unique[@]}"; do
+        if _probeBeaconApi "$u"; then
+            echo "$u"
+            return 0
         fi
     done
+    # Fall back to first candidate (or default) even if probe failed
+    if [[ ${#unique[@]} -gt 0 ]]; then
+        echo "${unique[0]}"
+    else
+        echo "http://127.0.0.1:5052"
+    fi
+}
+
+# Convert pubkeys to validator indices using the beacon node API (batch).
+getIndices(){
+    INDICES=()
+    local beacon=""
+    beacon=$(resolveBeaconApiEndpoint)
+    export API_BN_ENDPOINT="$beacon"
+
+    if [[ ${#LIST[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    local json_out err_file
+    err_file=$(mktemp)
+    json_out=$(
+        printf '%s\n' "${LIST[@]}" | PYTHONPATH="${BASE_DIR}" python3 -m deploy.charon lookup_indices \
+            --beacon "$beacon" --json 2>"$err_file"
+    )
+    local rc=$?
+    local stderr_txt=""
+    stderr_txt=$(cat "$err_file" 2>/dev/null || true)
+    rm -f "$err_file"
+
+    if [[ $rc -ne 0 || -z "$json_out" ]]; then
+        echo "WARNING: Beacon index lookup failed via ${beacon}"
+        [[ -n "$stderr_txt" ]] && echo "$stderr_txt"
+        return 0
+    fi
+
+    local found
+    found=$(echo "$json_out" | jq -r '.found // 0' 2>/dev/null || echo 0)
+    INDICES=()
+    local pk idx
+    for pk in "${LIST[@]}"; do
+        idx=$(echo "$json_out" | jq -r --arg pk "$pk" '.indices[$pk] // empty' 2>/dev/null || true)
+        [[ -n "$idx" && "$idx" != "null" ]] && INDICES+=("$idx")
+    done
+
+    if [[ "${found}" -eq 0 ]]; then
+        local err
+        err=$(echo "$json_out" | jq -r '.error // empty' 2>/dev/null || true)
+        echo "WARNING: No validator indices returned from ${beacon} for ${#LIST[@]} pubkey(s)."
+        if [[ -n "$err" ]]; then
+            echo "  ${err}"
+        else
+            echo "  Confirm the beacon node is synced on the correct network and reachable."
+            if isCharonEnabled; then
+                echo "  Charon DV pubkeys come from cluster-lock.json (composite keys, not key shares)."
+            fi
+        fi
+        [[ -n "$stderr_txt" ]] && echo "$stderr_txt"
+    fi
 }
 
 # Prints list of pubkeys and indices
@@ -846,6 +1582,10 @@ viewPubkeyAndIndices(){
 
     ohai "==========================================="
     ohai "Total # Validator Keys: $COUNT"
+    if isCharonEnabled; then
+        ohai "Charon DV: composite validator pubkeys from cluster-lock.json"
+    fi
+    ohai "Beacon API: ${API_BN_ENDPOINT:-unknown}"
     ohai "==========================================="
     ohai "Pubkeys:"
 
@@ -854,10 +1594,13 @@ viewPubkeyAndIndices(){
     done
 
     ohai "==========================================="
-    ohai "Indices:"
+    ohai "Indices (${#INDICES[@]} found):"
 
     if [[ ${#INDICES[@]} -gt 0 ]]; then
         echo "${INDICES[@]}"
+    elif isCharonEnabled; then
+        echo "No validator index on chain yet (or beacon API unreachable — see warnings above)."
+        echo "After the distributed validator is deposited and activated on this network, retry."
     else
         echo "No validators currently active. Once a validator is activated, an index is assigned."
     fi
@@ -869,14 +1612,22 @@ viewPubkeyAndIndices(){
 # Checks for open ports. Diagnose peering/router/port-forwarding issues.
 checkOpenPorts(){
     clear
-    if ! systemctl is-active --quiet execution ; then echo "${tty_red}WARNING: Execution client service not running. Ports will appear NOT open. Start service, then check ports."; fi
-    if ! systemctl is-active --quiet consensus ; then echo "${tty_red}WARNING: Consensus client service not running. Ports will appear NOT open. Start service, then check ports."; fi
+    [[ -f /etc/systemd/system/execution.service ]] \
+        && ! systemctl is-active --quiet execution \
+        && echo "${tty_red}WARNING: Execution client service not running. EL port may appear NOT open."
+    [[ -f /etc/systemd/system/consensus.service ]] \
+        && ! systemctl is-active --quiet consensus \
+        && echo "${tty_red}WARNING: Consensus client service not running. CL port may appear NOT open."
+    isCharonEnabled \
+        && ! systemctl is-active --quiet charon \
+        && echo "${tty_red}WARNING: Charon service not running. Charon P2P port may appear NOT open."
     ohai "Checking for Open Ports:"
     ohai "- Properly configuring open ports will improve validator performance and network health."
-    ohai "- Test if ports (e.g. 30303, 9000) are accessible from the Internet."
+    ohai "- Test if ports (e.g. 30303, 9000, Charon P2P) are accessible from the Internet."
     ohai "- Test if port forwarding and/or firewalls are properly configured."
-    ohai "- Replace 30303 and 9000 with custom or client-specific port numbers as needed."
+    ohai "- Replace defaults with custom or client-specific port numbers as needed."
 
+    local CL_PORT EL_PORT CHARON_PORT CHECK_PORTS
     # Read the ports from user input
     read -r -p "Enter your Consensus Client's P2P port (press Enter to use default 9000): " CL_PORT
     CL_PORT=${CL_PORT:-9000}
@@ -884,10 +1635,18 @@ checkOpenPorts(){
     read -r -p "Enter your Execution Client's P2P port (press Enter to use default 30303): " EL_PORT
     EL_PORT=${EL_PORT:-30303}
     ohai "Using port ${EL_PORT} for Execution Client's P2P port."
+    CHECK_PORTS="${EL_PORT},${CL_PORT}"
+    if isCharonEnabled; then
+        CHARON_PORT=$(getCharonP2pPort)
+        if [[ -n "$CHARON_PORT" ]]; then
+            CHECK_PORTS="${CHECK_PORTS},${CHARON_PORT}"
+            ohai "Including Charon P2P port ${CHARON_PORT} (TCP only)."
+        fi
+    fi
 
     # Call port checker
-    ohai "Calling https://eth2-client-port-checker.vercel.app/api/checker?ports=$EL_PORT,$CL_PORT"
-    json=$(curl -s https://eth2-client-port-checker.vercel.app/api/checker?ports=$EL_PORT,$CL_PORT)
+    ohai "Calling https://eth2-client-port-checker.vercel.app/api/checker?ports=${CHECK_PORTS}"
+    json=$(curl -s "https://eth2-client-port-checker.vercel.app/api/checker?ports=${CHECK_PORTS}")
 
     # Parse JSON using jq and print requester IP
     ohai "Your IP: $(echo "$json" | jq -r .requester_ip)"
@@ -1222,10 +1981,12 @@ getPeerCount(){
     declare -A _peer_status=()
     local _warn=""
     # Get peer counts from CL and EL
-    _peer_status["Consensus_Layer_Connected_Peer_Count"]="$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/peer_count" -H  "accept: application/json" | jq -r ".data.connected")"
-    _peer_status["Execution_Layer_Connected_Peer_Count"]="$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc": "2.0", "method":"net_peerCount", "params": [], "id":1}' "${EL_RPC_ENDPOINT}" | jq -r ".result" | mawk '{printf "%d\n",$1}')"
+    _peer_status["Consensus_Layer_Connected_Peer_Count"]="$(curl -sf -m 2 -X GET "${API_BN_ENDPOINT}/eth/v1/node/peer_count" -H "accept: application/json" 2>/dev/null | jq -r ".data.connected")"
+    if [[ -f /etc/systemd/system/execution.service ]]; then
+        _peer_status["Execution_Layer_Connected_Peer_Count"]="$(curl -sf -m 2 -X POST -H "Content-Type: application/json" --data '{"jsonrpc": "2.0", "method":"net_peerCount", "params": [], "id":1}' "${EL_RPC_ENDPOINT}" 2>/dev/null | jq -r ".result" | mawk '{printf "%d\n",$1}')"
+    fi
     # Get CL peers by direction
-    _json_cl=$(curl -s ${API_BN_ENDPOINT}/eth/v1/node/peers | jq -c '.data')
+    _json_cl=$(curl -sf -m 2 "${API_BN_ENDPOINT}/eth/v1/node/peers" 2>/dev/null | jq -c '.data')
     _peer_status["Consensus_Layer_Known_Inbound_Peers"]=$(jq -c '.[] | select(.direction == "inbound")' <<< "$_json_cl" | wc -l)
     _peer_status["Consensus_Layer_Known_Outbound_Peers"]=$(jq -c '.[] | select(.direction == "outbound")' <<< "$_json_cl" | wc -l)
 
@@ -1705,8 +2466,11 @@ can_read_journal() {
     if [[ "$(id -u)" -eq 0 ]]; then
         return 0
     fi
-    # Per-user journals succeed without systemd-journal membership; probe system logs.
-    journalctl -n 1 --quiet _UID=0 >/dev/null 2>&1
+    journalctl -n 1 --quiet _UID=0 >/dev/null 2>&1 && return 0
+    if user_in_journal_group "$(whoami)"; then
+        sg systemd-journal -c 'journalctl -n 1 --quiet _UID=0 >/dev/null' 2>/dev/null && return 0
+    fi
+    return 1
 }
 
 # Return 0 when the named user appears in systemd-journal.
@@ -1774,29 +2538,39 @@ journalctl_run() {
         return $?
     fi
 
+    if user_in_journal_group "$(whoami)"; then
+        local _jcmd=(journalctl "$@")
+        sg systemd-journal -c "$(printf '%q ' "${_jcmd[@]}")"
+        return $?
+    fi
+
     sudo journalctl "$@"
+}
+
+# Build a journalctl … | ccze -A pipeline for tmux/log panes (sg when group is new).
+journalctl_ccze_pipeline() {
+    local _args=("$@")
+    local _inner="journalctl"
+    local _a
+    for _a in "${_args[@]}"; do
+        _inner+=" $(printf '%q' "$_a")"
+    done
+    if can_read_journal; then
+        printf '%s | ccze -A' "$_inner"
+    elif user_in_journal_group "$(whoami)"; then
+        printf 'sg systemd-journal -c %q | ccze -A' "$_inner"
+    else
+        printf 'sudo %s | ccze -A' "$_inner"
+    fi
 }
 
 view_journal_logs() {
     # Parent ignores SIGINT so EthPillar survives Ctrl-C.
     # Child restores default so journalctl still stops.
-    export -f _journal_log_colorizer 2>/dev/null || true
+    export -f _journal_log_colorizer journalctl_run can_read_journal user_in_journal_group 2>/dev/null || true
     trap '' INT
 
-    if can_read_journal; then
-        bash -c 'trap - INT; journalctl "$@" | _journal_log_colorizer' _ "$@" || true
-    else
-        ensure_journal_access || true
-        if can_read_journal; then
-            bash -c 'trap - INT; journalctl "$@" | _journal_log_colorizer' _ "$@" || true
-        else
-            if command -v ccze >/dev/null 2>&1; then
-                sudo bash -c 'trap - INT; journalctl "$@" | ccze -A' _ "$@" || true
-            else
-                sudo bash -c 'trap - INT; journalctl "$@"' _ "$@" || true
-            fi
-        fi
-    fi
+    bash -c 'trap - INT; journalctl_run "$@" | _journal_log_colorizer' _ "$@" || true
 
     trap - INT
     return 0
@@ -1809,6 +2583,7 @@ function get_user_input() {
     test -f /etc/systemd/system/execution.service && OPTIONS+=("execution" "")
     test -f /etc/systemd/system/consensus.service && OPTIONS+=("consensus" "")
     test -f /etc/systemd/system/validator.service && OPTIONS+=("validator" "")
+    test -f /etc/systemd/system/charon.service && OPTIONS+=("charon" "")
     test -f /etc/systemd/system/mevboost.service && OPTIONS+=("mevboost" "" )
     test -f /etc/systemd/system/csm_nimbusvalidator.service && OPTIONS+=("csm_nimbusvalidator" "")
     service=$(whiptail --title "Export journalctl service logs" --menu \
@@ -1980,6 +2755,7 @@ compareSystemdDefaults() {
     if [[ ! -f /etc/systemd/system/execution.service \
        && ! -f /etc/systemd/system/consensus.service \
        && ! -f /etc/systemd/system/validator.service \
+       && ! -f /etc/systemd/system/charon.service \
        && ! -f /etc/systemd/system/mevboost.service ]]; then
         whiptail --title "Compare systemd configs" --msgbox \
             "No EthPillar systemd units found.\n\nInstall a node first." 10 70

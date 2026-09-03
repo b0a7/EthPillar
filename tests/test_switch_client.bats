@@ -31,9 +31,9 @@ setup() {
     }
     export -f whiptail
 
-    # Log vc_service patch calls for separate-VC coordination tests
+    # Log vc_service / charon patch calls for separate-VC coordination tests
     python3() {
-        if [[ "$*" == *"deploy.vc_service"* ]]; then
+        if [[ "$*" == *"deploy.vc_service"* ]] || [[ "$*" == *"deploy.charon"* ]]; then
             echo "python3 $*" >> "$COMMAND_LOG"
         fi
         command python3 "$@"
@@ -72,6 +72,15 @@ ExecStart=/usr/local/bin/prysm-validator \\
     --mainnet \\
     --beacon-rest-api-provider=http://127.0.0.1:5052 \\
     --accept-terms-of-use
+EOF
+}
+
+write_charon_service() {
+    cat > "${SYSTEMD_DIR}/charon.service" <<EOF
+[Service]
+ExecStart=/usr/local/bin/charon run \\
+    --beacon-node-endpoints=http://127.0.0.1:5052 \\
+    --validator-api-address=127.0.0.1:3600
 EOF
 }
 
@@ -302,6 +311,37 @@ teardown() {
     [[ "$output" == *"deploy.vc_service patch"* ]]
     [[ "$output" == *"sudo systemctl start consensus"* ]]
     [[ "$output" == *"sudo systemctl start validator"* ]]
+}
+
+@test "switchClient consensus with Charon patches Charon upstream not VC" {
+    export EL="Geth"
+    export CL="Prysm"
+
+    touch "${SYSTEMD_DIR}/consensus.service"
+    cat > "${SYSTEMD_DIR}/validator.service" <<EOF
+[Unit]
+Description=Prysm Validator Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/prysm-validator \\
+    --mainnet \\
+    --beacon-rest-api-provider=http://127.0.0.1:3600 \\
+    --accept-terms-of-use
+EOF
+    write_charon_service
+
+    WHIPTAIL_EXIT_CODE=1
+
+    switchClient consensus
+
+    run cat "$COMMAND_LOG"
+    [[ "$output" == *"deploy.charon patch_beacon"* ]]
+    [[ "$output" != *"deploy.vc_service patch"* ]]
+    [[ "$output" == *"sudo systemctl try-restart charon"* ]]
+    [[ "$output" == *"sudo systemctl start validator"* ]]
+
+    grep -q "beacon-rest-api-provider=http://127.0.0.1:3600" "${SYSTEMD_DIR}/validator.service"
+    grep -q "beacon-node-endpoints=http://127.0.0.1:5052" "${SYSTEMD_DIR}/charon.service"
 }
 
 @test "switchClient consensus without validator does not coordinate VC lifecycle" {

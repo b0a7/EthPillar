@@ -55,11 +55,27 @@ After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks kee
 
 - Stops and disables MEV-Boost (the service file stays on disk).
 - Removes the beacon-node setting that pointed at local MEV-Boost (`127.0.0.1:18550`). Other builder URLs are left alone.
+- With **Obol Charon** installed, also removes `charon.service` `--builder-api` — see [Obol Charon DV](#obol-charon-dv) below and [docs/charon.md](charon.md) for install/migrate.
 - Leaves any validator relay config from the first step in place.
+
+Restart order after complete when Charon is present: **consensus → charon → validator**.
 
 If you skipped the first step, **Complete is refused** so you do not drop MEV-Boost with no VC relay replacement.
 
 If you ran Complete too early: restore `consensus.service` from the newest `consensus.service.bak.epbs.*`, then `sudo systemctl enable --now mevboost` and restart consensus (`sudo systemctl daemon-reload && sudo systemctl restart consensus`).
+
+### Obol Charon DV
+
+Charon sits between your validator client and beacon node and proxies builder/MEV traffic. On the pre-Gloas path that means `charon.service` runs with **`--builder-api`** (MEV-Boost builder proxy).
+
+| Step | Charon behavior |
+|------|-----------------|
+| **Before Gloas (prepare)** | Keeps `--builder-api`; MEV-Boost sidecar path unchanged |
+| **After Gloas (complete)** | Removes `--builder-api` from `charon.service` |
+
+After **complete**, restart in order: **consensus → charon → validator**.
+
+**Upstream:** Obol has not shipped a stable Charon ePBS/Gloas release yet. EthPillar strips the MEV-Boost proxy flag on complete so your node matches the post-fork sidecar-off layout; confirm Charon versions against [Charon releases](https://github.com/ObolNetwork/charon/releases) before relying on Gloas block production through Charon.
 
 ### Safety
 
@@ -132,10 +148,11 @@ Refused unless the VC already has a relay list (successful `prepare`), or you pa
    | Nimbus | `--payload-builder-url` |
    | Grandine | `--builder-url` / `--builder-api-url` |
    | Erigon-Caplin | `--caplin.mev-relay-url` |
+   | Obol Charon | `--builder-api` (MEV-Boost proxy; no stable upstream ePBS release yet) |
 
 3. Do not rewrite VC relay config from `prepare`.
 
-Restart `consensus` after apply so the BN drops the sidecar URL. Prysm/Lodestar VC flags do not change on this step.
+Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare). Prysm/Lodestar VC flags do not change on this step alone.
 
 ### Client support levels
 

@@ -504,7 +504,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                    validator_enabled: bool, validator_service_path: Optional[str],
                    validator_only: bool, bn_address: Optional[str], node_only: bool, fee_recipient_address: Optional[str],
                    skip_prompts: bool, cl_rest_port: str,
-                   vc_name: str = '', vc_ver: str = '') -> None:
+                   vc_name: str = '', vc_ver: str = '',
+                   charon_enabled: bool = False, charon_version: Optional[str] = None,
+                   charon_service_path: Optional[str] = None) -> None:
     """Display installation summary and optionally start/enable services.
 
     Args:
@@ -528,6 +530,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         fee_recipient_address: Fee recipient address.
         skip_prompts: Whether to skip interactive prompts.
         cl_rest_port: Consensus client REST port.
+        charon_enabled: Whether Obol Charon middleware was installed.
+        charon_version: Charon version string.
+        charon_service_path: Path to charon.service.
     """
     
     # Reload the systemd daemon
@@ -550,6 +555,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
 
     if mevboost_enabled and not validator_only:
         print(f'Mevboost Version: \n{mevboost_version}\n')
+
+    if charon_enabled and charon_version:
+        print(f'Charon Version: \n{charon_version}\n')
 
     print(f'Network: {eth_network.upper()}\n')
 
@@ -578,6 +586,51 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
     if mevboost_enabled and not validator_only:
         if mevboost_service_path:
             print(f'{mevboost_service_path}')
+    if charon_enabled and charon_service_path:
+        print(f'{charon_service_path}')
+
+    if charon_enabled:
+        from deploy.charon import CHARON_CLUSTER_DIR
+        from deploy.orchestrator import obol_mark
+        print(f'\n{obol_mark()} Obol Charon next steps:')
+        print(f'  1. Copy your existing .charon folder to {CHARON_CLUSTER_DIR}')
+        print(f'     EthPillar → {obol_mark()} Obol Charon DV → Import .charon cluster folder')
+        print('     (prompts to import key shares into the signer VC when present)')
+        print(f'     (or: sudo cp -a /path/to/.charon/. {CHARON_CLUSTER_DIR}/ && sudo chown -R charon:charon {CHARON_CLUSTER_DIR})')
+        print('  2. sudo systemctl start charon')
+        print(f'  3. If key shares were not imported in step 1: Validator → Import {obol_mark()} Obol Charon key shares')
+        print('  4. sudo systemctl start validator')
+        try:
+            from deploy.charon import parse_p2p_tcp_port
+
+            _charon_p2p = parse_p2p_tcp_port()
+        except Exception:
+            _charon_p2p = 3610
+        print(
+            f'  5. Open TCP {_charon_p2p} on your firewall; '
+            'set CHARON_P2P_EXTERNAL_IP if peers cannot use relays'
+        )
+        if validator_only:
+            print('  6. Remote beacon node requirements (configure on the BN host):')
+            print('     • Nimbus BN: Charon needs --feature-set-enable=json_requests')
+            print('       (add to charon.service on this machine if upstream BN is Nimbus)')
+            print('     • Teku BN: --validators-graffiti-client-append-format=DISABLED')
+        print('     See docs/charon.md for CDVN migration and BN notes.\n')
+        # Wire Charon into existing Grafana/Prometheus when monitoring is already installed
+        try:
+            from manage.charon_monitoring import provision_charon_monitoring
+            mon = provision_charon_monitoring(restart=True)
+            if mon.get('scrape') or mon.get('dashboard') or mon.get('datasource'):
+                print('Charon monitoring: Prometheus scrape and/or Charon Overview dashboard updated.')
+                print('  Grafana: http://127.0.0.1:3000/d/charon_overview/')
+            elif not os.path.isfile('/etc/prometheus/prometheus.yml'):
+                print('Tip: Install Monitoring (Logging & Monitoring) to auto-provision Charon Overview.')
+        except PermissionError as exc:
+            # Grafana present but /etc/grafana not writable — must not look like a soft skip.
+            print(f'ERROR: Charon Grafana/Prometheus provisioning failed (permission denied): {exc}')
+            print('  Retry as a user with sudo, or fix ownership under /etc/grafana/provisioning.')
+        except Exception as exc:  # noqa: BLE001 — other optional-monitoring failures
+            print(f'Note: Charon Grafana/Prometheus provisioning skipped ({exc}).')
 
     if skip_prompts:
         print(f'\nNon-interactive install successful! Skipped prompts.')
@@ -599,6 +652,10 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                 subprocess.run(['sudo', 'systemctl', 'start'] + services, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if mevboost_enabled:
                 subprocess.run(['sudo', 'systemctl', 'start', 'mevboost'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if charon_enabled:
+                from deploy.charon import CHARON_LOCK_FILE
+                if os.path.isfile(CHARON_LOCK_FILE):
+                    subprocess.run(['sudo', 'systemctl', 'start', 'charon'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     # Prompt to enable autostart services
     if not skip_prompts:
@@ -616,6 +673,8 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                 subprocess.run(['sudo', 'systemctl', 'enable', 'validator'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if mevboost_enabled and not validator_only:
                 subprocess.run(['sudo', 'systemctl', 'enable', 'mevboost'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if charon_enabled:
+                subprocess.run(['sudo', 'systemctl', 'enable', 'charon'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     if skip_prompts:
         exit(0)
@@ -960,6 +1019,8 @@ def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
     # Normalize client name to module name
     if client in ["mevboost", "mev-boost"]:
         module_name = "mevboost"
+    elif client in ["charon", "obol", "obol-charon"]:
+        module_name = "charon"
     else:
         module_name = client
 

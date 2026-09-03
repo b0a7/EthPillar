@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from deploy.protocols import (
     ALL_CLIENT_MODULES,
+    CharonClientModule,
     ReleaseInfoProvider,
 )
 
@@ -34,3 +35,8 @@ def test_client_module_exports_required_functions(module_name: str, required_gen
 def test_client_module_satisfies_release_info_provider(module_name: str) -> None:
     module = importlib.import_module(f"deploy.{module_name}")
     assert isinstance(module, ReleaseInfoProvider)
+
+
+def test_charon_module_satisfies_charon_protocol() -> None:
+    module = importlib.import_module("deploy.charon")
+    assert isinstance(module, CharonClientModule)

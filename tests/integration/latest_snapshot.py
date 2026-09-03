@@ -29,6 +29,7 @@ _SNAPSHOT_CLIENTS = (
     "Grandine",
     "Prysm",
     "mevboost",
+    "charon",
 )
 
 

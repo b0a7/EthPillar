@@ -8,11 +8,26 @@
 # Made for home and solo stakers 🏠🥩
 
 SOURCE_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ETHPILLAR_ROOT="$(cd "${SOURCE_DIR}/../.." && pwd)"
+# shellcheck disable=SC1091
+source "${ETHPILLAR_ROOT}/functions.sh"
 
 # Node configuration
 p2p_ports=("9000" "30303")
-p2p_processes=("geth" "besu" "teku" "lighthouse" "prysm" "nimbus_beacon_node" "nimbus_validator" "lodestar" "erigon" "nethermind" "reth" "mev-boost")
+p2p_processes=("geth" "besu" "teku" "lighthouse" "prysm" "nimbus_beacon_node" "nimbus_validator" "lodestar" "erigon" "nethermind" "reth" "mev-boost" "charon")
 services=("consensus" "execution" "validator" "mevboost")
+tcp_check_ports="9000,30303"
+udp_check_ports="9000,30303"
+charon_p2p_port=""
+
+if isCharonEnabled; then
+    charon_p2p_port="$(getCharonP2pPort)"
+    if [[ -n "$charon_p2p_port" ]]; then
+        p2p_ports+=("$charon_p2p_port")
+        tcp_check_ports="${tcp_check_ports},${charon_p2p_port}"
+    fi
+    services+=("charon")
+fi
 API_BN_ENDPOINT="http://localhost:5052"
 EL_RPC_ENDPOINT="http://localhost:8545"
 
@@ -28,6 +43,7 @@ client_github_url['Erigon']='https://api.github.com/repos/erigontech/erigon/rele
 client_github_url['Geth']='https://api.github.com/repos/ethereum/go-ethereum/releases/latest'
 client_github_url['Reth']='https://api.github.com/repos/paradigmxyz/reth/releases/latest'
 client_github_url['mev-boost']='https://api.github.com/repos/flashbots/mev-boost/releases/latest'
+client_github_url['Charon']='https://api.github.com/repos/ObolNetwork/charon/releases/latest'
 
 # Load environment variables overrides
 if [[ -f "$SOURCE_DIR"/../../.env.overrides ]]; then
@@ -385,6 +401,24 @@ check_chrony() {
     fi
 }
 
+check_charon_listening_port() {
+    [[ -n "$charon_p2p_port" ]] || return 0
+    ((total_checks+=1))
+    if sudo ss -lnt | grep -qE "tcp.*:${charon_p2p_port}"; then
+        print_check_result "PASS" "Detected TCP service on Charon P2P port ${charon_p2p_port}"
+        if [ "$EUID" -eq 0 ]; then
+            pid=$(sudo ss -lntup "sport = :${charon_p2p_port}" | awk -Fpid= '/users:/ {print $2}' | cut -d, -f1 | head -1)
+            if [ -n "$pid" ]; then
+                process=$(ps -p "$pid" -o comm=)
+                echo -e "${YELLOW}          Process: ${process} (PID ${pid})${NC}"
+            fi
+        fi
+    else
+        print_check_result "FAIL" "Charon P2P port ${charon_p2p_port} (TCP) not listening"
+        ((failed_checks++))
+    fi
+}
+
 check_elcl_listening_ports() {
     ((total_checks+=2))
     detected=0
@@ -421,6 +455,7 @@ check_elcl_listening_ports() {
         print_check_result "FAIL" "No execution & consensus services detected on expected ports"
         ((failed_checks++))
     fi
+    check_charon_listening_port
 }
 
 check_elcl_processes() {
@@ -448,8 +483,8 @@ check_open_ports() {
     open_ports=0
     concat_ports=""
 
-    tcp_ports="9000,30303"
-    udp_ports="9000,30303"
+    tcp_ports="$tcp_check_ports"
+    udp_ports="$udp_check_ports"
 
     # Check TCP ports
     checker_url="https://eth2-client-port-checker.vercel.app/api/checker?ports="
@@ -662,6 +697,28 @@ check_mevboost_version() {
     fi
 }
 
+check_charon_version() {
+    if ! isCharonEnabled; then
+        return 0
+    fi
+    ((total_checks++))
+    if getCharonCurrentVersion; then
+        TAG_URL=${client_github_url["Charon"]}
+        LATEST_VERSION=$(curl -s "$TAG_URL" | jq -r .tag_name 2>/dev/null || true)
+        if [[ -n "$LATEST_VERSION" && "${VERSION}" == "${LATEST_VERSION}" ]]; then
+            print_check_result "PASS" "Charon version: ${VERSION} (latest)"
+        elif [[ -n "$LATEST_VERSION" ]]; then
+            print_check_result "WARN" "Charon version: ${VERSION} (latest: ${LATEST_VERSION})"
+            ((warning_checks++))
+        else
+            print_check_result "PASS" "Charon version: ${VERSION}"
+        fi
+    else
+        print_check_result "FAIL" "Charon installed but unable to query version"
+        ((failed_checks++))
+    fi
+}
+
 check_noatime() {
     ((total_checks++))
     if grep -q "noatime" /etc/fstab; then
@@ -763,6 +820,7 @@ print_section_header "Client Version Checks"
 check_execution_version
 check_consensus_version
 check_validator_version
+check_charon_version
 check_mevboost_version
 
 print_section_header "Performance Checks"

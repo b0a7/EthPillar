@@ -66,7 +66,7 @@ def generate_lighthouse_bn_service(eth_network: str, sync_url: str, jwtsecret_pa
     )
 
 def generate_lighthouse_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
-                                   fee_parameters: str = '', mev_parameters: str = '',
+                                   fee_parameters: str = '', extra_parameters: str = '',
                                    network_override: Optional[str] = None) -> str:
     """Generate Lighthouse validator client systemd service file content.
 
@@ -75,7 +75,7 @@ def generate_lighthouse_vc_service(eth_network: str, graffiti: str, beacon_node_
         graffiti: Graffiti string
         beacon_node_address: Beacon node address
         fee_parameters: Optional fee recipient parameters
-        mev_parameters: Optional MEV relay parameters
+        extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT)
         network_override: Optional network flag override
 
     Returns:
@@ -99,8 +99,8 @@ def generate_lighthouse_vc_service(eth_network: str, graffiti: str, beacon_node_
     ]
     if fee_parameters:
         _args.append(fee_parameters.strip())
-    if mev_parameters:
-        _args.append(mev_parameters.strip())
+    if extra_parameters:
+        _args.append(extra_parameters.strip())
 
     _exec_start = form_exec_start(_args)
 
@@ -178,7 +178,7 @@ def install_lighthouse_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_
     return service_file_path
 
 def install_lighthouse_vc(lh_version: str, eth_network: str, cl_rest_port: str, graffiti: str, beacon_node_address: str,
-                         fee_parameters: str = '', mev_parameters: str = '') -> str:
+                         fee_parameters: str = '', extra_parameters: str = '') -> str:
     """Generate and write Lighthouse validator client service file.
 
     Args:
@@ -188,14 +188,14 @@ def install_lighthouse_vc(lh_version: str, eth_network: str, cl_rest_port: str, 
         graffiti: Graffiti string.
         beacon_node_address: Beacon node address URL.
         fee_parameters: Optional fee recipient parameters.
-        mev_parameters: Optional MEV relay parameters.
+        extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT).
 
     Returns:
         The path to the created service file.
     """
     service_content = generate_lighthouse_vc_service(
         eth_network, graffiti, beacon_node_address,
-        fee_parameters, mev_parameters
+        fee_parameters, extra_parameters
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')

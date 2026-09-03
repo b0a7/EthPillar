@@ -16,10 +16,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from deploy.orchestrator import (
     resolve_role_flags, apply_csm_overrides,
     get_combo_menu, get_vc_menu, get_ec_menu, get_cc_menu,
-    get_vc_options_for_cc, resolve_vc_name,
+    get_vc_options_for_cc, resolve_vc_name, is_charon_vc_choice,
     run_install, is_valid_combination,
     PREDEFINED_COMBOS, EXECUTION_CLIENTS, CONSENSUS_CLIENTS,
-    _int_param
+    CHARON_VC_LABEL, _int_param, _with_dvt_params,
+    lodestar_bn_vc_incompatibility_message, LODESTAR_BN_INCOMPATIBLE_VCS,
 )
 
 # Mock parameters for run_install — keys must match what orchestrator.run_install() reads
@@ -48,12 +49,12 @@ MOCK_ENV = {}
 
 class TestResolveRoleFlags:
     @pytest.mark.parametrize("role,expected", [
-        ("Solo Staking Node",              {"mevboost": True,  "validator": True,  "validator_only": False, "node_only": False}),
-        ("Lido CSM Staking Node",          {"mevboost": True,  "validator": True,  "validator_only": False, "node_only": False}),
-        ("Full Node Only",                 {"mevboost": False, "validator": False, "validator_only": False, "node_only": True}),
-        ("Validator Client Only",          {"mevboost": False, "validator": True,  "validator_only": True,  "node_only": False}),
-        ("Lido CSM Validator Client Only", {"mevboost": False, "validator": True,  "validator_only": True,  "node_only": False}),
-        ("Failover Staking Node",          {"mevboost": True,  "validator": False, "validator_only": False, "node_only": False}),
+        ("Solo Staking Node",              {"mevboost": True,  "builder_api": True,  "validator": True,  "validator_only": False, "node_only": False}),
+        ("Lido CSM Staking Node",          {"mevboost": True,  "builder_api": True,  "validator": True,  "validator_only": False, "node_only": False}),
+        ("Full Node Only",                 {"mevboost": False, "builder_api": False, "validator": False, "validator_only": False, "node_only": True}),
+        ("Validator Client Only",          {"mevboost": False, "builder_api": False, "validator": True,  "validator_only": True,  "node_only": False}),
+        ("Lido CSM Validator Client Only", {"mevboost": False, "builder_api": False, "validator": True,  "validator_only": True,  "node_only": False}),
+        ("Failover Staking Node",          {"mevboost": True,  "builder_api": True,  "validator": False, "validator_only": False, "node_only": False}),
     ])
     def test_role_flags(self, role, expected):
         """Verify that roles correctly map to internal installation flags."""
@@ -97,9 +98,14 @@ class TestParamParsing:
 
 class TestCustomClientMenuLogic:
     def test_vc_only_shows_only_vc_clients(self):
-        menu = get_vc_menu()
+        menu = get_vc_menu(include_charon=False)
         expected = set(CONSENSUS_CLIENTS) - {'Grandine'}
         assert set(menu) == expected
+
+    def test_vc_only_menu_includes_charon_by_default(self):
+        menu = get_vc_menu()
+        assert menu[-1] == CHARON_VC_LABEL
+        assert "Grandine" not in menu
 
     def test_custom_ec_menu_includes_all_clients(self):
         menu = get_ec_menu()
@@ -112,10 +118,52 @@ class TestCustomClientMenuLogic:
     def test_vc_options_same_as_cc_is_default(self):
         menu = get_vc_options_for_cc("Lighthouse")
         assert menu[0] == "Same as CC"
+        assert menu[-1] == CHARON_VC_LABEL
 
     def test_vc_options_no_same_as_cc_when_caplin(self):
         menu = get_vc_options_for_cc("Caplin")
         assert "Same as CC" not in menu
+        assert menu[-1] == CHARON_VC_LABEL
+
+    def test_charon_signer_menu_excludes_charon_and_integrated_grandine(self):
+        menu = get_vc_options_for_cc("Lighthouse", for_charon_signer=True)
+        assert CHARON_VC_LABEL not in menu
+        assert "Grandine (integrated)" not in menu
+        assert menu[0] == "Same as CC"
+
+    def test_grandine_cc_offers_charon_after_integrated(self):
+        menu = get_vc_options_for_cc("Grandine")
+        assert menu[0] == "Grandine (integrated)"
+        assert menu[-1] == CHARON_VC_LABEL
+
+    def test_is_charon_vc_choice(self):
+        assert is_charon_vc_choice(CHARON_VC_LABEL)
+        assert not is_charon_vc_choice("Lodestar")
+
+    def test_with_dvt_params_appends_client_specific_flags(self):
+        assert _with_dvt_params("--builder", "Lodestar", True) == "--builder --distributed"
+        assert _with_dvt_params("", "Lighthouse", True) == "--distributed"
+        assert _with_dvt_params("", "Nimbus", True) == "--distributed"
+        assert _with_dvt_params("", "Lodestar", True) == "--distributed"
+        assert _with_dvt_params("--enable-builder", "Prysm", True) == "--enable-builder --distributed"
+        assert (
+            _with_dvt_params("--validators-builder-registration-default-enabled=true", "Teku", True)
+            == "--validators-builder-registration-default-enabled=true "
+            "--Xobol-dvt-integration-enabled=true "
+            "--Xvalidator-client-beacon-api-executor-threads=50"
+        )
+        assert _with_dvt_params("--builder", "Lodestar", False) == "--builder"
+        assert _with_dvt_params("", "Grandine (integrated)", True) == ""
+
+    def test_lodestar_bn_vc_incompatibility_message(self):
+        msg = lodestar_bn_vc_incompatibility_message("Lodestar", "Lighthouse")
+        assert msg is not None
+        assert "Lodestar beacon node" in msg
+        assert "Lighthouse" in msg
+        assert lodestar_bn_vc_incompatibility_message("Lodestar", "Lodestar") is None
+        assert lodestar_bn_vc_incompatibility_message("Lighthouse", "Lodestar") is None
+        for vc in LODESTAR_BN_INCOMPATIBLE_VCS:
+            assert lodestar_bn_vc_incompatibility_message("Lodestar", vc)
 
 class TestPredefinedCombos:
     def test_lighthouse_reth_maps_to_correct_ec_cc(self):
@@ -172,6 +220,7 @@ class TestRunInstallRouting:
             pr_vc = stack.enter_context(patch('deploy.prysm.install_prysm_vc', return_value="p"))
             
             mv_dl = stack.enter_context(patch('deploy.mevboost.install_mevboost', return_value=("v1", "p")))
+            ch_dl = stack.enter_context(patch('deploy.charon.install_charon', return_value=("v1", "p")))
             
             stack.enter_context(patch('deploy.common.setup_node'))
             stack.enter_context(patch('deploy.common.finish_install'))
@@ -186,7 +235,7 @@ class TestRunInstallRouting:
                 'ls_bn': ls_bn, 'ls_vc': ls_vc, 'ls_dl': ls_dl,
                 'gr_bn': gr_bn, 'gr_dl': gr_dl,
                 'pr_bn': pr_bn, 'pr_vc': pr_vc, 'pr_dl': pr_dl,
-                'mev': mv_dl
+                'mev': mv_dl, 'charon': ch_dl,
             }
     def _verify_only_called(self, mocks, expected_keys):
         """
@@ -211,6 +260,31 @@ class TestRunInstallRouting:
         mocks = self._run("Validator Client Only", None, None, "Teku")
         # For VC-only, only VC download and VC install should happen
         self._verify_only_called(mocks, ['tk_dl', 'tk_vc'])
+
+    def test_validator_only_builder_api_without_local_mev(self):
+        """Remote BN MEV: enable VC builder flags without installing mevboost."""
+        mocks = self._run(
+            "Validator Client Only",
+            None,
+            None,
+            "Lodestar",
+            flags_override={"builder_api": True, "mevboost": False},
+        )
+        self._verify_only_called(mocks, ['ls_dl', 'ls_vc'])
+        extra_params = mocks['ls_vc'].call_args.args[6]
+        assert "--builder" in extra_params
+
+    def test_validator_only_charon_builder_api_without_local_mev(self):
+        mocks = self._run(
+            "Validator Client Only",
+            None,
+            None,
+            "Lodestar",
+            flags_override={"builder_api": True, "mevboost": False, "charon": True},
+        )
+        self._verify_only_called(mocks, ['ls_dl', 'ls_vc', 'charon'])
+        assert mocks['charon'].call_args.kwargs.get("builder_api") is True
+        assert mocks['mev'].call_count == 0
 
     def test_failover_skips_vc(self):
         mocks = self._run("Failover Staking Node", "Nethermind", "Lodestar")
@@ -324,3 +398,41 @@ class TestRunInstallRouting:
         mocks = self._run("Custom Setup", "Besu", "Grandine", "Grandine (integrated)", flags_override={"validator": True, "mevboost": True})
         # Grandine integrated skips VC setup completely and appends flags to BN
         self._verify_only_called(mocks, ['besu', 'gr_dl', 'gr_bn', 'mev'])
+
+    def test_custom_charon_lodestar_routing(self):
+        mocks = self._run(
+            "Custom Setup", "Geth", "Lighthouse", "Lodestar",
+            flags_override={"validator": True, "mevboost": True, "charon": True},
+        )
+        self._verify_only_called(mocks, ['geth', 'lh_dl', 'lh_bn', 'ls_dl', 'ls_vc', 'mev', 'charon'])
+        bn_arg = mocks['ls_vc'].call_args.args[4]
+        assert "3600" in bn_arg
+        extra_params = mocks['ls_vc'].call_args.args[6]
+        assert "--distributed" in extra_params
+        assert "slotSkip" not in extra_params
+        assert mocks['charon'].call_args.kwargs.get("builder_api") is True
+
+    def test_charon_nimbus_bn_enables_json_requests(self):
+        mocks = self._run(
+            "Custom Setup", "Geth", "Nimbus", "Nimbus",
+            flags_override={"validator": True, "charon": True},
+        )
+        assert mocks['charon'].call_args.kwargs.get("feature_set_enable") == "json_requests"
+
+    def test_charon_teku_bn_disables_graffiti_append(self):
+        mocks = self._run(
+            "Custom Setup", "Geth", "Teku", "Teku",
+            flags_override={"validator": True, "charon": True},
+        )
+        fee_params = mocks['tk_bn'].call_args.kwargs.get('fee_parameters', '')
+        assert "--validators-graffiti-client-append-format=DISABLED" in fee_params
+        extra_params = mocks['tk_vc'].call_args.args[6]
+        assert "--Xobol-dvt-integration-enabled=true" in extra_params
+        assert "--Xvalidator-client-beacon-api-executor-threads=50" in extra_params
+
+    def test_charon_rejects_grandine_integrated(self):
+        with pytest.raises(ValueError, match="incompatible with Grandine"):
+            self._run(
+                "Custom Setup", "Besu", "Grandine", "Grandine (integrated)",
+                flags_override={"validator": True, "charon": True},
+            )

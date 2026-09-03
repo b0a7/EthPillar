@@ -21,6 +21,7 @@ SERVICE_FILES: Dict[str, str] = {
     "consensus": f"{SYSTEMD_DIR}/consensus.service",
     "validator": f"{SYSTEMD_DIR}/validator.service",
     "mevboost": f"{SYSTEMD_DIR}/mevboost.service",
+    "charon": f"{SYSTEMD_DIR}/charon.service",
 }
 
 # Description first-token → canonical client name (title case used by EthPillar).
@@ -38,6 +39,8 @@ _CLIENT_ALIASES: Dict[str, str] = {
     "lodestar": "Lodestar",
     "grandine": "Grandine",
     "prysm": "Prysm",
+    "obol": "Charon",
+    "charon": "Charon",
     "caplin": "Erigon-Caplin",
     "mev-boost": "MEV-Boost",
     "mevboost": "MEV-Boost",

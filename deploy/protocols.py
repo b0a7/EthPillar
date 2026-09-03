@@ -54,6 +54,25 @@ class MevBoostClientModule(Protocol):
 
 
 @runtime_checkable
+class CharonClientModule(Protocol):
+    """Obol Charon DVT middleware module contract."""
+
+    def get_release_info(self, version_tag: str, arch_amd64: bool) -> Dict[str, Any]: ...
+    def generate_charon_service(
+        self,
+        eth_network: str,
+        beacon_node_endpoints: str,
+        *,
+        builder_api: bool = False,
+        p2p_external_ip: str = "",
+        validator_api_address: str = "127.0.0.1:3600",
+        monitoring_address: str = "127.0.0.1:3620",
+        p2p_tcp_address: str = "0.0.0.0:3610",
+        feature_set_enable: str = "",
+    ) -> str: ...
+
+
+@runtime_checkable
 class ConsensusBeaconClientModule(Protocol):
     """Consensus beacon-node client module contract."""
 
@@ -81,6 +100,10 @@ MEVBOOST_GENERATORS: Dict[str, List[str]] = {
     "mevboost": ["generate_mevboost_service"],
 }
 
+CHARON_GENERATORS: Dict[str, List[str]] = {
+    "charon": ["generate_charon_service"],
+}
+
 CONSENSUS_BEACON_GENERATORS: Dict[str, List[str]] = {
     "lighthouse": ["generate_lighthouse_bn_service"],
     "nimbus": ["generate_nimbus_bn_service"],
@@ -101,6 +124,7 @@ CONSENSUS_VALIDATOR_GENERATORS: Dict[str, List[str]] = {
 ALL_CLIENT_MODULES: Dict[str, List[str]] = {
     **{k: v for k, v in EXECUTION_CLIENT_GENERATORS.items()},
     **MEVBOOST_GENERATORS,
+    **CHARON_GENERATORS,
     **{k: CONSENSUS_BEACON_GENERATORS[k] + CONSENSUS_VALIDATOR_GENERATORS.get(k, [])
        for k in CONSENSUS_BEACON_GENERATORS},
 }
