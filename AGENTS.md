@@ -1,6 +1,6 @@
 # AGENTS.md
 
-EthPillar is a Linux Bash TUI (`ethpillar.sh`) plus a Python deploy layer (`deploy/`) for installing and managing Ethereum EL/CL/VC/MEV clients via systemd.
+EthPillar is a Linux Bash TUI (`ethpillar.sh`) plus a Python deploy layer (`deploy/`) for installing and managing Ethereum EL/CL/VC/MEV/Charon clients via systemd.
 
 ## Install & run
 - Install the tool: `install.sh` (see README.md)

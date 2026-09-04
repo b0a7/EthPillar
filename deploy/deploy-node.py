@@ -10,8 +10,9 @@ from dotenv import load_dotenv
 
 import common as common
 from orchestrator import (
-    VALID_ROLES, resolve_role_flags, get_combo_menu, get_vc_menu, 
-    get_ec_menu, get_cc_menu, get_vc_options_for_cc, resolve_vc_name, run_install
+    VALID_ROLES, resolve_role_flags, get_combo_menu, get_vc_menu,
+    get_ec_menu, get_cc_menu, get_vc_options_for_cc, resolve_vc_name, run_install,
+    CHARON_VC_LABEL, OBOL_CHARON, is_charon_vc_choice, lodestar_bn_vc_incompatibility_message,
 )
 import config
 
@@ -44,6 +45,19 @@ parser.add_argument("--cc", type=str, default="")
 parser.add_argument("--vc", type=str, default="")
 parser.add_argument("--with_validator", action="store_true", default=False)
 parser.add_argument("--with_mevboost", action="store_true", default=False)
+parser.add_argument(
+    "--with_builder_api",
+    action="store_true",
+    default=False,
+    help="Enable Charon/VC builder flags without installing local MEV-Boost "
+    "(e.g. external relays / CDVN BUILDER_API_ENABLED)",
+)
+parser.add_argument(
+    "--with_charon",
+    action="store_true",
+    default=False,
+    help="Install Obol Charon DVT middleware and point the VC at Charon (:3600)",
+)
 parser.add_argument("--jwtsecret", type=str, default=JWTSECRET_PATH)
 parser.add_argument("--graffiti", type=str, default=GRAFFITI)
 parser.add_argument("--fee_address", type=str, default="")
@@ -81,6 +95,7 @@ if args.switch_client:
     role = f"Switch {args.switch_client.capitalize()} Client"
     flags = {
         "mevboost": args.with_mevboost,
+        "builder_api": bool(args.with_mevboost or args.with_builder_api),
         "validator": False,
         "validator_only": False,
         "node_only": False,
@@ -95,6 +110,23 @@ else:
         role = args.install_config
 
     flags = resolve_role_flags(role, eth_network)
+
+flags["charon"] = bool(args.with_charon)
+if args.with_mevboost:
+    flags["mevboost"] = True
+# Builder API can be on without a local mevboost.service (external MEV / CDVN).
+flags["builder_api"] = bool(
+    flags.get("builder_api") or flags.get("mevboost") or args.with_builder_api
+)
+if args.vc == CHARON_VC_LABEL:
+    print(
+        f"ERROR: --vc '{CHARON_VC_LABEL}' is not a signer client. "
+        "Use --with_charon --vc <Lighthouse|Nimbus|Teku|Lodestar|Prysm>."
+    )
+    exit(1)
+if flags["charon"] and args.vc == "Grandine (integrated)":
+    print(f"ERROR: {OBOL_CHARON} is incompatible with Grandine (integrated).")
+    exit(1)
 
 # 3. Client Selection
 ec_name = None
@@ -127,11 +159,40 @@ elif flags['validator_only']:
         if skip_prompts:
             vc_name = cc_name or args.cc or "Lighthouse"
         else:
-            vc_menu = get_vc_menu()
+            vc_menu = get_vc_menu(include_charon=True)
             index = SelectionMenu.get_selection(vc_menu, title='Validator Client Selection', subtitle='Select your Validator Client:', show_exit_option=False)
-            vc_name = vc_menu[index]
+            choice = vc_menu[index]
+            if is_charon_vc_choice(choice):
+                flags["charon"] = True
+                signer_menu = get_vc_menu(include_charon=False)
+                signer_idx = SelectionMenu.get_selection(
+                    signer_menu,
+                    title=f'{OBOL_CHARON} Signer',
+                    subtitle=f'Select the validator client that will sign behind {OBOL_CHARON}:',
+                    show_exit_option=False,
+                )
+                vc_name = signer_menu[signer_idx]
+            else:
+                vc_name = choice
     else:
         vc_name = args.vc or args.cc # Fallback to --cc if --vc not passed
+
+    # Remote BN may already run MEV-Boost; enable VC/Charon builder flags without
+    # installing a local mevboost.service.
+    if args.with_builder_api or args.with_mevboost:
+        flags['builder_api'] = True
+    elif not skip_prompts:
+        builder_prompt = SelectionMenu.get_selection(
+            ["Yes", "No"],
+            title='Validator Client Only',
+            subtitle=(
+                'Does the remote beacon node use MEV-Boost / builder API?\n'
+                '(Enables VC builder flags; does not install local MEV-Boost)'
+            ),
+            show_exit_option=False,
+        )
+        flags['builder_api'] = builder_prompt == 0
+    # else: keep flags['builder_api'] from CLI / role defaults (False)
 elif role == "Custom Setup":
     # Custom Path
     # EC
@@ -159,13 +220,30 @@ elif role == "Custom Setup":
             val_prompt = SelectionMenu.get_selection(["Yes", "No"], title='Custom Setup', subtitle='Step 3: Do you want a Validator Client?', show_exit_option=False)
             if val_prompt == 0:
                 flags['validator'] = True
-                vc_opts = get_vc_options_for_cc(cc_name)
-                if len(vc_opts) == 4: # No "Same as CC"
-                    index = SelectionMenu.get_selection(vc_opts, title='Validator Client', subtitle='Select your Validator Client:', show_exit_option=False)
-                    vc_name = vc_opts[index]
+                vc_opts = get_vc_options_for_cc(cc_name, include_charon=True)
+                subtitle = (
+                    'Select your Validator Client:'
+                    if vc_opts[0] != "Same as CC"
+                    else 'Use same client as CC?'
+                )
+                index = SelectionMenu.get_selection(
+                    vc_opts, title='Validator Client', subtitle=subtitle, show_exit_option=False
+                )
+                choice = vc_opts[index]
+                if is_charon_vc_choice(choice):
+                    flags["charon"] = True
+                    signer_opts = get_vc_options_for_cc(
+                        cc_name, include_charon=False, for_charon_signer=True
+                    )
+                    signer_idx = SelectionMenu.get_selection(
+                        signer_opts,
+                        title=f'{OBOL_CHARON} Signer',
+                        subtitle=f'Select the validator client that will sign behind {OBOL_CHARON}:',
+                        show_exit_option=False,
+                    )
+                    vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
                 else:
-                    index = SelectionMenu.get_selection(vc_opts, title='Validator Client', subtitle='Use same client as CC?', show_exit_option=False)
-                    vc_name = resolve_vc_name(cc_name, vc_opts[index])
+                    vc_name = resolve_vc_name(cc_name, choice)
             else:
                 flags['validator'] = False
                 vc_name = None
@@ -181,6 +259,7 @@ elif role == "Custom Setup":
         flags['mevboost'] = (mev_prompt == 0)
     else:
         flags['mevboost'] = False
+    flags['builder_api'] = bool(flags.get('mevboost') or args.with_builder_api)
 
 
 else:
@@ -199,9 +278,35 @@ else:
             ec_name = args.ec
             cc_name = args.cc
     
-    # For predefined roles, VC is usually same as CC if validator is enabled
+    # For predefined roles, VC is usually same as CC if validator is enabled.
+    # Offer Obol Charon DV as an alternate validator mode.
     if flags['validator']:
-        vc_name = cc_name
+        if args.vc:
+            vc_name = args.vc
+        elif skip_prompts or flags.get("charon"):
+            vc_name = cc_name
+        else:
+            mode_opts = ["Same as CC", CHARON_VC_LABEL]
+            mode_idx = SelectionMenu.get_selection(
+                mode_opts,
+                title='Validator Client',
+                subtitle=f'Use same client as consensus, or {CHARON_VC_LABEL}?',
+                show_exit_option=False,
+            )
+            if is_charon_vc_choice(mode_opts[mode_idx]):
+                flags["charon"] = True
+                signer_opts = get_vc_options_for_cc(
+                    cc_name, include_charon=False, for_charon_signer=True
+                )
+                signer_idx = SelectionMenu.get_selection(
+                    signer_opts,
+                    title=f'{OBOL_CHARON} Signer',
+                    subtitle=f'Select the validator client that will sign behind {OBOL_CHARON}:',
+                    show_exit_option=False,
+                )
+                vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
+            else:
+                vc_name = cc_name
 
 # 4. Role-specific prompts
 beacon_node_address = args.vc_only_bn_address
@@ -218,6 +323,14 @@ _cc_needs_fee = cc_name in ['Nimbus', 'Teku', 'Lodestar', 'Grandine']
 _vc_needs_fee = flags['validator'] and vc_name not in ['Grandine (integrated)', None]
 if (_cc_needs_fee or _vc_needs_fee) and not FEE_RECIPIENT_ADDRESS:
     if "Lido CSM" not in role:
+        if skip_prompts:
+            print(
+                "ERROR: Fee recipient address is required. Set FEE_RECIPIENT_ADDRESS in "
+                "env / .env.overrides, pass --fee_address 0x..., or include it in CDVN "
+                "deposit-data.json.",
+                file=sys.stderr,
+            )
+            exit(1)
         FEE_RECIPIENT_ADDRESS = input("What is your fee recipient address? (0x...): ").strip()
 
 # Sync URL
@@ -263,6 +376,22 @@ params = {
 }
 
 env_vars = dict(os.environ)
+
+# Warn on Lodestar BN + incompatible VC (Charon v1.11+ matrix); interactive can abort.
+_bn_vc_warn = lodestar_bn_vc_incompatibility_message(
+    cc_name if args.switch_client != "execution" else None,
+    vc_name,
+)
+if _bn_vc_warn and not skip_prompts:
+    print(f"\nWARNING: {_bn_vc_warn}\n")
+    cont = SelectionMenu.get_selection(
+        ["Continue anyway", "Abort install"],
+        title="Lodestar BN compatibility",
+        subtitle=f"{OBOL_CHARON} v1.11+ marks this BN/VC pair as duties may fail.",
+        show_exit_option=False,
+    )
+    if cont != 0:
+        exit(0)
 
 # 5. Execute Install
 run_install(

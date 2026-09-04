@@ -80,8 +80,9 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 - **Plugins**: Aztec, Lido CSM, Node-checker, validator tools, monitoring, stats, and more
 - **Grafana Dashboards**: Built-in Ethereum node monitoring
 - **Troubleshooting Tools**: Built-in checks for common node issues with Node Checker
-- **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, or Failover setups
+- **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, Failover, or Obol Charon DV setups
 - **ePBS / Gloas migration**: Two-step MEV-Boost cutover under **MEV-Boost → ePBS migration** (Prysm and Lodestar TUI; [guide](docs/ePBS-migration.md))
+- **Obol Charon DV**: DVT middleware + CDVN migrate ([guide](docs/charon.md))
 
 ---
 
@@ -89,7 +90,7 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 
 When Gloas lands, builder relays move from the MEV-Boost sidecar onto the validator client. EthPillar splits that into **prepare** (copy relays to the VC, keep MEV-Boost running) and **complete** (stop MEV-Boost and drop the BN sidecar URL after the fork).
 
-See **[docs/ePBS-migration.md](docs/ePBS-migration.md)** for the TUI/CLI steps, what each client changes, and when it is safe to complete.
+See **[docs/ePBS-migration.md](docs/ePBS-migration.md)** for the TUI/CLI steps, what each client changes, Obol Charon notes, and when it is safe to complete.
 
 ---
 
@@ -146,6 +147,14 @@ Recommended next key steps:
 - Benchmark your node (Toolbox > Yet-Another-Bench-Script)
 - Set up validator keys (Validator Client > Generate / Import Validator Keys)
 - Finally, run the automated Node Checker to verify everything is up to spec (Security & Node Checks > Node Checker)
+
+---
+
+## 🪢 Obol Charon DV
+
+Charon is Obol’s DVT **middleware** between your beacon node and a signer VC. EthPillar installs `charon.service` and points the VC at `http://127.0.0.1:3600`.
+
+See **[docs/charon.md](docs/charon.md)** for install, CDVN migrate (`ethpillar --migrate_cdvn`), beacon-node notes, and Grafana/Prometheus wiring.
 
 ---
 

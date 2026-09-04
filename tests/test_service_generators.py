@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from deploy.common import BASE_DATA_DIR, INSTALL_DIR
 from deploy.mevboost import generate_mevboost_service
+from deploy.charon import generate_charon_service, CHARON_LOCK_FILE, CHARON_PRIVATE_KEY_FILE, CHARON_DATA_DIR
 from deploy.besu import generate_besu_service
 from deploy.geth import generate_geth_service
 from deploy.ethrex import generate_ethrex_service
@@ -59,6 +60,48 @@ SYNC_URL = "https://sync-mainnet.beaconcha.in"
 def check_constant_substitutions(result: str):
     assert "BASE_DATA_DIR" not in result
     assert "INSTALL_DIR" not in result
+
+# ═══════════════════════════════════════════════
+# Charon DVT middleware tests
+# ═══════════════════════════════════════════════
+
+class TestCharonService:
+    """Test Charon systemd unit generation."""
+
+    def test_mainnet_with_builder_api(self):
+        result = generate_charon_service(
+            "mainnet",
+            "http://127.0.0.1:5052",
+            builder_api=True,
+            p2p_external_ip="203.0.113.10",
+        )
+        assert "Description=Obol Charon DVT middleware for MAINNET" in result
+        assert "User=charon" in result
+        assert f"WorkingDirectory={CHARON_DATA_DIR}" in result
+        assert "--beacon-node-endpoints=http://127.0.0.1:5052" in result
+        assert "--validator-api-address=127.0.0.1:3600" in result
+        assert "--monitoring-address=127.0.0.1:3620" in result
+        assert "--p2p-tcp-address=0.0.0.0:3610" in result
+        assert f"--lock-file={CHARON_LOCK_FILE}" in result
+        assert f"--private-key-file={CHARON_PRIVATE_KEY_FILE}" in result
+        assert "--builder-api" in result
+        assert "--p2p-external-ip=203.0.113.10" in result
+        check_constant_substitutions(result)
+
+    def test_no_builder_without_external_ip(self):
+        result = generate_charon_service("hoodi", "http://192.168.1.5:5052")
+        assert "--beacon-node-endpoints=http://192.168.1.5:5052" in result
+        assert "--builder-api" not in result
+        assert "--p2p-external-ip" not in result
+
+    def test_nimbus_feature_set_enable(self):
+        result = generate_charon_service(
+            "mainnet",
+            "http://127.0.0.1:5052",
+            feature_set_enable="json_requests",
+        )
+        assert "--feature-set-enable=json_requests" in result
+
 
 # ═══════════════════════════════════════════════
 # MEV-Boost service tests
@@ -548,7 +591,7 @@ class TestTekuService:
         bn_addr = f'--beacon-node-api-endpoint=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
         result = generate_teku_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Teku Validator Client service for MAINNET" in result
         assert f"--validators-graffiti={GRAFFITI}" in result
@@ -607,7 +650,7 @@ class TestLodestarService:
         bn_addr = f'--beaconNodes=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
         result = generate_lodestar_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Lodestar Validator Client service for MAINNET" in result
         assert f"--graffiti={GRAFFITI}" in result
@@ -661,7 +704,7 @@ class TestNimbusService:
         bn_addr = f'--beacon-node=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
         result = generate_nimbus_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Nimbus Validator Client service for MAINNET" in result
         assert f"--graffiti={GRAFFITI}" in result
@@ -718,7 +761,7 @@ class TestLighthouseService:
         bn_addr = f'--beacon-nodes=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
         result = generate_lighthouse_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Lighthouse Validator Client service for MAINNET" in result
         assert f"--graffiti={GRAFFITI}" in result
@@ -732,6 +775,15 @@ class TestLighthouseService:
         bn_addr = '--beacon-nodes=http://192.168.1.123:5052'
         result = generate_lighthouse_vc_service("mainnet", GRAFFITI, bn_addr)
         assert "--beacon-nodes=http://192.168.1.123:5052" in result
+
+    def test_vc_behind_charon(self):
+        bn_addr = '--beacon-nodes=http://127.0.0.1:3600'
+        result = generate_lighthouse_vc_service(
+            "mainnet", GRAFFITI, bn_addr,
+            extra_parameters='--builder-proposals --distributed',
+        )
+        assert "--beacon-nodes=http://127.0.0.1:3600" in result
+        assert "--distributed" in result
 
     def test_vc_ephemery(self):
         bn_addr = f'--beacon-nodes=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
@@ -841,7 +893,7 @@ class TestPrysmService:
         from deploy.prysm import generate_prysm_vc_service
         result = generate_prysm_vc_service(
             "mainnet", GRAFFITI, bn_addr,
-            fee_parameters=fee_params, mev_parameters=mev_params
+            fee_parameters=fee_params, extra_parameters=mev_params
         )
         assert "Description=Prysm Validator Client service for MAINNET" in result
         assert f"--graffiti={GRAFFITI}" in result

@@ -69,7 +69,7 @@ def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
     )
 
 def generate_nimbus_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
-                               fee_parameters: str = '', mev_parameters: str = '') -> str:
+                               fee_parameters: str = '', extra_parameters: str = '') -> str:
     """Generate Nimbus validator client systemd service file content.
 
     Args:
@@ -77,7 +77,7 @@ def generate_nimbus_vc_service(eth_network: str, graffiti: str, beacon_node_addr
         graffiti: Graffiti string
         beacon_node_address: Beacon node address
         fee_parameters: Optional fee recipient parameters
-        mev_parameters: Optional MEV relay parameters
+        extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT)
 
     Returns:
         Service file content as a string
@@ -94,8 +94,8 @@ def generate_nimbus_vc_service(eth_network: str, graffiti: str, beacon_node_addr
     ]
     if fee_parameters:
         _args.append(fee_parameters.strip())
-    if mev_parameters:
-        _args.append(mev_parameters.strip())
+    if extra_parameters:
+        _args.append(extra_parameters.strip())
 
     _exec_start = form_exec_start(_args)
 
@@ -201,7 +201,7 @@ def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
     return service_file_path
 
 def install_nimbus_vc(nimbus_version: str, eth_network: str, cl_rest_port: str, graffiti: str, bn_addr_flag: str,
-                     fee_parameters: str = '', mev_parameters: str = '') -> str:
+                     fee_parameters: str = '', extra_parameters: str = '') -> str:
     """Generate and write Nimbus validator client service file.
 
     Args:
@@ -211,14 +211,14 @@ def install_nimbus_vc(nimbus_version: str, eth_network: str, cl_rest_port: str, 
         graffiti: Graffiti string.
         bn_addr_flag: Beacon node address flag.
         fee_parameters: Optional fee recipient parameters.
-        mev_parameters: Optional MEV relay parameters.
+        extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT).
 
     Returns:
         The path to the created service file.
     """
     service_content = generate_nimbus_vc_service(
         eth_network, graffiti, bn_addr_flag,
-        fee_parameters, mev_parameters
+        fee_parameters, extra_parameters
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')

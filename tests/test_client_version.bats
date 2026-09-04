@@ -7,11 +7,12 @@ setup() {
   export EXEC_SERVICE_FILE=$(mktemp)
   export CONSENSUS_SERVICE_FILE=$(mktemp)
   export VALIDATOR_SERVICE_FILE=$(mktemp)
+  export CHARON_SERVICE_FILE=$(mktemp)
 }
 
 teardown() {
   rm -rf "$TEST_BIN_DIR"
-  rm -f "$EXEC_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE"
+  rm -f "$EXEC_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
 }
 
 write_stub_binary() {
@@ -324,6 +325,37 @@ ExecStart=$stub
 EOF
   getClVcCurrentVersion Grandine cl
   [ "$VERSION" = "v2.0.4" ]
+}
+
+# ── parse_charon_version / parse_charon_commit ───────────────────────────────
+
+@test "parse_charon_version keeps v1.10.3 and does not collapse to 0.3" {
+  run parse_charon_version 'v1.10.3 [git_commit_hash=e60c838,git_commit_time=2026-06-24T09:43:48Z]'
+  [ "$status" -eq 0 ]
+  [ "$output" = "v1.10.3" ]
+}
+
+@test "parse_charon_commit reads git_commit_hash" {
+  run parse_charon_commit 'v1.10.3 [git_commit_hash=e60c838,git_commit_time=2026-06-24T09:43:48Z]'
+  [ "$status" -eq 0 ]
+  [ "$output" = "e60c838" ]
+}
+
+@test "parse_charon_version ignores charon --version help/error text" {
+  run parse_charon_version $'Usage:\n  charon [command]\n01:53:40.998 ERRO unknown flag: --version'
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "getCharonCurrentVersion reads charon from service stub" {
+  local stub="$TEST_BIN_DIR/charon"
+  write_stub_binary "$stub" '[[ "$1" == "version" ]] && echo "v1.10.3 [git_commit_hash=e60c838,git_commit_time=2026-06-24T09:43:48Z]"'
+  cat <<EOF > "$CHARON_SERVICE_FILE"
+ExecStart=$stub run
+EOF
+  getCharonCurrentVersion
+  [ "$VERSION" = "v1.10.3" ]
+  [ "$INSTALLED_COMMIT" = "e60c838" ]
 }
 
 # ── version_matches_latest ───────────────────────────────────────────────────

@@ -115,6 +115,12 @@ teardown() {
     grep -q "apt-get update" "$COMMAND_LOG"
 }
 
+@test "install-node.sh: forwards --skip_prompts true to deploy-node.py" {
+    run bash deploy/install-node.sh "true" "--install_config" "Validator Client Only" "--skip_prompts" "true"
+    [ "$status" -eq 0 ]
+    grep -q "\-\-skip_prompts true" "$COMMAND_LOG"
+}
+
 @test "install-node.sh: monitoring NOT prompted when --skip_prompts true" {
     # When --skip_prompts true is in extra_args, non_interactive=true and whiptail should not be called
     create_mock "whiptail"

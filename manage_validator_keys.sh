@@ -163,6 +163,89 @@ function _getAmount(){
     done
 }
 
+function importCharonKeyShares(){
+    # Optional: pass "skip_confirm" to run after Import .charon already asked.
+    local skip_confirm="${1:-}"
+    local CHARON_KEYS
+    CHARON_KEYS="$(getCharonValidatorKeysDir)"
+    if ! charonKeysharesPresent; then
+        whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
+"No Charon key shares found at:
+${CHARON_KEYS}
+
+Copy your CDVN (or DKG) .charon folder first:
+  EthPillar → ${OBOL_CHARON_DV} → Import .charon cluster folder
+  (or: sudo cp -a /path/to/.charon/. $(getCharonClusterDir)/
+       sudo chown -R charon:charon $(getCharonClusterDir))
+
+Then import the key shares into the validator client." 18 78
+        return
+    fi
+    getClientVC
+    if [[ -z "${VC:-}" ]]; then
+        getValidatorClient >/dev/null 2>&1 || true
+        VC="${VALIDATOR_CLIENT:-}"
+    fi
+    if [[ -z "${VC:-}" ]]; then
+        whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
+"Could not detect the validator client from validator.service.
+Install a signer VC first, then retry." 10 70
+        return 1
+    fi
+    if [[ "$skip_confirm" != "skip_confirm" ]]; then
+        if ! whiptail --title "${OBOL_IMPORT_KEY_SHARES}" --yesno \
+"Import EIP-2335 key shares from:
+${CHARON_KEYS}
+
+Signer VC: ${VC}
+
+These are cluster key shares (not full solo keys). Import uses DKG
+keystore-*.txt passphrases (no password prompt). After import, Charon
+is started, then the validator client.
+
+Continue?" 18 78; then
+            return
+        fi
+    fi
+    ohai "Importing ${OBOL_MARK} Obol Charon key shares into ${VC}…"
+    if [[ "$VC" == "Grandine" ]]; then
+        sudo systemctl stop consensus 2>/dev/null || true
+    else
+        sudo systemctl stop validator 2>/dev/null || true
+    fi
+    set +e
+    PYTHONPATH="${BASE_DIR}" python3 - <<PY
+from deploy.charon import sync_charon_keyshares_to_vc
+result = sync_charon_keyshares_to_vc("${VC}", force=True)
+print(result)
+status = result.get("status")
+if status == "failed":
+    raise SystemExit(1)
+if status == "skipped" and not str(result.get("reason", "")).startswith("destination already has"):
+    raise SystemExit(1)
+if status == "unsupported":
+    raise SystemExit(1)
+PY
+    local rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
+"Key share import into ${VC} failed. Check the terminal output.
+Do not use solo-key Import (loadKeys) for Charon shares." 12 70
+        return 1
+    fi
+    ensureCharonBeforeValidator
+    if [[ "$VC" == "Grandine" ]]; then
+        sudo systemctl start consensus
+    else
+        sudo systemctl start validator
+    fi
+    whiptail --title "${OBOL_CHARON_KEY_SHARES}" --msgbox \
+"Imported Charon key shares into ${VC}.
+Start order: Charon, then the validator client." 10 70
+    promptViewLogs "default"
+}
+
 function importValidatorKeys(){
     [[ $# -eq 1 ]] && local ARGUMENT=$1 && checkLido "$1" || ARGUMENT="default"
     KEYFOLDER=$(whiptail --title "Import Validator Keys from Offline Generation or Backup" --inputbox "$MSG_PATH" 16 78 --ok-button "Submit" 3>&1 1>&2 2>&3)
@@ -429,6 +512,7 @@ function loadKeys(){
 
    ohai "Starting validator"
    if [[ $1 == "default" ]]; then
+        ensureCharonBeforeValidator
         if [[ "$VC" == "Grandine" ]]; then
             sudo systemctl start consensus
         else
@@ -1168,19 +1252,9 @@ menuKeymanager() {
 }
 
 menuMain(){
-# Define the options for the main menu
-OPTIONS=(
-  1 "Generate new validator keys"
-  2 "Import validator keys from offline key generation or backup"
-  3 "Add new or regenerate existing validator keys from Secret Recovery Phrase"
-  - ""
-  10 "List Keys (Keymanager API)"
-  11 "Import Keystores (Keymanager API)"
-  12 "Delete Keystores (Keymanager API)"
-  13 "Enable Keymanager API"
-  - ""
-  99 "Exit"
-)
+# Solo key tooling is unsafe for Charon DV shares — hide it when Charon is installed.
+buildValidatorKeyMenuOptions
+OPTIONS=("${VALIDATOR_KEY_MENU_OPTIONS[@]}")
 
 while true; do
     # Display the main menu and get the user's choice
@@ -1198,7 +1272,11 @@ while true; do
     # Handle the user's choice
     case $CHOICE in
       1)
-        generateNewValidatorKeys
+        if isCharonEnabled; then
+          importCharonKeyShares
+        else
+          generateNewValidatorKeys
+        fi
         ;;
       2)
         importValidatorKeys
@@ -1225,16 +1303,51 @@ while true; do
 done
 }
 
+# Populate VALIDATOR_KEY_MENU_OPTIONS for menuMain (and bats).
+# Charon installs hide solo Generate/Import/Restore.
+buildValidatorKeyMenuOptions(){
+  VALIDATOR_KEY_MENU_OPTIONS=()
+  if isCharonEnabled; then
+    VALIDATOR_KEY_MENU_OPTIONS+=(
+      1 "${OBOL_IMPORT_KEY_SHARES} ($(getCharonClusterDir))"
+    )
+  else
+    VALIDATOR_KEY_MENU_OPTIONS+=(
+      1 "Generate new validator keys"
+      2 "Import validator keys from offline key generation or backup"
+      3 "Add new or regenerate existing validator keys from Secret Recovery Phrase"
+    )
+  fi
+  VALIDATOR_KEY_MENU_OPTIONS+=(
+    - ""
+    10 "List Keys (Keymanager API)"
+    11 "Import Keystores (Keymanager API)"
+    12 "Delete Keystores (Keymanager API)"
+    13 "Enable Keymanager API"
+    - ""
+    99 "Exit"
+  )
+}
+
 # Args:
 #   (none)              → full key management menu
 #   true | plugin_*     → skip menu (CSM plugin source mode)
 #   helpers-only        → define functions only (no download/menu; for unit tests)
 #   keymanager          → open Keymanager API submenu only
+#   charon-import       → import Obol Charon key shares only
+#   charon-import-yes   → same, skip the yes/no confirm (caller already asked)
 _skip_or_mode="${1:-}"
 setMessage
 if [[ "$_skip_or_mode" == "keymanager" ]]; then
     checkLido
     menuKeymanager
+elif [[ "$_skip_or_mode" == "charon-import" ]]; then
+    downloadEthstakerDepositCli
+    checkLido
+    importCharonKeyShares
+elif [[ "$_skip_or_mode" == "charon-import-yes" ]]; then
+    checkLido
+    importCharonKeyShares skip_confirm
 elif [[ "$_skip_or_mode" == "helpers-only" ]]; then
     # Unit tests / pure source — do not download deposit-cli or open menus.
     :

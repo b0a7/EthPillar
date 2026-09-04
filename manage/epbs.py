@@ -49,10 +49,46 @@ from manage.service_parse import (
 SIDECAR_MARKERS = ("127.0.0.1:18550", "localhost:18550", "[::1]:18550")
 GWEI_PER_ETH = Decimal("1000000000")
 PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
-COMPLETE_ROLLBACK_HINT = (
-    "If you completed too early: restore the newest consensus.service.bak.epbs.* "
-    "over consensus.service, then: sudo systemctl enable --now mevboost && "
-    "sudo systemctl daemon-reload && sudo systemctl restart consensus"
+
+
+def complete_rollback_hint(fs: "EpbsFilesystem") -> str:
+    """Build a complete-step rollback hint that only names installed units.
+
+    Args:
+        fs: Filesystem used to test whether consensus/charon/validator/mevboost
+            units exist.
+
+    Returns:
+        Operator-facing rollback text. Restore/restart lists omit missing units.
+    """
+    restore: List[str] = []
+    if fs.exists(fs.unit_path("consensus")):
+        restore.append("consensus.service.bak.epbs.* over consensus.service")
+    if fs.exists(fs.unit_path("charon")):
+        restore.append("charon.service.bak.epbs.* over charon.service")
+    restore_txt = " and ".join(restore) if restore else "the newest *.bak.epbs.* backups"
+
+    steps: List[str] = []
+    if fs.exists(fs.unit_path("mevboost")):
+        steps.append("sudo systemctl enable --now mevboost")
+    steps.append("sudo systemctl daemon-reload")
+    restart = [
+        name
+        for name in ("consensus", "charon", "validator")
+        if fs.exists(fs.unit_path(name))
+    ]
+    if restart:
+        steps.append("sudo systemctl restart " + " ".join(restart))
+    return (
+        "If you completed too early: restore the newest "
+        f"{restore_txt}, then: " + " && ".join(steps)
+    )
+
+
+CHARON_EPBS_NOTE = (
+    "Obol Charon has no stable ePBS/Gloas release yet; EthPillar removes "
+    "--builder-api on complete (MEV-Boost proxy path). Watch "
+    "https://github.com/ObolNetwork/charon/releases for upstream support."
 )
 COMPLETE_REFUSED = (
     "Complete refused: this validator has no relay list to replace MEV-Boost. "
@@ -158,6 +194,7 @@ class MigrationPlan:
         services_to_restart: Unit names to bounce after ``--apply``.
         disable_mevboost: True when complete will stop/disable MEV-Boost.
         applied: True after a successful ``--apply`` write.
+        rollback_hint: Complete-only operator rollback text (installed units only).
     """
 
     command: str
@@ -169,6 +206,7 @@ class MigrationPlan:
     services_to_restart: List[str] = field(default_factory=list)
     disable_mevboost: bool = False
     applied: bool = False
+    rollback_hint: str = ""
 
     def format_text(self) -> str:
         """Render a TUI/CLI dry-run or apply summary.
@@ -194,8 +232,8 @@ class MigrationPlan:
         if self.disable_mevboost:
             lines.append("MEV-Boost will be stopped and disabled (unit file kept).")
             lines.append("")
-        if self.command == "complete":
-            lines.append(COMPLETE_ROLLBACK_HINT)
+        if self.command == "complete" and self.rollback_hint:
+            lines.append(self.rollback_hint)
             lines.append("")
         if self.services_to_restart:
             lines.append("Restart after apply: " + ", ".join(self.services_to_restart))
@@ -762,6 +800,65 @@ def strip_bn_sidecar(bn_content: str, bn_client: str) -> str:
     return _rebuild_unit(bn_content, args)
 
 
+def charon_has_builder_api(charon_content: str) -> bool:
+    """Return True when ``charon.service`` ExecStart includes ``--builder-api``.
+
+    Args:
+        charon_content: Full ``charon.service`` unit file body.
+    """
+    args = normalize_cli_args(parse_unit(charon_content).exec_args)
+    return has_flag(args, "--builder-api")
+
+
+def strip_charon_builder_api(charon_content: str) -> str:
+    """Remove ``--builder-api`` from Charon (MEV-Boost builder proxy until Gloas).
+
+    Args:
+        charon_content: Full ``charon.service`` unit file body.
+
+    Returns:
+        Updated unit content with ``--builder-api`` removed from ``ExecStart``.
+    """
+    unit = parse_unit(charon_content)
+    args = normalize_cli_args(unit.exec_args)
+    args = remove_flags(args, "--builder-api")
+    return _rebuild_unit(charon_content, args)
+
+
+def _complete_charon_builder_api(
+    fs: EpbsFilesystem,
+    plan: MigrationPlan,
+    apply: bool,
+) -> None:
+    """Strip Charon ``--builder-api`` on ePBS complete when ``charon.service`` exists.
+
+    Args:
+        fs: Filesystem abstraction (production or test double).
+        plan: Migration plan to append actions to.
+        apply: When False, record planned changes only.
+    """
+    charon_path = fs.unit_path("charon")
+    if not fs.exists(charon_path):
+        return
+    ch_content = fs.read_text(charon_path) or ""
+    if not charon_has_builder_api(ch_content):
+        plan.actions.append(
+            PlanAction(charon_path, "charon: no --builder-api present")
+        )
+        return
+    new_ch = strip_charon_builder_api(ch_content)
+    if _write_unit_if_changed(fs, charon_path, ch_content, new_ch, apply):
+        plan.actions.append(
+            PlanAction(charon_path, "remove --builder-api (MEV-Boost proxy path)")
+        )
+        if "charon" not in plan.services_to_restart:
+            plan.services_to_restart.append("charon")
+    plan.warnings.append(CHARON_EPBS_NOTE)
+    plan.warnings.append(
+        "After complete, restart order: consensus → charon → validator."
+    )
+
+
 def _load_relays(fs: EpbsFilesystem) -> RelaysConfig:
     """Read and validate relays from ``mevboost.service``.
 
@@ -824,6 +921,17 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     plan.warnings.append(
         "Do not stop MEV-Boost yet. Pre-Gloas proposals still use the sidecar."
     )
+    charon_path = fs.unit_path("charon")
+    if fs.exists(charon_path):
+        ch_content = fs.read_text(charon_path) or ""
+        if charon_has_builder_api(ch_content):
+            plan.actions.append(
+                PlanAction(
+                    charon_path,
+                    "unchanged: keep --builder-api until complete (MEV-Boost path)",
+                )
+            )
+        plan.warnings.append(CHARON_EPBS_NOTE)
     if relays.min_bid:
         plan.actions.append(PlanAction("mevboost min-bid", relays.min_bid))
     plan.actions.append(
@@ -1005,6 +1113,8 @@ def complete(
     else:
         plan.actions.append(PlanAction(bn_path, "no sidecar builder URL present"))
 
+    _complete_charon_builder_api(fs, plan, apply)
+
     mev_path = fs.unit_path("mevboost")
     if fs.exists(mev_path):
         plan.actions.append(
@@ -1024,6 +1134,7 @@ def complete(
         pass
 
     plan.applied = apply
+    plan.rollback_hint = complete_rollback_hint(fs)
     return plan
 
 
@@ -1087,6 +1198,14 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
             "BN sidecar flags: "
             + ("present" if stripped != bn_content else "already removed")
         )
+    charon_path = fs.unit_path("charon")
+    if fs.exists(charon_path):
+        ch_content = fs.read_text(charon_path) or ""
+        lines.append(
+            "Charon: installed  builder-api="
+            + ("yes" if charon_has_builder_api(ch_content) else "no")
+        )
+        lines.append(CHARON_EPBS_NOTE)
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1109,8 +1228,8 @@ def _print_plan(plan: MigrationPlan, as_json: bool) -> None:
             "disable_mevboost": plan.disable_mevboost,
             "applied": plan.applied,
         }
-        if plan.command == "complete":
-            payload["rollback"] = COMPLETE_ROLLBACK_HINT
+        if plan.command == "complete" and plan.rollback_hint:
+            payload["rollback"] = plan.rollback_hint
         print(json.dumps(payload, indent=2))
         return
     print(plan.format_text(), end="")

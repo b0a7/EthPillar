@@ -14,17 +14,21 @@ from deploy.nimbus import generate_nimbus_bn_service, generate_nimbus_vc_service
 from deploy.prysm import generate_prysm_bn_service, generate_prysm_vc_service
 from deploy.teku import generate_teku_bn_service, generate_teku_vc_service
 from deploy.grandine import generate_grandine_bn_service
+from deploy.charon import generate_charon_service
 from manage.epbs import (
+    CHARON_EPBS_NOTE,
     COMPLETE_REFUSED,
-    COMPLETE_ROLLBACK_HINT,
     EpbsError,
+    complete_rollback_hint,
     EpbsFilesystem,
+    charon_has_builder_api,
     complete,
     eth_min_bid_to_gwei,
     parse_mevboost_relays,
     prepare,
     status,
     strip_bn_sidecar,
+    strip_charon_builder_api,
     support_level,
 )
 from manage.service_parse import get_flag_value, has_flag, normalize_cli_args, parse_unit
@@ -131,7 +135,7 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
             "ep",
             "--beacon-rest-api-provider=http://127.0.0.1:5052",
             fee_parameters=f"--suggested-fee-recipient={FEE}",
-            mev_parameters="--enable-builder",
+            extra_parameters="--enable-builder",
         ),
     )
 
@@ -171,7 +175,11 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
     assert not has_flag(_args(bn), "--http-mev-relay")
     # VC relays remain
     assert json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))["default_config"]["builder"]["relays"]
-    assert COMPLETE_ROLLBACK_HINT in done.format_text()
+    hint = complete_rollback_hint(fs)
+    assert hint in done.format_text()
+    assert "restart consensus validator" in hint
+    assert "charon" not in hint
+    assert "enable --now mevboost" in hint
 
     # Idempotent complete + status after a successful cutover
     again_done = complete(fs, apply=True)
@@ -195,6 +203,80 @@ def test_eth_min_bid_to_gwei() -> None:
         eth_min_bid_to_gwei("-0.1")
 
 
+def test_prysm_charon_prepare_and_complete(tmp_path: Path) -> None:
+    """Charon DVT: prepare keeps --builder-api; complete strips it with BN sidecar."""
+    fs = _fs(tmp_path)
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "charon",
+        generate_charon_service(
+            "mainnet",
+            "http://127.0.0.1:5052",
+            builder_api=True,
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:3600",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--enable-builder",
+        ),
+    )
+
+    prep = prepare(fs, apply=True)
+    assert prep.applied
+    ch = Path(fs.unit_path("charon")).read_text(encoding="utf-8")
+    assert charon_has_builder_api(ch)
+    assert any("unchanged: keep --builder-api" in a.detail for a in prep.actions)
+    assert CHARON_EPBS_NOTE in prep.warnings
+
+    done = complete(fs, apply=True)
+    assert done.applied
+    ch_after = Path(fs.unit_path("charon")).read_text(encoding="utf-8")
+    assert not charon_has_builder_api(ch_after)
+    assert "charon" in done.services_to_restart
+    assert CHARON_EPBS_NOTE in done.warnings
+    hint = complete_rollback_hint(fs)
+    assert hint in done.format_text()
+    assert "charon.service.bak.epbs" in hint
+    assert "restart consensus charon validator" in hint
+    st = status(fs)
+    assert "Charon: installed" in st
+    assert "builder-api=no" in st
+
+
+def test_complete_rollback_hint_omits_missing_units(tmp_path: Path) -> None:
+    """Rollback hint only names units that exist on the filesystem."""
+    fs = _fs(tmp_path)
+    _write(fs, "consensus", "[Service]\nExecStart=/bin/true\n")
+    hint = complete_rollback_hint(fs)
+    assert "consensus.service.bak.epbs" in hint
+    assert "restart consensus" in hint
+    assert "charon" not in hint
+    assert "validator" not in hint
+    assert "mevboost" not in hint
+
+
+def test_strip_charon_builder_api() -> None:
+    unit = generate_charon_service("mainnet", "http://127.0.0.1:5052", builder_api=True)
+    assert charon_has_builder_api(unit)
+    stripped = strip_charon_builder_api(unit)
+    assert not charon_has_builder_api(stripped)
+
+
 def test_lodestar_prepare_adds_builder_urls(tmp_path: Path) -> None:
     """Lodestar prepare adds ``--builder.urls`` when ``--help`` lists the flag."""
     fs = _fs(tmp_path)
@@ -216,7 +298,7 @@ def test_lodestar_prepare_adds_builder_urls(tmp_path: Path) -> None:
             "ep",
             "--beaconNodes=http://127.0.0.1:5052",
             fee_parameters=f"--suggestedFeeRecipient={FEE}",
-            mev_parameters="--builder",
+            extra_parameters="--builder",
         ),
     )
     plan = prepare(fs, apply=True)
@@ -255,7 +337,7 @@ def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) ->
             "mainnet",
             "ep",
             "--beacon-nodes=http://127.0.0.1:5052",
-            mev_parameters="--builder-proposals",
+            extra_parameters="--builder-proposals",
         ),
     )
     plan = prepare(fs, apply=True)
@@ -297,7 +379,7 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
             "ep",
             "--beaconNodes=http://127.0.0.1:5052",
             fee_parameters=f"--suggestedFeeRecipient={FEE}",
-            mev_parameters="--builder",
+            extra_parameters="--builder",
         ),
     )
     before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
@@ -324,7 +406,7 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
                 "ep",
                 "--beacon-node-api-endpoint=http://127.0.0.1:5052",
                 fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
-                mev_parameters="--validators-builder-registration-default-enabled=true",
+                extra_parameters="--validators-builder-registration-default-enabled=true",
             ),
             "--builder-endpoint",
         ),
@@ -338,7 +420,7 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
                 "mainnet",
                 "ep",
                 "--beacon-node=http://127.0.0.1:5052",
-                mev_parameters="--payload-builder=true",
+                extra_parameters="--payload-builder=true",
             ),
             "--payload-builder-url",
         ),
@@ -456,7 +538,7 @@ def test_cli_prepare_prysm(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
             "ep",
             "--beacon-rest-api-provider=http://127.0.0.1:5052",
             fee_parameters=f"--suggested-fee-recipient={FEE}",
-            mev_parameters="--enable-builder",
+            extra_parameters="--enable-builder",
         )
     )
     rc = main([
@@ -493,7 +575,7 @@ def test_status_reports_prysm(tmp_path: Path) -> None:
             "ep",
             "--beacon-rest-api-provider=http://127.0.0.1:5052",
             fee_parameters=f"--suggested-fee-recipient={FEE}",
-            mev_parameters="--enable-builder",
+            extra_parameters="--enable-builder",
         ),
     )
     text = status(fs)
@@ -525,7 +607,7 @@ def test_complete_refused_on_prysm_without_prepare(tmp_path: Path) -> None:
             "ep",
             "--beacon-rest-api-provider=http://127.0.0.1:5052",
             fee_parameters=f"--suggested-fee-recipient={FEE}",
-            mev_parameters="--enable-builder",
+            extra_parameters="--enable-builder",
         ),
     )
     with pytest.raises(EpbsError, match="Complete refused") as exc:

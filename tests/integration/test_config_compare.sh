@@ -44,7 +44,7 @@ vc = lighthouse.generate_lighthouse_vc_service(
     "EthPillarTest",
     "--beacon-nodes=http://127.0.0.1:5052",
     fee_parameters="--suggested-fee-recipient=0x1111111111111111111111111111111111111111",
-    mev_parameters="--builder-proposals",
+    extra_parameters="--builder-proposals",
 )
 mev = mevboost.generate_mevboost_service(network, "0.006", relays)
 

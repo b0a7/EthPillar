@@ -81,7 +81,7 @@ def generate_prysm_vc_service(
     graffiti: str,
     beacon_node_address: str,
     fee_parameters: str = '',
-    mev_parameters: str = '',
+    extra_parameters: str = '',
     network_override: Optional[str] = None,
     beacon_rpc_provider: Optional[str] = "127.0.0.1:4000",
 ) -> str:
@@ -96,7 +96,7 @@ def generate_prysm_vc_service(
         beacon_node_address: Beacon node address parameter (usually full flag
             string from orchestrator, e.g. ``--beacon-rest-api-provider=...``)
         fee_parameters: Optional fee recipient parameters
-        mev_parameters: Optional MEV relay parameters
+        extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT)
         network_override: Optional network flag override
         beacon_rpc_provider: Optional gRPC beacon endpoint (``host:port``).
             Set when the consensus client is Prysm (default ``127.0.0.1:4000``).
@@ -142,8 +142,8 @@ def generate_prysm_vc_service(
     )
     if fee_parameters:
         _args.append(fee_parameters.strip())
-    if mev_parameters:
-        _args.append(mev_parameters.strip())
+    if extra_parameters:
+        _args.append(extra_parameters.strip())
 
     _exec_start = form_exec_start(_args)
 
@@ -243,7 +243,7 @@ def install_prysm_vc(
     graffiti: str,
     beacon_node_address: str,
     fee_parameters: str = '',
-    mev_parameters: str = '',
+    extra_parameters: str = '',
     beacon_rpc_provider: Optional[str] = "127.0.0.1:4000",
 ) -> str:
     """Generate and write Prysm validator client service file.
@@ -256,7 +256,7 @@ def install_prysm_vc(
         graffiti,
         beacon_node_address,
         fee_parameters,
-        mev_parameters,
+        extra_parameters,
         beacon_rpc_provider=beacon_rpc_provider,
     )
     service_file_path = '/etc/systemd/system/validator.service'

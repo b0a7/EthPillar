@@ -77,8 +77,9 @@ initializeNetwork(){
 }
 
 function printInstalledVersions() {
-  local _VC _CL _EL _MB _mb_version el_for_version
+  local _VC _CL _EL _MB _CH _mb_version el_for_version
   local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+  local charon_svc="${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}"
 
   getClient
 
@@ -116,16 +117,28 @@ function printInstalledVersions() {
     _MB="Mev-boost: Not Installed"
   fi
 
-  printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\nEthPillar: %s\n' \
-    "$_CL" "$_EL" "$_VC" "$_MB" "$EP_VERSION"
+  if [[ -f "$charon_svc" ]]; then
+    getCharonCurrentVersion || true
+    _CH="${OBOL_CHARON}: ${VERSION:-unknown}"
+  else
+    _CH=""
+  fi
+
+  if [[ -n "$_CH" ]]; then
+    printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\n%s\nEthPillar: %s\n' \
+      "$_CL" "$_EL" "$_VC" "$_MB" "$_CH" "$EP_VERSION"
+  else
+    printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\nEthPillar: %s\n' \
+      "$_CL" "$_EL" "$_VC" "$_MB" "$EP_VERSION"
+  fi
 }
 
 menuMain(){
 
 # Define systemctl services
-_SERVICES=("execution" "consensus" "validator" "mevboost" "csm_nimbusvalidator" "dora")
-_SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "CSM Nimbus Validator Plugin" "Dora the Explorer")
-_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "💧" "🔎")
+_SERVICES=("execution" "consensus" "validator" "mevboost" "charon" "csm_nimbusvalidator" "dora")
+_SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "Obol Charon DV" "CSM Nimbus Validator Plugin" "Dora the Explorer")
+_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "${OBOL_INF}" "💧" "🔎")
 
 function testAndServiceCommand() {
   for _service in "${_SERVICES[@]}"; do
@@ -142,7 +155,8 @@ function testAndPluginCommand() {
 
 function buildMenu() {
   for (( i=0; i<${#_SERVICES[@]}; i++ )); do
-    test -f /etc/systemd/system/"${_SERVICES[i]}".service && OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
+    test -f /etc/systemd/system/"${_SERVICES[i]}".service \
+      && OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
   done
 }
 
@@ -208,6 +222,9 @@ while true; do
         ;;
       ⚡)
         submenuMEV-Boost
+        ;;
+      "${OBOL_INF}")
+        submenuCharon
         ;;
       💧)
         submenuPluginCSMValidator
@@ -286,7 +303,7 @@ while true; do
         if [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.service ]]; then
               cd  /opt/ethpillar/aztec && docker compose logs -f --tail=233
         fi
-        view_journal_logs -u validator -u consensus -u execution -u mevboost -u csm_nimbusvalidator --no-hostname -f
+        view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f
         ;;
       📜)
         export_logs
@@ -537,7 +554,13 @@ while true; do
     fi
     SUBOPTIONS+=(
       - ""
-      10 "Generate / Import Validator Keys"
+    )
+    if isCharonEnabled; then
+      SUBOPTIONS+=(10 "${OBOL_IMPORT_KEY_SHARES}")
+    else
+      SUBOPTIONS+=(10 "Generate / Import Validator Keys")
+    fi
+    SUBOPTIONS+=(
       11 "View validator pubkeys and indices"
       12 "🆕 Validator Actions: Compound/consolidate, partial withdrawals, top up, force exit"
       13 "Keymanager API: List / Import / Delete / Enable"
@@ -593,7 +616,11 @@ while true; do
         runScript update_validator.sh
         ;;
       10)
-        runScript manage_validator_keys.sh
+        if isCharonEnabled; then
+          runScript manage_validator_keys.sh charon-import
+        else
+          runScript manage_validator_keys.sh
+        fi
         ;;
       11)
         getPubKeys && getIndices
@@ -629,6 +656,65 @@ while true; do
         checkValidatorAttestationInclusion
         ;;
       99)
+        break
+        ;;
+    esac
+done
+}
+
+submenuCharon(){
+while true; do
+    getBackTitle
+    SUBOPTIONS=(
+      1 "View logs"
+      2 "Start Charon"
+      3 "Stop Charon"
+      4 "Restart Charon"
+      5 "Edit configuration"
+      6 "Update to latest release"
+      7 "Import .charon cluster folder"
+      - ""
+      9 "Back to main menu"
+    )
+
+    SUBCHOICE=$(whiptail --clear --cancel-button "Back" \
+      --backtitle "$BACKTITLE" \
+      --title "${OBOL_CHARON_DV}" \
+      --menu "Choose one of the following options:" \
+      0 0 0 \
+      "${SUBOPTIONS[@]}" \
+      3>&1 1>&2 2>&3)
+
+    if [ $? -gt 0 ]; then
+        break
+    fi
+
+    case $SUBCHOICE in
+      1)
+        view_journal_logs -fu charon
+        ;;
+      2)
+        sudo service charon start
+        ;;
+      3)
+        sudo service charon stop
+        ;;
+      4)
+        sudo service charon restart
+        ;;
+      5)
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/charon.service \
+          "Do you want to restart Charon?" \
+          charon
+        ;;
+      6)
+        runScript update_charon.sh
+        ;;
+      7)
+        importCharonClusterFolder
+        ;;
+      9)
         break
         ;;
     esac
@@ -868,6 +954,7 @@ while true; do
         "${EDITOR}" .env.overrides
         # Reload environment variables overrides
         [[ -f ./.env.overrides ]] && source ./.env.overrides
+        reloadEnvOverridesAndMaybeRestart
         ;;
       📝)
         compareSystemdDefaults
@@ -1097,10 +1184,11 @@ while true; do
       6 "EC RPC Node: Allow local network access to RPC port 8545"
       7 "CC RPC Node: Allow local network access to RPC port 5052"
       8 "Monitoring: Allow local network access to Grafana port 3000"
-      9 "Disable firewall"
-      10 "Reset firewall rules: Delete all rules"
+      9 "${OBOL_CHARON}: Allow P2P port (from charon.service)"
+      10 "Disable firewall"
+      11 "Reset firewall rules: Delete all rules"
       - ""
-      11 "Whitelist an IP address: Allow full access to this node"
+      12 "Whitelist an IP address: Allow full access to this node"
       - ""
       99 "Back to main menu"
     )
@@ -1184,6 +1272,7 @@ while true; do
         [[ $EL == "Reth" ]] && sudo ufw allow 30304/udp comment 'Allow reth discv5 port'
         [[ $EL =~ "Erigon" ]] && sudo ufw allow 42069 comment 'Allow erigon torrent port'
         [[ $EL =~ "Erigon" ]] && sudo ufw allow 30304 comment 'Allow erigon p2p port'
+        ufwAllowCharonP2p
         sudo ufw enable
         sudo ufw status numbered
         ohai "UFW firewall enabled."
@@ -1205,17 +1294,26 @@ while true; do
         sleep 2
         ;;
       9)
+        if isCharonEnabled; then
+            ufwAllowCharonP2p
+            ohai "Charon P2P port $(getCharonP2pPort) allowed (TCP)."
+        else
+            whiptail --title "${OBOL_CHARON}" --msgbox "charon.service is not installed.\nInstall ${OBOL_CHARON} first, or use option 2 to allow a port manually." 10 70
+        fi
+        sleep 2
+        ;;
+      10)
         sudo ufw disable
         ohai "UFW firewall disabled."
         sleep 2
         ;;
-      10)
+      11)
         sudo ufw disable
         sudo ufw --force reset
         ohai "UFW firewall reset."
         sleep 2
         ;;
-      11)
+      12)
         read -p "Enter the IP address to whitelist: " ip_whitelist
         sudo ufw allow from $ip_whitelist
         ohai "IP address whitelisted."
@@ -1633,40 +1731,64 @@ done
 
 function getBackTitle(){
     getClient
-    # Latest block
-    latest_block_number=$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
-    if [[ -n "$latest_block_number" && "$latest_block_number" != "null" && "$latest_block_number" != "0x0" ]]; then LB=$(printf '🧱 Block %d' "$latest_block_number"); else LB="🔄 EL Syncing"; fi
+    local latest_block_number="" LB="" GP="N/A" LS="" latest_gas_price=""
 
-    # Latest slot
-    LS=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/syncing" -H "accept: application/json" | jq -r '.data.head_slot')
-    [[ "$LS" == "0" ]] && LS="N/A | 🔄 CL Syncing"
+    # Skip EL RPC when no local execution client (VC-only / Charon nodes).
+    if [[ -f /etc/systemd/system/execution.service ]]; then
+        latest_block_number=$(curl -sf -m 2 -X POST -H "Content-Type: application/json" \
+            --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+            "${EL_RPC_ENDPOINT}" 2>/dev/null | jq -r '.result')
+        if [[ -n "$latest_block_number" && "$latest_block_number" != "null" && "$latest_block_number" != "0x0" ]]; then
+            LB=$(printf '🧱 Block %d' "$latest_block_number")
+        else
+            LB="🔄 EL Syncing"
+        fi
 
-    # Format gas price
-    GP="N/A"
-    latest_gas_price=$(curl -s -X POST -H "Content-Type: application/json" --data '{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":73}' "${EL_RPC_ENDPOINT}" | jq -r '.result')
-    if [[ -n "$latest_gas_price" && "$latest_gas_price" != "null" && "$latest_gas_price" =~ ^0x[0-9a-fA-F]+$ ]]; then
-      WEI=$(printf '%d' "$latest_gas_price");
-      if ((1000000000<="$WEI" && "$WEI"<=1000000000000)); then
-          GP="$(echo "scale=1; $WEI / 1000000000" | bc) Gwei"
-      elif ((1000000<="$WEI" && "$WEI"<=1000000000)); then
-          GP="$(echo "scale=1; $WEI / 1000000" | bc) Mwei"
-      elif ((1000<="$WEI" && "$WEI"<=1000000)); then
-          GP="$(echo "scale=1; $WEI / 1000" | bc) Kwei"
-      elif ((1<="$WEI" && "$WEI"<=1000)); then
-          GP="$(echo "scale=1; $WEI / 1" | bc) wei"
-      else
-          GP="🔄 Gas N/A - Syncing"
-      fi
+        latest_gas_price=$(curl -sf -m 2 -X POST -H "Content-Type: application/json" \
+            --data '{"jsonrpc":"2.0","method":"eth_gasPrice","params":[],"id":73}' \
+            "${EL_RPC_ENDPOINT}" 2>/dev/null | jq -r '.result')
+        if [[ -n "$latest_gas_price" && "$latest_gas_price" != "null" && "$latest_gas_price" =~ ^0x[0-9a-fA-F]+$ ]]; then
+            WEI=$(printf '%d' "$latest_gas_price")
+            if ((1000000000<="$WEI" && "$WEI"<=1000000000000)); then
+                GP="$(echo "scale=1; $WEI / 1000000000" | bc) Gwei"
+            elif ((1000000<="$WEI" && "$WEI"<=1000000000)); then
+                GP="$(echo "scale=1; $WEI / 1000000" | bc) Mwei"
+            elif ((1000<="$WEI" && "$WEI"<=1000000)); then
+                GP="$(echo "scale=1; $WEI / 1000" | bc) Kwei"
+            elif ((1<="$WEI" && "$WEI"<=1000)); then
+                GP="$(echo "scale=1; $WEI / 1" | bc) wei"
+            else
+                GP="🔄 Gas N/A - Syncing"
+            fi
+        fi
     fi
+
+    if [[ -f /etc/systemd/system/consensus.service ]]; then
+        LS=$(curl -sf -m 2 -X GET "${API_BN_ENDPOINT}/eth/v1/node/syncing" \
+            -H "accept: application/json" 2>/dev/null | jq -r '.data.head_slot')
+        [[ "$LS" == "0" ]] && LS="N/A | 🔄 CL Syncing"
+    fi
+
     # Text formatting
-    EL_TEXT=$(if systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; then printf '%s | ⛽ %s' "$LB" "$GP" ; elif [[ -f /etc/systemd/system/execution.service ]]; then printf '🛑 %s' "$EL" ; fi)
+    EL_TEXT=""
+    if [[ -f /etc/systemd/system/execution.service ]]; then
+        if systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; then
+            EL_TEXT=$(printf '%s | ⛽ %s' "$LB" "$GP")
+        else
+            EL_TEXT=$(printf '🛑 %s' "$EL")
+        fi
+    fi
     CL_TEXT=$(if systemctl is-active --quiet consensus || [[ -n "$LS" ]]; then printf '🔗 Slot %s' "$LS" ; elif [[ -f /etc/systemd/system/consensus.service ]]; then printf '🛑 %s' "$CL" ; fi)
     VC_TEXT=$(if systemctl is-active --quiet validator; then printf '✅ VC %s' "$VC" ; elif [[ -f /etc/systemd/system/validator.service ]]; then printf '🛑 VC %s' "$VC"; fi)
     HOSTNAME=$(hostname)
-    NETWORK_TEXT=$(if systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; then printf '🌐 %s on 💻 %s' "$NETWORK" "$HOSTNAME"; else printf '💻 %s' "$HOSTNAME" ; fi)
+    if [[ -f /etc/systemd/system/execution.service ]] && { systemctl is-active --quiet execution || [[ "$LB" != "🔄 EL Syncing" ]] || [[ "$LB" == "🔄 EL Syncing" && "$latest_block_number" == "0x0" ]]; }; then
+        NETWORK_TEXT=$(printf '🌐 %s on 💻 %s' "$NETWORK" "$HOSTNAME")
+    else
+        NETWORK_TEXT=$(printf '💻 %s' "$HOSTNAME")
+    fi
     END_TEXT="✨ Public Goods by CoinCashew.eth"
     # Check if integrated EL/CL client
-    if grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
+    if [[ -f /etc/systemd/system/execution.service ]] && grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
 
     case ${NODE_MODE%% |*} in
     "Solo Staking Node" | "Lido CSM Staking Node" | "Failover Staking Node" )
@@ -1677,6 +1799,10 @@ function getBackTitle(){
         MB_TEXT=$(if systemctl is-active --quiet mevboost; then printf "✅ mevboost"; else printf "🛑 mevboost"; fi)
       else
         MB_TEXT="👀 mevboost not installed"
+      fi
+      if [[ -f /etc/systemd/system/charon.service ]]; then
+        CH_TEXT=$(if systemctl is-active --quiet charon; then printf "✅ charon"; else printf "🛑 charon"; fi)
+        MB_TEXT="$MB_TEXT | $CH_TEXT"
       fi
       [[ -n "$CL" ]] && CLIENT_TEXT="| $CL_TEXT | 👥 $CL-$EL |" || CLIENT_TEXT="| 👥 $EL |"
       # Handle integrated clients
@@ -1757,7 +1883,7 @@ function applyPatches(){
 # Determine node configuration
 function setNodeMode(){
   # Check if integrated EL/CL client
-  if grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
+  if [[ -f /etc/systemd/system/execution.service ]] && grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
   if [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service || ${isIntegrated:-false} == "true" ]] && [[ -f /etc/systemd/system/validator.service ]]; then
      if [[ $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_MAINNET}" /etc/systemd/system/validator.service) || $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_HOLESKY}" /etc/systemd/system/validator.service) || $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_HOODI}" /etc/systemd/system/validator.service) ]]; then
         NODE_MODE="Lido CSM Staking Node"
@@ -1793,6 +1919,39 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     printInstalledVersions
     exit 0
   fi
+
+  # ethpillar --migrate_cdvn [--migrate_cdvn_path=PATH]
+  if [[ "${1:-}" == "--migrate_cdvn" ]] || [[ "${1:-}" == --migrate_cdvn=* ]]; then
+    setWhiptailColors
+    _migrate_path=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --migrate_cdvn)
+          shift
+          ;;
+        --migrate_cdvn=*)
+          _migrate_path="${1#--migrate_cdvn=}"
+          shift
+          ;;
+        --migrate_cdvn_path=*)
+          _migrate_path="${1#--migrate_cdvn_path=}"
+          shift
+          ;;
+        --migrate_cdvn_path)
+          _migrate_path="${2:-}"
+          shift 2
+          ;;
+        *)
+          echo "Unknown option: $1" >&2
+          echo "Usage: ethpillar --migrate_cdvn [--migrate_cdvn_path=PATH]" >&2
+          exit 1
+          ;;
+      esac
+    done
+    migrateCdvnFull "$_migrate_path"
+    exit $?
+  fi
+
   checkV1StakingSetup
   setWhiptailColors
   installNode

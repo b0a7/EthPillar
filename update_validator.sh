@@ -66,7 +66,11 @@ function selectCustomTag(){
 
 function promptViewLogs(){
     if whiptail --title "Update complete" --yesno "Would you like to view validator logs and confirm everything is running properly?" 8 78; then
-        view_journal_logs -fu validator
+        if isCharonEnabled; then
+            view_journal_logs -u charon -u validator --no-hostname -f
+        else
+            view_journal_logs -fu validator
+        fi
     fi
 }
 
@@ -111,9 +115,9 @@ function updateClient(){
         cd "$HOME" || true
         wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
         EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/lighthouse")
-        test -f "$VALIDATOR_SVC" && sudo systemctl stop validator
+        test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
         PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "lighthouse" "$EXEC_PATH" "binary" 0
-        test -f "$VALIDATOR_SVC" && sudo systemctl start validator
+        startValidatorStackAfterUpdate
         ;;
       Lodestar)
         BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
@@ -122,9 +126,9 @@ function updateClient(){
         cd "$HOME" || true
         wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
         EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/lodestar")
-        test -f "$VALIDATOR_SVC" && sudo systemctl stop validator
+        test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
         PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "lodestar" "$EXEC_PATH" "binary" 0 --binary-name "lodestar"
-        test -f "$VALIDATOR_SVC" && sudo systemctl start validator
+        startValidatorStackAfterUpdate
         ;;
       Teku)
         updateJRE 25 || error "❌ JDK 25 is required by Teku but could not be installed. Aborting update; Teku was left untouched."
@@ -136,9 +140,9 @@ function updateClient(){
         wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
         EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/teku/bin/teku")
         DEST_DIR=$(dirname "$(dirname "$EXEC_PATH")")
-        test -f "$VALIDATOR_SVC" && sudo systemctl stop validator
+        test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
         PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "teku" "$DEST_DIR" "directory" 1
-        test -f "$VALIDATOR_SVC" && sudo systemctl start validator
+        startValidatorStackAfterUpdate
         ;;
       Nimbus)
         BINARIES_URL=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
@@ -147,9 +151,9 @@ function updateClient(){
         cd "$HOME" || true
         wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
         VC_EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/nimbus_validator_client")
-        test -f "$VALIDATOR_SVC" && sudo systemctl stop validator
+        test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
         PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "nimbus" "$VC_EXEC_PATH" "binary" 1 --binary-name "nimbus_validator_client"
-        test -f "$VALIDATOR_SVC" && sudo systemctl start validator
+        startValidatorStackAfterUpdate
         ;;
       Prysm)
         cd "$HOME" || true
@@ -158,11 +162,11 @@ function updateClient(){
         curl -L -f "${_vc_url}" -o validator || error "❌ Unable to download validator"
         chmod +x validator
         VC_EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/prysm-validator")
-        test -f "$VALIDATOR_SVC" && sudo systemctl stop validator
+        test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
         sudo rm -f "$VC_EXEC_PATH"
         sudo mkdir -p "$(dirname "$VC_EXEC_PATH")"
         PYTHONPATH="${BASE_DIR}" python3 -c "from deploy.common import install_system_binary; install_system_binary('$(pwd)/validator', '${VC_EXEC_PATH}')"
-        test -f "$VALIDATOR_SVC" && sudo systemctl start validator
+        startValidatorStackAfterUpdate
         ;;
       *)
         error "❌ Unsupported validator client '$CLIENT'."

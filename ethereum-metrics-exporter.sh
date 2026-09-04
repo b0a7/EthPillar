@@ -40,7 +40,7 @@ function upgradeBinaries(){
 # Asks to view logs
 function promptViewLogs(){
     if whiptail --title "View Logs" --yesno "Would you like to view logs and confirm everything is running properly?" 8 78; then
-      view_journal_logs -fu ethereum-metrics-exporter
+  		view_journal_logs -fu ethereum-metrics-exporter
     fi
 }
 
@@ -114,6 +114,37 @@ scrape_configs:
 EOF"
 }
 
+# Return Grafana http_port from grafana.ini (default 3000).
+function grafanaHttpPort(){
+	PYTHONPATH="${BASE_DIR}" python3 -c \
+		"from manage.grafana import read_grafana_http_port; print(read_grafana_http_port())" \
+		2>/dev/null || echo 3000
+}
+
+# Apply CDVN MONITORING_PORT_GRAFANA when ETHPILLAR_CDVN_ENV is set (migrate flow).
+function applyCdvnGrafanaPortFromEnv(){
+	local _env_path="${ETHPILLAR_CDVN_ENV:-}"
+	[[ -f "$_env_path" ]] || return 0
+	PYTHONPATH="${BASE_DIR}" python3 -c \
+		"from deploy.cdvn_migrate import apply_cdvn_monitoring_from_env; import sys; apply_cdvn_monitoring_from_env(sys.argv[1])" \
+		"$_env_path" >/dev/null 2>&1 || true
+}
+
+# Ensure Prometheus scrapes Charon :3620 and Grafana has Charon Overview.
+# Safe no-op when monitoring or Charon paths are absent.
+function provisionCharonMonitoring(){
+	local _root
+	_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	if [[ ! -f "${PROMETHEUS_DIR}/prometheus.yml" ]] && [[ ! -d "${GRAFANA_DIR}" ]]; then
+		return 0
+	fi
+	# shellcheck disable=SC1091
+	PYTHONPATH="${_root}${PYTHONPATH:+:$PYTHONPATH}" python3 -m manage.charon_monitoring provision \
+		--prometheus-yml "${PROMETHEUS_DIR}/prometheus.yml" \
+		--grafana-dashboards "${GRAFANA_DIR}/provisioning/dashboards" \
+		--restart || true
+}
+
 # Upgrade Grafana, Prometheus, Node-Exporter
 function upgradeGrafanaPrometheus(){
   sudo apt-get update && sudo apt-get install --only-upgrade -y grafana prometheus prometheus-node-exporter
@@ -156,21 +187,25 @@ EOF"
 
 # Asks whether to open grafana access to local network
 function allowLocalAccessToGrafana(){
+  local _grafana_port
+  _grafana_port=$(grafanaHttpPort)
   echo -e "\e[32m:: Open firewall to Grafana for local access ::\e[0m"
   echo "Allow access to Grafana from within your local network? [y|n]"
   read -rsn1 yn
   if [[ ${yn} = [Yy]* ]]; then
-    sudo ufw allow from "$network_current" to any port 3000 proto tcp comment 'Allow local LAN access to Grafana Port'
+    sudo ufw allow from "$network_current" to any port "$_grafana_port" proto tcp comment 'Allow local LAN access to Grafana Port'
   fi
 }
 
 # Sets the default Prometheus datasource to http://localhost:9090
 function configureDataSource(){
+	# uid: prometheus matches Obol CDVN Charon Overview dashboard datasources
 	sudo bash -c "cat << 'EOF' > $GRAFANA_DIR/provisioning/datasources/datasources.yml
 apiVersion: 1
 datasources:
   - name: Prometheus
     type: prometheus
+    uid: prometheus
     url: http://localhost:9090
     access: proxy
     isDefault: true
@@ -178,26 +213,25 @@ EOF"
 }
 
 function showNextSteps(){
-cat << EOF
+	local _msg _charon_hint="" _grafana_port
+	_grafana_port=$(grafanaHttpPort)
+	if isCharonEnabled; then
+		_charon_hint="
 
-Congrats!
-Successfully installed monitoring tools: ethereum-metrics-exporter, grafana, prometheus, node-exporter
+Charon Overview: http://127.0.0.1:${_grafana_port}/d/charon_overview/"
+	fi
+	_msg="Successfully installed monitoring tools:
+ethereum-metrics-exporter, grafana, prometheus, node-exporter
 
 Access Grafana at:
-http://127.0.0.1:3000
+http://127.0.0.1:${_grafana_port}
 or
-http://${ip_current}:3000
+http://${ip_current}:${_grafana_port}
 
-Login to Grafana with:
-Username: admin
-Password: admin
+Login: admin / admin
 
-To view dashboards,
-1) Click Dashboards in the primary menu.
-
-EOF
-echo "Press ENTER to continue"
-read
+Open Dashboards in the Grafana menu.${_charon_hint}"
+	whiptail --title "Monitoring installed" --msgbox "$_msg" 22 78
 }
 
 function provisionDashboards(){
@@ -242,12 +276,17 @@ find $GRAFANA_DIR/provisioning/dashboards -type f -size 0 -delete
 # Install default alert rules and restart prometheus
 sudo cp "$(dirname "$(realpath "${BASH_SOURCE[0]}")")"/alert.rules.yml $PROMETHEUS_DIR
 sudo systemctl restart prometheus
+
+# If Charon is already installed, scrape :3620 and provision Overview dashboard
+if isCharonEnabled; then
+	provisionCharonMonitoring
+fi
 }
 
 # Displays usage info
 function usage() {
 cat << EOF
-Usage: $(basename "$0") [-i] [-u] [-r]
+Usage: $(basename "$0") [-i] [-u] [-r] [-c]
 
 Ethereum-Metrics-Exporter Monitoring Helper Script
 
@@ -255,6 +294,7 @@ Options)
 -i    Install ethereum-metrics-exporter, grafana, prometheus, node-exporter as a systemd service
 -u    Upgrade ethereum-metrics-exporter, grafana, prometheus, node-exporter
 -r    Remove all monitoring tools
+-c    Provision Charon scrape job + Charon Overview dashboard (no-op if monitoring absent)
 -h    Display help
 EOF
 }
@@ -269,8 +309,11 @@ MSG_ABOUT="🚨 Monitoring with Ethereum Metrics Exporter & Grafana & Prometheus
 \nSource Code: https://github.com/ethpandaops/ethereum-metrics-exporter
 \nContinue to install?"
 
-  if ! whiptail --title "Monitoring: Installation" --yesno "$MSG_ABOUT" 22 78; then exit; fi
+  if [[ "${ETHPILLAR_CDVN_MIGRATE:-}" != "1" ]]; then
+    if ! whiptail --title "Monitoring: Installation" --yesno "$MSG_ABOUT" 22 78; then exit; fi
+  fi
   installGrafanaPrometheus
+  applyCdvnGrafanaPortFromEnv
   installSystemd
   configureDataSource
   provisionDashboards
@@ -278,15 +321,18 @@ MSG_ABOUT="🚨 Monitoring with Ethereum Metrics Exporter & Grafana & Prometheus
   getNetworkConfig
   allowLocalAccessToGrafana
   showNextSteps
-  promptViewLogs
+  if [[ "${ETHPILLAR_CDVN_MIGRATE:-}" != "1" ]]; then
+    promptViewLogs
+  fi
 }
 
 # Process command line options
-while getopts :iurh opt; do
+while getopts :iurch opt; do
   case ${opt} in
     i ) installMonitoring ;;
     u ) upgradeBinaries ;;
     r ) removeAll ;;
+    c ) provisionCharonMonitoring ;;
     h)
       usage
       exit 0
