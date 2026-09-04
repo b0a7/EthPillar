@@ -779,12 +779,26 @@ getValidatorClient(){
     echo "$VALIDATOR_CLIENT"
 }
 
+# True when Charon has shipped Gloas/ePBS support (version gate).
+# Stub: always false until Obol publishes a stable ePBS release —
+# https://github.com/ObolNetwork/charon/releases
+# When true, the Charon menu owns split-LXC ePBS import/complete.
+charonEpbsSupported() {
+    return 1
+}
+
 # True when the MEV-Boost TUI should offer ePBS migration.
-# Charon DVT: hide until Obol ships Gloas/ePBS support — signer VC capability
-# does not matter (builder path is Charon's, not the VC's).
-# Solo: manage.epbs.support_level == "full" (Prysm, Lodestar).
+# - Split LXC (MEV, no local VC): always show (export / remote complete).
+# - Charon DVT on this host: hide until charonEpbsSupported (builder path is Charon's).
+# - Solo: manage.epbs.support_level == "full" (Prysm, Lodestar).
 # CLI (`python -m manage.epbs`) is not gated; placeholders stay there.
 epbsTuiSupported() {
+    local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    # Machine A: MEV present, no local validator → always offer export/complete.
+    if [[ -f "$mev_svc" && ! -f "$validator_svc" ]]; then
+        return 0
+    fi
     if isCharonEnabled; then
         return 1
     fi
@@ -794,6 +808,49 @@ epbsTuiSupported() {
         Prysm|Lodestar) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+# True when Validator/Charon menus should offer split-LXC ePBS import.
+# Charon host: only when charonEpbsSupported. Otherwise (or until then):
+# solo VC full-support under the Validator menu (including DV with VC support
+# when Charon ePBS is not yet available).
+epbsImportMenuSupported() {
+    local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    # Co-located / Machine A use the MEV menu, not import.
+    [[ -f "$mev_svc" ]] && return 1
+
+    if isCharonEnabled; then
+        if charonEpbsSupported; then
+            return 0
+        fi
+        # Until Charon ships ePBS, fall through to VC capability below.
+    fi
+    local client
+    client=$(getValidatorClient)
+    case "$client" in
+        Prysm|Lodestar) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# True when the Charon submenu (not Validator) should show ePBS import.
+epbsImportUnderCharon() {
+    isCharonEnabled && charonEpbsSupported
+}
+
+# True when the Validator submenu should show ePBS import.
+epbsImportUnderValidator() {
+    epbsImportMenuSupported || return 1
+    # Prefer Charon menu when Charon ePBS is supported.
+    epbsImportUnderCharon && return 1
+    return 0
+}
+
+# True when this MEV host has no local VC (split-LXC export/complete mode).
+epbsRemoteVcMode() {
+    local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    [[ -f "$mev_svc" && ! -f "$validator_svc" ]]
 }
 
 # Build the beacon node REST URL that a separate VC should target.
@@ -2857,7 +2914,7 @@ saved left-pane changes (with optional .bak backup)." 20 72
 }
 
 
-# Run manage.epbs (status | prepare | complete). Extra args are forwarded.
+# Run manage.epbs (status | prepare | complete | export | import). Extra args are forwarded.
 # Usage: runEpbsCli <command> [flags...]
 # Relies on ETHPILLAR_PYTHON / PYTHONPATH from ensure_python_deps.
 runEpbsCli() {
@@ -2867,21 +2924,23 @@ runEpbsCli() {
     PYTHONPATH="${BASE_DIR}" "$py" -m manage.epbs "$@"
 }
 
-# Dry-run, confirm, apply an ePBS prepare/complete step. Prompt to restart units.
+# Dry-run, confirm, apply an ePBS prepare/complete/import step. Prompt to restart units.
 # Args:
-#   $1  command  — prepare | complete
+#   $1  command  — prepare | complete | import
 #   $2  title    — whiptail window title
 #   $3  confirm  — yes/no prompt after the dry-run textbox
+#   $@  remaining args forwarded to manage.epbs (path, --remote-vc-prepared, …)
 runEpbsMigrationStep() {
     local cmd="$1"
     local title="$2"
     local confirm="$3"
+    shift 3
     local tmp err rc json restarts svc
 
     tmp=$(mktemp /tmp/ethpillar-epbs-XXXXXX)
     err="${tmp}.err"
     set +e
-    runEpbsCli "$cmd" >"$tmp" 2>"$err"
+    runEpbsCli "$cmd" "$@" >"$tmp" 2>"$err"
     rc=$?
     set -e
     if [[ $rc -ne 0 ]]; then
@@ -2895,7 +2954,7 @@ runEpbsMigrationStep() {
         return 0
     fi
     set +e
-    json=$(runEpbsCli "$cmd" --apply --json 2>"$err")
+    json=$(runEpbsCli "$cmd" "$@" --apply --json 2>"$err")
     rc=$?
     set -e
     if [[ $rc -ne 0 ]]; then
@@ -2920,11 +2979,95 @@ runEpbsMigrationStep() {
     rm -f "$tmp" "$err"
 }
 
-# MEV-Boost / Charon submenu: prepare (before Gloas), complete (after Gloas), status.
+# Export MEV relays to ~/hostname-timestamp.ethpillar.epbs-migration for a remote VC.
+runEpbsExport() {
+    local out tmp err rc host stamp
+    host=$(hostname 2>/dev/null || echo host)
+    stamp=$(date +%Y%m%d-%H%M%S)
+    out="${HOME}/${host}-${stamp}.ethpillar.epbs-migration"
+    tmp=$(mktemp /tmp/ethpillar-epbs-XXXXXX)
+    err="${tmp}.err"
+    set +e
+    runEpbsCli export --output "$out" >"$tmp" 2>"$err"
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Export ePBS migration file" --scrolltext --msgbox \
+            "$(cat "$err" "$tmp" 2>/dev/null)" 20 78
+        rm -f "$tmp" "$err"
+        return 1
+    fi
+    {
+        echo "Copy this file to the VC (or Charon+VC) host and use Import ePBS migration."
+        echo ""
+        cat "$tmp"
+    } >"${tmp}.out"
+    whiptail --title "Export ePBS migration file" --scrolltext --textbox "${tmp}.out" 22 78
+    rm -f "$tmp" "$err" "${tmp}.out"
+}
+
+# Prompt for a migration file path and run import (dry-run → confirm → apply).
+runEpbsImport() {
+    local src
+    src=$(whiptail --title "Import ePBS migration file" --inputbox \
+"Path to the .ethpillar.epbs-migration file from the MEV/CC host:
+
+Applies relays to this validator client (prepare step).
+Keep MEV-Boost running on the other host until after Gloas." \
+        16 78 --ok-button "Submit" 3>&1 1>&2 2>&3) || return
+    src="${src/#\~/$HOME}"
+    if [[ ! -f "$src" ]]; then
+        whiptail --title "Import ePBS migration file" --msgbox \
+"File not found:
+${src}" 9 70
+        return 1
+    fi
+    runEpbsMigrationStep import "Import ePBS migration file" \
+        "Write these VC changes now?\n\nMEV-Boost on the other host stays running until after Gloas." \
+        "$src"
+}
+
+# MEV-Boost submenu: prepare/export (before Gloas), complete (after Gloas), status.
 submenuEPBS() {
     local choice tmp menu_blurb prep_label prep_confirm
     while true; do
         getBackTitle
+        if epbsRemoteVcMode; then
+            menu_blurb="Split LXC: this host has MEV (and usually CC) but no local validator.\n\nBefore the fork: export a migration file for the VC/Charon host.\nAfter the fork: disable MEV-Boost and drop the BN sidecar URL (confirm the other host already imported)."
+            choice=$(whiptail --clear --cancel-button "Back" \
+                --backtitle "$BACKTITLE" \
+                --title "ePBS migration (remote VC)" \
+                --menu "$menu_blurb" \
+                0 0 0 \
+                1 "Before Gloas Fork — Export migration file" \
+                2 "After Gloas Fork — Complete ePBS migration" \
+                3 "Show current ePBS status" \
+                4 "Back" \
+                3>&1 1>&2 2>&3) || break
+            case "$choice" in
+                1)
+                    runEpbsExport
+                    ;;
+                2)
+                    runEpbsMigrationStep complete "After Gloas Fork — Complete ePBS migration" \
+                        "Stop MEV-Boost and remove BN sidecar flags now?\n\nConfirm the other LXC already imported the migration file.\nOnly do this after the Gloas fork." \
+                        --remote-vc-prepared
+                    ;;
+                3)
+                    tmp=$(mktemp /tmp/ethpillar-epbs-XXXXXX)
+                    if runEpbsCli status >"$tmp" 2>&1; then
+                        whiptail --title "ePBS status" --scrolltext --textbox "$tmp" 22 78
+                    else
+                        whiptail --title "ePBS status" --scrolltext --msgbox "$(cat "$tmp")" 20 78
+                    fi
+                    rm -f "$tmp"
+                    ;;
+                4|"")
+                    break
+                    ;;
+            esac
+            continue
+        fi
         if isCharonEnabled; then
             menu_blurb="With Obol Charon, builder/MEV traffic goes through Charon (--builder-api), not VC relay lists.\n\nBefore the fork: keep Charon --builder-api and MEV-Boost running.\nAfter the fork: strip Charon --builder-api, disable MEV-Boost, and drop the BN sidecar URL."
             prep_label="Before Gloas Fork — Keep Charon builder-api"
@@ -2951,6 +3094,45 @@ submenuEPBS() {
             2)
                 runEpbsMigrationStep complete "After Gloas Fork — Complete ePBS migration" \
                     "Stop MEV-Boost and remove BN sidecar flags now?\n\nOnly do this after the Gloas fork. Missed proposals if you cut over early."
+                ;;
+            3)
+                tmp=$(mktemp /tmp/ethpillar-epbs-XXXXXX)
+                if runEpbsCli status >"$tmp" 2>&1; then
+                    whiptail --title "ePBS status" --scrolltext --textbox "$tmp" 22 78
+                else
+                    whiptail --title "ePBS status" --scrolltext --msgbox "$(cat "$tmp")" 20 78
+                fi
+                rm -f "$tmp"
+                ;;
+            4|"")
+                break
+                ;;
+        esac
+    done
+}
+
+# VC/Charon host submenu: import migration file, complete (Charon strip), status.
+submenuEPBSImport() {
+    local choice tmp
+    while true; do
+        getBackTitle
+        choice=$(whiptail --clear --cancel-button "Back" \
+            --backtitle "$BACKTITLE" \
+            --title "ePBS migration (import)" \
+            --menu "This host has the validator (and maybe Charon) but no local MEV-Boost.\n\nBefore the fork: import the migration file from the MEV/CC host.\nAfter the fork: complete locally (strip Charon --builder-api when present)." \
+            0 0 0 \
+            1 "Before Gloas Fork — Import migration file" \
+            2 "After Gloas Fork — Complete ePBS migration" \
+            3 "Show current ePBS status" \
+            4 "Back" \
+            3>&1 1>&2 2>&3) || break
+        case "$choice" in
+            1)
+                runEpbsImport
+                ;;
+            2)
+                runEpbsMigrationStep complete "After Gloas Fork — Complete ePBS migration" \
+                    "Complete ePBS on this VC/Charon host now?\n\nStrips Charon --builder-api when present. MEV-Boost stop runs on the other host."
                 ;;
             3)
                 tmp=$(mktemp /tmp/ethpillar-epbs-XXXXXX)

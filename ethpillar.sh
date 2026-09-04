@@ -571,6 +571,14 @@ while true; do
       23 "Check validator status, balance"
       24 "Check validator entry/exit queue with beaconcha.in"
       25 "Attestation Performance: Obtain information about attester inclusion"
+    )
+    if epbsImportUnderValidator; then
+      SUBOPTIONS+=(
+        - ""
+        30 "ePBS migration (import)"
+      )
+    fi
+    SUBOPTIONS+=(
       - ""
       99 "Back to main menu"
     )
@@ -655,6 +663,9 @@ while true; do
         installEthdo
         checkValidatorAttestationInclusion
         ;;
+      30)
+        submenuEPBSImport
+        ;;
       99)
         break
         ;;
@@ -673,6 +684,11 @@ while true; do
       5 "Edit configuration"
       6 "Update to latest release"
       7 "Import .charon cluster folder"
+    )
+    if epbsImportUnderCharon; then
+      SUBOPTIONS+=(8 "ePBS migration (import)")
+    fi
+    SUBOPTIONS+=(
       - ""
       9 "Back to main menu"
     )
@@ -714,6 +730,9 @@ while true; do
       7)
         importCharonClusterFolder
         ;;
+      8)
+        submenuEPBSImport
+        ;;
       9)
         break
         ;;
@@ -735,7 +754,7 @@ while true; do
       7 "Check relay registration"
       8 "Check relay latency"
     )
-    # ePBS under MEV-Boost: solo full-support VCs, or Charon (DVT owns builder path).
+    # ePBS under MEV-Boost: solo full-support VCs, remote-VC export, or (later) Charon ePBS.
     if epbsTuiSupported; then
       SUBOPTIONS+=(9 "ePBS migration")
     fi

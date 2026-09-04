@@ -21,15 +21,31 @@ Do **not** run the after-fork step until Gloas is live on your network. Doing it
 
 **MEV-Boost → 9 ePBS migration**
 
-That item appears only for **solo** installs when the validator client fully supports the migration (currently **Prysm** and **Lodestar** v1.47.0+). Lighthouse, Teku, Nimbus, and Grandine do not get the menu; the CLI still works for those clients.
+That item appears when:
 
-**Obol Charon DVT:** the menu is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon (that would bypass the middleware).
+- **Solo co-located** — MEV + local VC, no Charon, and the VC fully supports migration (**Prysm**, **Lodestar** v1.47.0+)
+- **Split LXC (MEV/CC host)** — `mevboost.service` present and **no** local `validator.service` (always shown; export / remote complete)
+
+Lighthouse, Teku, Nimbus, and Grandine do not get the solo menu; the CLI still works for those clients.
+
+**Obol Charon DVT (co-located with MEV):** the MEV menu entry is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon on a co-located prepare (that would bypass the middleware).
 
 | Menu item | When to use it |
 |-----------|----------------|
-| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork |
+| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork (co-located) |
+| Before Gloas Fork — Export migration file | Before the Gloas fork (MEV host, remote VC) |
 | After Gloas Fork — Complete ePBS migration | After the Gloas fork |
 | Show current ePBS status | Anytime (read-only) |
+
+### Split LXC / remote VC
+
+When the beacon node + MEV-Boost live on one host and the validator (or Charon + VC) on another:
+
+1. **MEV/CC host** — **MEV-Boost → ePBS migration → Export migration file**. Writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` (relays + min-bid). Copy that file to the VC host.
+2. **VC host** — **Validator → ePBS migration (import)** (or **Charon → ePBS migration** once `charonEpbsSupported` is true). Import applies prepare from the file. Until Obol ships Charon ePBS, DV setups with a supported signer VC use the Validator menu.
+3. **After Gloas** — Complete on the **MEV/CC host** (stops MEV, strips BN sidecar; confirm the other host already imported). Complete on the **VC/Charon host** strips Charon `--builder-api` when present; solo VC is a no-op locally.
+
+EC placement does not matter for this flow.
 
 ### What you see
 
@@ -115,23 +131,36 @@ PYTHONPATH="${PWD}" python3 -m manage.epbs complete         # dry-run
 PYTHONPATH="${PWD}" python3 -m manage.epbs complete --apply
 # Only if you really want local EL + P2P bids with no VC relays:
 PYTHONPATH="${PWD}" python3 -m manage.epbs complete --apply --force
+# Split LXC: export on MEV host, import on VC host
+PYTHONPATH="${PWD}" python3 -m manage.epbs export -o ~/bn.ethpillar.epbs-migration
+PYTHONPATH="${PWD}" python3 -m manage.epbs import ~/bn.ethpillar.epbs-migration
+PYTHONPATH="${PWD}" python3 -m manage.epbs import ~/bn.ethpillar.epbs-migration --apply
+# MEV/CC host after the VC host imported:
+PYTHONPATH="${PWD}" python3 -m manage.epbs complete --apply --remote-vc-prepared
 ```
 
-`--json` prints a machine-readable plan (the TUI uses this after apply). `--systemd-dir` and `--prysm-settings` override paths for tests. `--force` allows `complete` when the VC has no relay list.
+`--json` prints a machine-readable plan (the TUI uses this after apply). `--systemd-dir` and `--prysm-settings` override paths for tests. `--force` allows `complete` when the VC has no relay list. `--remote-vc-prepared` allows `complete` on a MEV/CC host when the VC on another host already imported.
 
 Changed units and Prysm settings are copied to `*.bak.epbs.<timestamp>` before overwrite. `complete` stops and disables `mevboost.service`; the unit file is kept. If you completed too early: restore the newest `consensus.service.bak.epbs.*` over `consensus.service`, then `sudo systemctl enable --now mevboost && sudo systemctl daemon-reload && sudo systemctl restart consensus`.
 
-Implementation: `manage/epbs.py`. TUI wrappers: `runEpbsCli` / `runEpbsMigrationStep` / `submenuEPBS` in `functions.sh`. Menu visibility: `epbsTuiSupported` (Prysm/Lodestar only when Charon is absent).
+Implementation: `manage/epbs.py`. TUI wrappers: `runEpbsCli` / `runEpbsMigrationStep` / `submenuEPBS` / `submenuEPBSImport` in `functions.sh`. Menu visibility: `epbsTuiSupported`, `epbsImportUnderValidator`, `epbsImportUnderCharon` (`charonEpbsSupported` stub until Obol ships).
 
 ### What each command changes
 
-Relays and `-min-bid` are read from `mevboost.service`. Sidecar URLs are those containing `127.0.0.1:18550`, `localhost:18550`, or `[::1]:18550`. Non-sidecar builder URLs on the BN are kept.
+Relays and `-min-bid` are read from `mevboost.service` (or from a migration file for `import`). Sidecar URLs are those containing `127.0.0.1:18550`, `localhost:18550`, or `[::1]:18550`. Non-sidecar builder URLs on the BN are kept.
+
+#### `export` / `import`
+
+| Command | Host | Behavior |
+|---------|------|----------|
+| **export** | MEV | Writes `.ethpillar.epbs-migration` JSON (format version 1: relays, min-bid, network, hostname, timestamp). Always writes. |
+| **import** | VC / Charon+VC | Loads that file and applies the same VC relay writes as solo `prepare`. Does not require local MEV. Unlike co-located prepare, **does** write VC relays even when Charon is present. |
 
 #### `prepare`
 
 | Client | Behavior |
 |--------|----------|
-| **Obol Charon** (any signer VC) | Keeps `--builder-api`; **skips** VC relay writes (CLI). TUI entry hidden until Obol ships Gloas/ePBS support. |
+| **Obol Charon** (any signer VC, co-located) | Keeps `--builder-api`; **skips** VC relay writes (CLI). TUI entry hidden until Obol ships Gloas/ePBS support. |
 | **Prysm** (v7.1.7+, no Charon) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema v2) with `default_config.builder.enabled`, `relays`, and `max_execution_payment: "0"` (Gloas execution-payment cap; `0` is the public-bid / proto default and does not disable builder payments). Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Upserts VC `--enable-builder` and `--proposer-settings-file`. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
 | **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. Older builds are skipped so the VC can still start. |
 | **Lighthouse, Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |
@@ -140,10 +169,14 @@ BN sidecar flags stay until `complete`.
 
 #### `complete`
 
-Refused unless the VC already has a relay list (successful solo `prepare`), Charon still has `--builder-api`, or you pass `--force` (local EL + P2P bids only).
+Refused unless the VC already has a relay list (successful solo `prepare` / `import`), Charon still has `--builder-api`, you pass `--remote-vc-prepared` (split MEV host), or you pass `--force` (local EL + P2P bids only).
+
+On a **VC/Charon-only** host (no consensus/MEV): strips Charon `--builder-api` when present; solo VC reports nothing local to complete.
+
+On a **MEV/CC** host:
 
 1. Stop and disable `mevboost.service`.
-2. Strip BN sidecar builder flags:
+2. Strip BN sidecar builder flags (skipped with a warning if no consensus unit):
 
    | Beacon node | Flag removed when it points at local MEV-Boost |
    |-------------|--------------------------------------------------|
@@ -156,13 +189,13 @@ Refused unless the VC already has a relay list (successful solo `prepare`), Char
    | Erigon-Caplin | `--caplin.mev-relay-url` |
    | Obol Charon | `--builder-api` (MEV-Boost proxy; no stable upstream ePBS release yet) |
 
-3. Do not rewrite VC relay config from `prepare`.
+3. Do not rewrite VC relay config from `prepare` / `import`.
 
-Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare). Prysm/Lodestar VC flags do not change on this step alone.
+Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare/import). Prysm/Lodestar VC flags do not change on this step alone.
 
 ### Client support levels
 
-The MEV-Boost TUI shows ePBS migration only for **full** support.
+The MEV-Boost TUI shows ePBS migration for **full** support (solo) or always on a MEV host with no local VC.
 
 | Validator | Support | Notes |
 |-----------|---------|--------|

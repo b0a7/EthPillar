@@ -8,12 +8,20 @@ Two-step operator flow (EthStaker Glamsterdam guidance):
 2. **complete** — stop/disable MEV-Boost and strip BN flags that pointed at
    ``http://127.0.0.1:18550``. Keep VC builder-enable flags and the VC relay
    list from step 1. Refused unless the VC already has a relay list (or
-   ``--force``).
+   ``--force`` / ``--remote-vc-prepared`` for split LXC).
 
-**Obol Charon DVT:** when ``charon.service`` is installed, Charon owns the
-builder path (``--builder-api`` → MEV-Boost). Prepare keeps that flag and does
-**not** write VC relay lists (which would bypass Charon). Complete is allowed
-while ``--builder-api`` remains, and strips it with the BN sidecar.
+**Split LXC:** when CC/MEV and VC (or Charon+VC) live on different hosts,
+``export`` writes a ``.ethpillar.epbs-migration`` file from MEV relays and
+``import`` applies that payload as prepare on the VC host. Complete on the
+MEV/CC host uses ``--remote-vc-prepared``; complete on the VC/Charon host
+only strips Charon ``--builder-api`` when present.
+
+**Obol Charon DVT:** when ``charon.service`` is installed on the same host as
+MEV, Charon owns the builder path (``--builder-api`` → MEV-Boost). Prepare
+keeps that flag and does **not** write VC relay lists (which would bypass
+Charon). Complete is allowed while ``--builder-api`` remains, and strips it
+with the BN sidecar. Split-LXC ``import`` still writes VC relays so the
+signer is ready after Charon complete.
 
 Support levels:
 
@@ -30,10 +38,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -54,6 +64,9 @@ from manage.service_parse import (
 SIDECAR_MARKERS = ("127.0.0.1:18550", "localhost:18550", "[::1]:18550")
 GWEI_PER_ETH = Decimal("1000000000")
 PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
+MIGRATION_FORMAT = "ethpillar.epbs-migration"
+MIGRATION_VERSION = 1
+MIGRATION_EXTENSION = ".ethpillar.epbs-migration"
 
 
 def complete_rollback_hint(fs: "EpbsFilesystem") -> str:
@@ -97,8 +110,9 @@ CHARON_EPBS_NOTE = (
 )
 COMPLETE_REFUSED = (
     "Complete refused: this validator has no relay list to replace MEV-Boost "
-    "(and Charon has no --builder-api). Run prepare first, or pass --force to "
-    "stop MEV-Boost and use local EL + P2P bids only."
+    "(and Charon has no --builder-api). Run prepare first, pass "
+    "--remote-vc-prepared if the VC on another host already imported, or pass "
+    "--force to stop MEV-Boost and use local EL + P2P bids only."
 )
 
 # BN flags whose *value* is a builder/relay URL (strip only sidecar URLs).
@@ -190,7 +204,7 @@ class MigrationPlan:
     """Result of prepare/complete (dry-run or applied).
 
     Attributes:
-        command: ``prepare`` or ``complete``.
+        command: ``prepare``, ``complete``, or ``import``.
         client: Detected validator (or BN for integrated Grandine).
         support: ``full`` or ``placeholder``.
         notes: Per-client support blurb from :data:`SUPPORT_NOTES`.
@@ -912,77 +926,146 @@ def _load_relays(fs: EpbsFilesystem) -> RelaysConfig:
     return cfg
 
 
-def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> MigrationPlan:
-    """Copy mev-boost relays onto the VC. Keep the sidecar running.
+def default_migration_filename(hostname: Optional[str] = None) -> str:
+    """Build ``{hostname}-{YYYYMMDD-HHMMSS}.ethpillar.epbs-migration``.
 
-    Prysm writes proposer-settings JSON and VC flags. Lodestar gets
-    ``--builder.urls`` when the binary documents that flag. Other VCs are
-    a documented no-op. When Charon is installed, VC relay writes are skipped
-    (Charon ``--builder-api`` owns the MEV path until complete).
-    Beacon-node sidecar flags are not touched.
+    Args:
+        hostname: Override for tests; defaults to ``socket.gethostname()``.
+    """
+    host = hostname or socket.gethostname() or "host"
+    # Keep filenames path-safe.
+    host = "".join(c if c.isalnum() or c in "-._" else "-" for c in host)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return f"{host}-{stamp}{MIGRATION_EXTENSION}"
+
+
+def migration_payload(relays: RelaysConfig, hostname: Optional[str] = None) -> dict:
+    """Build the JSON object written by :func:`export_migration`.
+
+    Args:
+        relays: Relays scraped from MEV-Boost.
+        hostname: Override for tests; defaults to ``socket.gethostname()``.
+    """
+    return {
+        "format": MIGRATION_FORMAT,
+        "version": MIGRATION_VERSION,
+        "exported_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "hostname": hostname or socket.gethostname() or "host",
+        "network": relays.network or "",
+        "relays": list(relays.urls),
+        "min_bid": relays.min_bid or "",
+    }
+
+
+def load_migration_file(path: str, read_text: Optional[Callable[[str], Optional[str]]] = None) -> RelaysConfig:
+    """Parse and validate a ``.ethpillar.epbs-migration`` file.
+
+    Args:
+        path: Path to the migration JSON file.
+        read_text: Optional reader (tests); defaults to open().
+
+    Returns:
+        :class:`RelaysConfig` from the file payload.
+
+    Raises:
+        EpbsError: If the file is missing, invalid, or has no relays.
+    """
+    reader = read_text or _read_plain
+    raw = reader(path)
+    if raw is None:
+        raise EpbsError(f"Migration file not found: {path}")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise EpbsError(f"Invalid migration JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise EpbsError("Migration file must be a JSON object")
+    if data.get("format") != MIGRATION_FORMAT:
+        raise EpbsError(
+            f"Unknown migration format {data.get('format')!r}; "
+            f"expected {MIGRATION_FORMAT!r}"
+        )
+    version = data.get("version")
+    if version != MIGRATION_VERSION:
+        raise EpbsError(
+            f"Unsupported migration version {version!r}; "
+            f"expected {MIGRATION_VERSION}"
+        )
+    relays = data.get("relays")
+    if not isinstance(relays, list) or not relays:
+        raise EpbsError("Migration file has no relays")
+    urls = [str(u).strip() for u in relays if str(u).strip()]
+    if not urls:
+        raise EpbsError("Migration file has no relays")
+    min_bid = data.get("min_bid") or ""
+    network = data.get("network") or ""
+    if not isinstance(min_bid, str):
+        min_bid = str(min_bid)
+    if not isinstance(network, str):
+        network = str(network)
+    return RelaysConfig(urls=urls, min_bid=min_bid, network=network)
+
+
+def export_migration(
+    fs: Optional[EpbsFilesystem] = None,
+    output: Optional[str] = None,
+    hostname: Optional[str] = None,
+) -> Tuple[str, dict]:
+    """Write MEV-Boost relays to a portable ``.ethpillar.epbs-migration`` file.
 
     Args:
         fs: IO adapter; production defaults if omitted.
-        apply: If True, write units/settings; otherwise dry-run.
+        output: Destination path. When omitted, writes
+            ``{cwd}/{hostname}-{stamp}.ethpillar.epbs-migration``.
+        hostname: Override embedded hostname / default filename host.
 
     Returns:
-        Plan including actions, warnings, and services to restart.
+        ``(path_written, payload_dict)``.
 
     Raises:
-        EpbsError: If no validator unit exists or MEV-Boost relays cannot
-            be loaded.
+        EpbsError: If MEV-Boost relays cannot be loaded or the file cannot
+            be written.
     """
     fs = fs or EpbsFilesystem()
-    vc_name, bn_name, mode = detect_clients(fs)
-    if mode == "none" or not vc_name:
-        raise EpbsError("No validator client unit found.")
-
     relays = _load_relays(fs)
-    level = support_level(vc_name)
-    plan = MigrationPlan(
-        command="prepare",
-        client=vc_name,
-        support=level,
-        notes=SUPPORT_NOTES.get(vc_name, ""),
-    )
-    plan.warnings.append(
-        "Do not stop MEV-Boost yet. Pre-Gloas proposals still use the sidecar."
-    )
-    via_charon = charon_installed(fs)
-    if via_charon:
-        charon_path = fs.unit_path("charon")
-        ch_content = fs.read_text(charon_path) or ""
-        if charon_has_builder_api(ch_content):
-            plan.actions.append(
-                PlanAction(
-                    charon_path,
-                    "unchanged: keep --builder-api until complete (MEV-Boost path)",
-                )
-            )
-        else:
-            plan.actions.append(
-                PlanAction(
-                    charon_path,
-                    "warning: Charon has no --builder-api (MEV builder path unset)",
-                )
-            )
-        plan.actions.append(
-            PlanAction(
-                "validator",
-                "skipped: Charon DVT owns builder path (no VC relay list)",
-            )
-        )
-        plan.warnings.append(CHARON_EPBS_NOTE)
+    payload = migration_payload(relays, hostname=hostname)
+    path = output or os.path.join(os.getcwd(), default_migration_filename(hostname))
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    text = json.dumps(payload, indent=2) + "\n"
+    writer = fs.write_data or _write_plain
+    writer(path, text)
+    return path, payload
+
+
+def _apply_vc_relays(
+    fs: EpbsFilesystem,
+    relays: RelaysConfig,
+    apply: bool,
+    plan: MigrationPlan,
+    vc_name: str,
+    mode: str,
+    relays_source: str,
+) -> None:
+    """Write relay config onto the local validator client.
+
+    Shared by :func:`prepare` (after loading MEV) and :func:`import_migration`.
+
+    Args:
+        fs: IO adapter.
+        relays: Relay URLs and optional min-bid.
+        apply: If True, write units/settings.
+        plan: Plan to append actions/warnings/restarts.
+        vc_name: Detected validator client name.
+        mode: ``separate`` or ``integrated_grandine``.
+        relays_source: Short label for the plan action (e.g. ``mevboost.service``).
+    """
     if relays.min_bid:
         plan.actions.append(PlanAction("mevboost min-bid", relays.min_bid))
     plan.actions.append(
-        PlanAction("relays", f"{len(relays.urls)} URL(s) from mevboost.service")
+        PlanAction("relays", f"{len(relays.urls)} URL(s) from {relays_source}")
     )
-
-    if via_charon:
-        plan.applied = apply
-        _ = bn_name  # BN sidecar stays until complete()
-        return plan
 
     vc_key = "consensus" if mode == "integrated_grandine" else "validator"
     vc_path, vc_content = _read_required_unit(fs, vc_key)
@@ -1055,10 +1138,146 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
             f"pass --force (local EL + P2P bids only)."
         )
         if mode == "integrated_grandine":
-            plan.warnings.append("Grandine is integrated; there is no separate validator.service.")
+            plan.warnings.append(
+                "Grandine is integrated; there is no separate validator.service."
+            )
 
+
+def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> MigrationPlan:
+    """Copy mev-boost relays onto the VC. Keep the sidecar running.
+
+    Prysm writes proposer-settings JSON and VC flags. Lodestar gets
+    ``--builder.urls`` when the binary documents that flag. Other VCs are
+    a documented no-op. When Charon is installed, VC relay writes are skipped
+    (Charon ``--builder-api`` owns the MEV path until complete).
+    Beacon-node sidecar flags are not touched.
+
+    Args:
+        fs: IO adapter; production defaults if omitted.
+        apply: If True, write units/settings; otherwise dry-run.
+
+    Returns:
+        Plan including actions, warnings, and services to restart.
+
+    Raises:
+        EpbsError: If no validator unit exists or MEV-Boost relays cannot
+            be loaded.
+    """
+    fs = fs or EpbsFilesystem()
+    vc_name, bn_name, mode = detect_clients(fs)
+    if mode == "none" or not vc_name:
+        raise EpbsError("No validator client unit found.")
+
+    relays = _load_relays(fs)
+    level = support_level(vc_name)
+    plan = MigrationPlan(
+        command="prepare",
+        client=vc_name,
+        support=level,
+        notes=SUPPORT_NOTES.get(vc_name, ""),
+    )
+    plan.warnings.append(
+        "Do not stop MEV-Boost yet. Pre-Gloas proposals still use the sidecar."
+    )
+    via_charon = charon_installed(fs)
+    if via_charon:
+        charon_path = fs.unit_path("charon")
+        ch_content = fs.read_text(charon_path) or ""
+        if charon_has_builder_api(ch_content):
+            plan.actions.append(
+                PlanAction(
+                    charon_path,
+                    "unchanged: keep --builder-api until complete (MEV-Boost path)",
+                )
+            )
+        else:
+            plan.actions.append(
+                PlanAction(
+                    charon_path,
+                    "warning: Charon has no --builder-api (MEV builder path unset)",
+                )
+            )
+        plan.actions.append(
+            PlanAction(
+                "validator",
+                "skipped: Charon DVT owns builder path (no VC relay list)",
+            )
+        )
+        plan.warnings.append(CHARON_EPBS_NOTE)
+        if relays.min_bid:
+            plan.actions.append(PlanAction("mevboost min-bid", relays.min_bid))
+        plan.actions.append(
+            PlanAction("relays", f"{len(relays.urls)} URL(s) from mevboost.service")
+        )
+        plan.applied = apply
+        _ = bn_name  # BN sidecar stays until complete()
+        return plan
+
+    _apply_vc_relays(
+        fs, relays, apply, plan, vc_name, mode, relays_source="mevboost.service"
+    )
     plan.applied = apply
     _ = bn_name  # BN sidecar stays until complete()
+    return plan
+
+
+def import_migration(
+    path: str,
+    fs: Optional[EpbsFilesystem] = None,
+    apply: bool = False,
+) -> MigrationPlan:
+    """Apply a portable migration file onto the local validator client.
+
+    Does not require local ``mevboost.service``. Unlike co-located prepare,
+    Charon does **not** skip VC relay writes — split DV needs the signer ready
+    before Charon ``--builder-api`` is stripped on complete.
+
+    Args:
+        path: Path to a ``.ethpillar.epbs-migration`` file.
+        fs: IO adapter; production defaults if omitted.
+        apply: If True, write units/settings; otherwise dry-run.
+
+    Returns:
+        Plan including actions, warnings, and services to restart.
+
+    Raises:
+        EpbsError: If no validator unit exists or the migration file is invalid.
+    """
+    fs = fs or EpbsFilesystem()
+    vc_name, bn_name, mode = detect_clients(fs)
+    if mode == "none" or not vc_name:
+        raise EpbsError("No validator client unit found.")
+
+    relays = load_migration_file(path, read_text=fs.read_text)
+    level = support_level(vc_name)
+    plan = MigrationPlan(
+        command="import",
+        client=vc_name,
+        support=level,
+        notes=SUPPORT_NOTES.get(vc_name, ""),
+    )
+    plan.warnings.append(
+        "Imported relays for the VC. Do not complete on the MEV/CC host until "
+        "after the Gloas fork. Keep MEV-Boost running there until then."
+    )
+    if charon_installed(fs):
+        plan.warnings.append(CHARON_EPBS_NOTE)
+        plan.warnings.append(
+            "After Gloas: run Complete on this host to strip Charon "
+            "--builder-api, and Complete on the MEV/CC host to stop MEV-Boost."
+        )
+
+    _apply_vc_relays(
+        fs,
+        relays,
+        apply,
+        plan,
+        vc_name,
+        mode,
+        relays_source=os.path.basename(path) or path,
+    )
+    plan.applied = apply
+    _ = bn_name
     return plan
 
 
@@ -1100,38 +1319,89 @@ def complete(
     fs: Optional[EpbsFilesystem] = None,
     apply: bool = False,
     force: bool = False,
+    remote_vc_prepared: bool = False,
 ) -> MigrationPlan:
     """Disable MEV-Boost and remove BN sidecar builder flags.
 
     Does not rewrite VC relay config from prepare. Refused when the VC has no
-    relay list unless *force* is True (local EL + P2P bids only).
+    relay list unless *force*, *remote_vc_prepared*, or Charon ``--builder-api``
+    is True.
+
+    Split LXC:
+
+    * **MEV/CC host** (no local VC): pass *remote_vc_prepared* after the other
+      host imported; strips BN sidecar and stops MEV.
+    * **VC/Charon host** (no consensus/MEV): strips Charon ``--builder-api``
+      only; solo VC is a documented no-op.
 
     Args:
         fs: IO adapter; production defaults if omitted.
-        apply: If True, write the BN unit and stop/disable mevboost.
-        force: Allow complete without a VC relay list.
+        apply: If True, write units and stop/disable mevboost.
+        force: Allow complete without a VC relay list (local EL + P2P only).
+        remote_vc_prepared: Allow complete when the VC lives on another host
+            and already imported the migration file.
 
     Returns:
-        Plan including BN strip actions and ``disable_mevboost``.
+        Plan including BN strip actions and/or Charon strip / MEV disable.
 
     Raises:
-        EpbsError: If no consensus unit exists, or neither a VC relay list nor
-            Charon ``--builder-api`` is present and *force* is False.
+        EpbsError: If neither a BN/MEV complete nor a Charon/VC-only complete
+            can run, or the VC gate fails.
     """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
-    if not bn_name and mode != "integrated_grandine":
-        raise EpbsError("No consensus client unit found.")
+    has_bn = bool(bn_name) or mode == "integrated_grandine"
+    has_mev = fs.exists(fs.unit_path("mevboost"))
+    has_charon = charon_installed(fs)
+
+    # Machine B: VC and/or Charon only — no BN/MEV to tear down locally.
+    if not has_bn and not has_mev:
+        if mode == "integrated_grandine":
+            vc_name = vc_name or "Grandine"
+        level = support_level(vc_name or "unknown")
+        plan = MigrationPlan(
+            command="complete",
+            client=vc_name or ("Charon" if has_charon else "unknown"),
+            support=level,
+            notes=SUPPORT_NOTES.get(vc_name or "", ""),
+            disable_mevboost=False,
+        )
+        if has_charon:
+            _complete_charon_builder_api(fs, plan, apply)
+            # Restart hint for Charon-only hosts omits consensus.
+            plan.warnings = [
+                w
+                for w in plan.warnings
+                if "restart order: consensus" not in w.lower()
+            ]
+            if any("remove --builder-api" in a.detail for a in plan.actions):
+                plan.warnings.append(
+                    "After complete, restart order: charon → validator."
+                )
+        else:
+            plan.actions.append(
+                PlanAction(
+                    "complete",
+                    "nothing local to complete (VC relays already applied via import)",
+                )
+            )
+            plan.warnings.append(
+                "MEV-Boost stop and BN sidecar strip run on the CC/MEV host."
+            )
+        plan.applied = apply
+        plan.rollback_hint = complete_rollback_hint(fs)
+        return plan
+
     if mode == "integrated_grandine":
         vc_name = vc_name or "Grandine"
         bn_name = bn_name or "Grandine"
 
-    level = support_level(vc_name or bn_name)
+    level = support_level(vc_name or bn_name or "unknown")
     plan = MigrationPlan(
         command="complete",
-        client=vc_name or bn_name,
+        client=vc_name or bn_name or "mevboost",
         support=level,
-        notes=SUPPORT_NOTES.get(vc_name or bn_name, ""),
+        notes=SUPPORT_NOTES.get(vc_name or bn_name or "", ""),
         disable_mevboost=True,
     )
 
@@ -1141,28 +1411,38 @@ def complete(
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
     via_charon = charon_ready_for_complete(fs)
-    if not has_relays and not via_charon and not force:
+    if not has_relays and not via_charon and not force and not remote_vc_prepared:
         raise EpbsError(COMPLETE_REFUSED)
+    if remote_vc_prepared and not has_relays:
+        plan.warnings.append(
+            "Remote VC prepared: trusting that the other host already imported "
+            "the ePBS migration file."
+        )
     if via_charon and not has_relays:
         plan.warnings.append(
             "Charon DVT path: complete strips --builder-api (no VC relay list)."
         )
-    elif not has_relays:
+    elif not has_relays and not remote_vc_prepared:
         plan.warnings.append(
             "Prepare was a no-op / this VC has no relay list. After this step "
             "the node will use local EL + P2P builder bids only (no off-protocol "
             "relays)."
         )
 
-    bn_path, bn_content = _read_required_unit(fs, "consensus")
-    new_bn = strip_bn_sidecar(bn_content, bn_name or vc_name)
-    if _write_unit_if_changed(fs, bn_path, bn_content, new_bn, apply):
-        plan.actions.append(
-            PlanAction(bn_path, f"remove mev-boost sidecar flags from {bn_name}")
-        )
-        plan.services_to_restart.append("consensus")
+    if has_bn:
+        bn_path, bn_content = _read_required_unit(fs, "consensus")
+        new_bn = strip_bn_sidecar(bn_content, bn_name or vc_name)
+        if _write_unit_if_changed(fs, bn_path, bn_content, new_bn, apply):
+            plan.actions.append(
+                PlanAction(bn_path, f"remove mev-boost sidecar flags from {bn_name}")
+            )
+            plan.services_to_restart.append("consensus")
+        else:
+            plan.actions.append(PlanAction(bn_path, "no sidecar builder URL present"))
     else:
-        plan.actions.append(PlanAction(bn_path, "no sidecar builder URL present"))
+        plan.warnings.append(
+            "consensus.service not installed; skipping BN sidecar strip."
+        )
 
     _complete_charon_builder_api(fs, plan, apply)
 
@@ -1220,6 +1500,19 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
     else:
         lines.append("MEV-Boost: not installed")
 
+    if mode == "none" and fs.exists(mev_path):
+        lines.append(
+            "Split LXC (no local VC): export a .ethpillar.epbs-migration file "
+            "for the VC/Charon host. Complete here after that host imports "
+            "(--remote-vc-prepared)."
+        )
+    elif mode == "separate" and not bn_name and not fs.exists(mev_path):
+        lines.append(
+            "Split LXC (VC/Charon host): import a .ethpillar.epbs-migration "
+            "file from the MEV/CC host. Complete here strips Charon "
+            "--builder-api when present."
+        )
+
     if mode == "separate":
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
@@ -1235,7 +1528,7 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
                     "Charon --builder-api: already removed (or never set). "
                     "Complete needs a VC relay list or --force."
                 )
-        elif not has_relays:
+        elif not has_relays and bn_name:
             if level == "placeholder":
                 lines.append(
                     "Prepare: no-op on this client — Complete will stop "
@@ -1308,23 +1601,49 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     """
     parser = argparse.ArgumentParser(
         prog="python -m manage.epbs",
-        description="Prepare a VC for ePBS, or complete MEV-Boost teardown after Gloas.",
+        description=(
+            "Prepare a VC for ePBS, complete MEV-Boost teardown after Gloas, "
+            "or export/import a split-LXC migration file."
+        ),
     )
     parser.add_argument(
         "command",
-        choices=("status", "prepare", "complete"),
-        help="status | prepare (before fork) | complete (after fork)",
+        choices=("status", "prepare", "complete", "export", "import"),
+        help=(
+            "status | prepare (before fork) | complete (after fork) | "
+            "export (MEV host) | import (VC/Charon host)"
+        ),
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="Migration file path (required for import; optional for export).",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Export destination path (default: ./hostname-timestamp.ethpillar.epbs-migration).",
     )
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Write unit/settings changes (default is dry-run).",
+        help="Write unit/settings changes (default is dry-run; export always writes).",
     )
     parser.add_argument("--json", action="store_true", help="Machine-readable output.")
     parser.add_argument(
         "--force",
         action="store_true",
         help="Allow complete without a VC relay list (local EL + P2P bids only).",
+    )
+    parser.add_argument(
+        "--remote-vc-prepared",
+        action="store_true",
+        help=(
+            "Allow complete on a MEV/CC host when the VC on another host "
+            "already imported the migration file."
+        ),
     )
     parser.add_argument(
         "--systemd-dir",
@@ -1357,10 +1676,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             else:
                 print(text, end="")
             return 0
+        if args.command == "export":
+            out = args.output or args.path
+            path, payload = export_migration(fs, output=out)
+            if args.json:
+                print(json.dumps({"path": path, "payload": payload}, indent=2))
+            else:
+                print(f"Wrote ePBS migration file:\n  {path}\n")
+                print(json.dumps(payload, indent=2))
+            return 0
+        if args.command == "import":
+            if not args.path:
+                raise EpbsError("import requires a migration file path")
+            _print_plan(
+                import_migration(args.path, fs, apply=args.apply), args.json
+            )
+            return 0
         if args.command == "prepare":
             _print_plan(prepare(fs, apply=args.apply), args.json)
             return 0
-        _print_plan(complete(fs, apply=args.apply, force=args.force), args.json)
+        _print_plan(
+            complete(
+                fs,
+                apply=args.apply,
+                force=args.force,
+                remote_vc_prepared=args.remote_vc_prepared,
+            ),
+            args.json,
+        )
         return 0
     except EpbsError as exc:
         print(f"ePBS: {exc}", file=sys.stderr)
