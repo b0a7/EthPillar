@@ -779,10 +779,14 @@ getValidatorClient(){
     echo "$VALIDATOR_CLIENT"
 }
 
-# True when the MEV-Boost TUI should offer ePBS migration.
-# Clients with manage.epbs.support_level == "full" (Prysm, Lodestar).
+# True when the TUI should offer ePBS migration.
+# Solo: manage.epbs.support_level == "full" (Prysm, Lodestar).
+# Charon DVT: Charon owns the builder path — menu lives under Charon.
 # CLI (`python -m manage.epbs`) is not gated; placeholders stay there.
 epbsTuiSupported() {
+    if isCharonEnabled; then
+        return 0
+    fi
     local client
     client=$(getValidatorClient)
     case "$client" in
@@ -2915,25 +2919,33 @@ runEpbsMigrationStep() {
     rm -f "$tmp" "$err"
 }
 
-# MEV-Boost submenu: prepare (before Gloas), complete (after Gloas), status.
+# MEV-Boost / Charon submenu: prepare (before Gloas), complete (after Gloas), status.
 submenuEPBS() {
-    local choice tmp
+    local choice tmp menu_blurb prep_label prep_confirm
     while true; do
         getBackTitle
+        if isCharonEnabled; then
+            menu_blurb="With Obol Charon, builder/MEV traffic goes through Charon (--builder-api), not VC relay lists.\n\nBefore the fork: keep Charon --builder-api and MEV-Boost running.\nAfter the fork: strip Charon --builder-api, disable MEV-Boost, and drop the BN sidecar URL."
+            prep_label="Before Gloas Fork — Keep Charon builder-api"
+            prep_confirm="Confirm Charon ePBS prepare now?\n\nVC relay lists are not written. MEV-Boost stays running. Do not complete until after the Gloas fork."
+        else
+            menu_blurb="Gloas moves relay config from MEV-Boost onto the validator client.\n\nBefore the fork: copy relays to the VC and keep MEV-Boost running.\nAfter the fork: disable MEV-Boost and drop the BN sidecar URL."
+            prep_label="Before Gloas Fork — Apply Relays to VC"
+            prep_confirm="Write these VC changes now?\n\nMEV-Boost stays running. Do not complete migration until after the Gloas fork."
+        fi
         choice=$(whiptail --clear --cancel-button "Back" \
             --backtitle "$BACKTITLE" \
             --title "ePBS migration" \
-            --menu "Gloas moves relay config from MEV-Boost onto the validator client.\n\nBefore the fork: copy relays to the VC and keep MEV-Boost running.\nAfter the fork: disable MEV-Boost and drop the BN sidecar URL." \
+            --menu "$menu_blurb" \
             0 0 0 \
-            1 "Before Gloas Fork — Apply Relays to VC" \
+            1 "$prep_label" \
             2 "After Gloas Fork — Complete ePBS migration" \
             3 "Show current ePBS status" \
             4 "Back" \
             3>&1 1>&2 2>&3) || break
         case "$choice" in
             1)
-                runEpbsMigrationStep prepare "Before Gloas Fork — Apply Relays to VC" \
-                    "Write these VC changes now?\n\nMEV-Boost stays running. Do not complete migration until after the Gloas fork."
+                runEpbsMigrationStep prepare "$prep_label" "$prep_confirm"
                 ;;
             2)
                 runEpbsMigrationStep complete "After Gloas Fork — Complete ePBS migration" \

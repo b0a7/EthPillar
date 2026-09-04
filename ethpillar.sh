@@ -673,6 +673,10 @@ while true; do
       5 "Edit configuration"
       6 "Update to latest release"
       7 "Import .charon cluster folder"
+    )
+    # Charon owns the MEV/builder path; ePBS cutover lives here (not under MEV).
+    SUBOPTIONS+=(8 "ePBS migration")
+    SUBOPTIONS+=(
       - ""
       9 "Back to main menu"
     )
@@ -714,6 +718,9 @@ while true; do
       7)
         importCharonClusterFolder
         ;;
+      8)
+        submenuEPBS
+        ;;
       9)
         break
         ;;
@@ -735,8 +742,8 @@ while true; do
       7 "Check relay registration"
       8 "Check relay latency"
     )
-    # ePBS TUI is Prysm and Lodestar (full support). CLI remains available for others.
-    if epbsTuiSupported; then
+    # Solo ePBS TUI is Prysm/Lodestar under MEV. With Charon, it lives under Charon.
+    if epbsTuiSupported && ! isCharonEnabled; then
       SUBOPTIONS+=(9 "ePBS migration")
     fi
     SUBOPTIONS+=(

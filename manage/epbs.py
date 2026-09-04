@@ -10,6 +10,11 @@ Two-step operator flow (EthStaker Glamsterdam guidance):
    list from step 1. Refused unless the VC already has a relay list (or
    ``--force``).
 
+**Obol Charon DVT:** when ``charon.service`` is installed, Charon owns the
+builder path (``--builder-api`` → MEV-Boost). Prepare keeps that flag and does
+**not** write VC relay lists (which would bypass Charon). Complete is allowed
+while ``--builder-api`` remains, and strips it with the BN sidecar.
+
 Support levels:
 
 * ``full`` — Prysm (proposer-settings relays) and Lodestar v1.47.0+
@@ -91,9 +96,9 @@ CHARON_EPBS_NOTE = (
     "https://github.com/ObolNetwork/charon/releases for upstream support."
 )
 COMPLETE_REFUSED = (
-    "Complete refused: this validator has no relay list to replace MEV-Boost. "
-    "Run prepare first, or pass --force to stop MEV-Boost and use local EL + "
-    "P2P bids only."
+    "Complete refused: this validator has no relay list to replace MEV-Boost "
+    "(and Charon has no --builder-api). Run prepare first, or pass --force to "
+    "stop MEV-Boost and use local EL + P2P bids only."
 )
 
 # BN flags whose *value* is a builder/relay URL (strip only sidecar URLs).
@@ -800,6 +805,15 @@ def strip_bn_sidecar(bn_content: str, bn_client: str) -> str:
     return _rebuild_unit(bn_content, args)
 
 
+def charon_installed(fs: EpbsFilesystem) -> bool:
+    """Return True when ``charon.service`` exists.
+
+    Args:
+        fs: IO adapter used to locate systemd units.
+    """
+    return fs.exists(fs.unit_path("charon"))
+
+
 def charon_has_builder_api(charon_content: str) -> bool:
     """Return True when ``charon.service`` ExecStart includes ``--builder-api``.
 
@@ -808,6 +822,18 @@ def charon_has_builder_api(charon_content: str) -> bool:
     """
     args = normalize_cli_args(parse_unit(charon_content).exec_args)
     return has_flag(args, "--builder-api")
+
+
+def charon_ready_for_complete(fs: EpbsFilesystem) -> bool:
+    """True when Charon still has ``--builder-api`` (prepare kept the MEV path).
+
+    Args:
+        fs: IO adapter used to read ``charon.service``.
+    """
+    path = fs.unit_path("charon")
+    if not fs.exists(path):
+        return False
+    return charon_has_builder_api(fs.read_text(path) or "")
 
 
 def strip_charon_builder_api(charon_content: str) -> str:
@@ -891,7 +917,8 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
 
     Prysm writes proposer-settings JSON and VC flags. Lodestar gets
     ``--builder.urls`` when the binary documents that flag. Other VCs are
-    a documented no-op.
+    a documented no-op. When Charon is installed, VC relay writes are skipped
+    (Charon ``--builder-api`` owns the MEV path until complete).
     Beacon-node sidecar flags are not touched.
 
     Args:
@@ -921,8 +948,9 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     plan.warnings.append(
         "Do not stop MEV-Boost yet. Pre-Gloas proposals still use the sidecar."
     )
-    charon_path = fs.unit_path("charon")
-    if fs.exists(charon_path):
+    via_charon = charon_installed(fs)
+    if via_charon:
+        charon_path = fs.unit_path("charon")
         ch_content = fs.read_text(charon_path) or ""
         if charon_has_builder_api(ch_content):
             plan.actions.append(
@@ -931,12 +959,30 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
                     "unchanged: keep --builder-api until complete (MEV-Boost path)",
                 )
             )
+        else:
+            plan.actions.append(
+                PlanAction(
+                    charon_path,
+                    "warning: Charon has no --builder-api (MEV builder path unset)",
+                )
+            )
+        plan.actions.append(
+            PlanAction(
+                "validator",
+                "skipped: Charon DVT owns builder path (no VC relay list)",
+            )
+        )
         plan.warnings.append(CHARON_EPBS_NOTE)
     if relays.min_bid:
         plan.actions.append(PlanAction("mevboost min-bid", relays.min_bid))
     plan.actions.append(
         PlanAction("relays", f"{len(relays.urls)} URL(s) from mevboost.service")
     )
+
+    if via_charon:
+        plan.applied = apply
+        _ = bn_name  # BN sidecar stays until complete()
+        return plan
 
     vc_key = "consensus" if mode == "integrated_grandine" else "validator"
     vc_path, vc_content = _read_required_unit(fs, vc_key)
@@ -1069,8 +1115,8 @@ def complete(
         Plan including BN strip actions and ``disable_mevboost``.
 
     Raises:
-        EpbsError: If no consensus unit exists, or the VC has no relay list
-            and *force* is False.
+        EpbsError: If no consensus unit exists, or neither a VC relay list nor
+            Charon ``--builder-api`` is present and *force* is False.
     """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
@@ -1094,9 +1140,14 @@ def complete(
     if mode == "separate":
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
-    if not has_relays and not force:
+    via_charon = charon_ready_for_complete(fs)
+    if not has_relays and not via_charon and not force:
         raise EpbsError(COMPLETE_REFUSED)
-    if not has_relays:
+    if via_charon and not has_relays:
+        plan.warnings.append(
+            "Charon DVT path: complete strips --builder-api (no VC relay list)."
+        )
+    elif not has_relays:
         plan.warnings.append(
             "Prepare was a no-op / this VC has no relay list. After this step "
             "the node will use local EL + P2P builder bids only (no off-protocol "
@@ -1173,7 +1224,18 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
         lines.append("VC relays: " + ("yes" if has_relays else "no"))
-        if not has_relays:
+        if charon_installed(fs):
+            if charon_ready_for_complete(fs):
+                lines.append(
+                    "Complete: allowed via Charon --builder-api "
+                    "(DVT owns builder path; no VC relay list required)."
+                )
+            elif not has_relays:
+                lines.append(
+                    "Charon --builder-api: already removed (or never set). "
+                    "Complete needs a VC relay list or --force."
+                )
+        elif not has_relays:
             if level == "placeholder":
                 lines.append(
                     "Prepare: no-op on this client — Complete will stop "

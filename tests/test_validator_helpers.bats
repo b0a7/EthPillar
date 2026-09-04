@@ -122,23 +122,34 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "epbsTuiSupported is true when Charon is installed (any VC)" {
+  write_lighthouse_validator_service
+  write_charon_service
+  run epbsTuiSupported
+  [ "$status" -eq 0 ]
+}
+
 @test "epbsTuiSupported is false when no VC is installed" {
-  rm -f "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE"
+  rm -f "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
   export CONSENSUS_SERVICE_FILE="/nonexistent/consensus.service"
   export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
   run epbsTuiSupported
   [ "$status" -ne 0 ]
 }
 
 @test "epbsTuiSupported is false for Lighthouse VC" {
   write_lighthouse_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
   run epbsTuiSupported
   [ "$status" -ne 0 ]
 }
 
 @test "epbsTuiSupported is false for Grandine integrated VC" {
-  rm -f "$VALIDATOR_SERVICE_FILE"
+  rm -f "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
   export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
   write_grandine_integrated_consensus
   run epbsTuiSupported
   [ "$status" -ne 0 ]

@@ -7,7 +7,13 @@ setup() {
 @test "MEV menu lists ePBS migration only for a supported VC" {
   grep -q 'ePBS migration' ethpillar.sh
   grep -q 'submenuEPBS' ethpillar.sh
-  grep -A30 '^submenuMEV-Boost()' ethpillar.sh | grep -q 'epbsTuiSupported'
+  grep -A40 '^submenuMEV-Boost()' ethpillar.sh | grep -q 'epbsTuiSupported'
+  grep -A40 '^submenuMEV-Boost()' ethpillar.sh | grep -q 'isCharonEnabled'
+}
+
+@test "Charon menu lists ePBS migration" {
+  grep -A60 '^submenuCharon()' ethpillar.sh | grep -q 'ePBS migration'
+  grep -A60 '^submenuCharon()' ethpillar.sh | grep -q 'submenuEPBS'
 }
 
 @test "functions.sh defines ePBS CLI wrappers" {
