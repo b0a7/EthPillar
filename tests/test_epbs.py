@@ -18,12 +18,17 @@ from deploy.charon import generate_charon_service
 from manage.epbs import (
     CHARON_EPBS_NOTE,
     COMPLETE_REFUSED,
+    MIGRATION_FORMAT,
+    MIGRATION_VERSION,
     EpbsError,
     complete_rollback_hint,
     EpbsFilesystem,
     charon_has_builder_api,
     complete,
     eth_min_bid_to_gwei,
+    export_migration,
+    import_migration,
+    load_migration_file,
     parse_mevboost_relays,
     prepare,
     status,
@@ -60,7 +65,7 @@ def _fs(tmp_path: Path) -> EpbsFilesystem:
         mev-boost sets ``fs.mevboost_disabled``.
     """
     systemd = tmp_path / "systemd"
-    systemd.mkdir()
+    systemd.mkdir(parents=True, exist_ok=True)
     settings = tmp_path / "proposer-settings.json"
     fs = EpbsFilesystem(
         systemd_dir=str(systemd),
@@ -673,3 +678,194 @@ def test_complete_refused_on_prysm_without_prepare(tmp_path: Path) -> None:
         complete(fs, apply=False)
     assert str(exc.value) == COMPLETE_REFUSED
     assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+
+
+def test_export_import_round_trip_prysm(tmp_path: Path) -> None:
+    """Export on MEV host; import applies Prysm relays on VC-only host."""
+    mev_fs = _fs(tmp_path / "mev")
+    _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        mev_fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    out = tmp_path / "bn-test.ethpillar.epbs-migration"
+    path, payload = export_migration(mev_fs, output=str(out), hostname="bn-test")
+    assert path == str(out)
+    assert out.is_file()
+    assert payload["format"] == MIGRATION_FORMAT
+    assert payload["version"] == MIGRATION_VERSION
+    assert payload["hostname"] == "bn-test"
+    assert len(payload["relays"]) == 2
+    assert payload["min_bid"] == "0.006"
+
+    loaded = load_migration_file(str(out))
+    assert loaded.urls == payload["relays"]
+    assert loaded.min_bid == "0.006"
+
+    vc_fs = _fs(tmp_path / "vc")
+    _write(
+        vc_fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://10.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--enable-builder",
+        ),
+    )
+    plan = import_migration(str(out), vc_fs, apply=True)
+    assert plan.command == "import"
+    assert plan.applied
+    settings = json.loads(Path(vc_fs.prysm_settings_path).read_text(encoding="utf-8"))
+    assert settings["default_config"]["builder"]["relays"] == [r["url"] for r in RELAYS]
+    assert "validator" in plan.services_to_restart
+
+
+def test_import_lodestar_applies_builder_urls(tmp_path: Path) -> None:
+    """Import writes Lodestar --builder.urls from a migration file."""
+    mev_fs = _fs(tmp_path / "mev")
+    _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.01", RELAYS))
+    out = tmp_path / "mig.ethpillar.epbs-migration"
+    export_migration(mev_fs, output=str(out), hostname="x")
+
+    vc_fs = _fs(tmp_path / "vc")
+    vc_fs.run_help = lambda _argv: "--builder.urls --builder.minBid\n"
+    _write(
+        vc_fs,
+        "validator",
+        generate_lodestar_vc_service(
+            "mainnet",
+            "ep",
+            "--beaconNodes=http://10.0.0.1:5052",
+            fee_parameters=f"--suggestedFeeRecipient={FEE}",
+            extra_parameters="--builder",
+        ),
+    )
+    plan = import_migration(str(out), vc_fs, apply=True)
+    assert plan.applied
+    args = _args(Path(vc_fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert has_flag(args, "--builder.urls")
+    assert get_flag_value(args, "--builder.minBid") == "10000000"
+
+
+def test_import_writes_vc_relays_even_with_charon(tmp_path: Path) -> None:
+    """Split DV import still writes VC relays (unlike co-located prepare)."""
+    mev_fs = _fs(tmp_path / "mev")
+    _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    out = tmp_path / "dv.ethpillar.epbs-migration"
+    export_migration(mev_fs, output=str(out), hostname="bn")
+
+    vc_fs = _fs(tmp_path / "vc")
+    _write(
+        vc_fs,
+        "charon",
+        generate_charon_service("mainnet", "http://10.0.0.1:5052", builder_api=True),
+    )
+    _write(
+        vc_fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:3600",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--enable-builder",
+        ),
+    )
+    plan = import_migration(str(out), vc_fs, apply=True)
+    assert plan.applied
+    assert Path(vc_fs.prysm_settings_path).is_file()
+    assert CHARON_EPBS_NOTE in plan.warnings
+
+
+def test_complete_remote_vc_prepared_without_local_vc(tmp_path: Path) -> None:
+    """MEV/CC host complete with --remote-vc-prepared strips BN and stops MEV."""
+    fs = _fs(tmp_path)
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
+    done = complete(fs, apply=True, remote_vc_prepared=True)
+    assert done.applied
+    assert done.disable_mevboost
+    assert fs.mevboost_disabled is True  # type: ignore[attr-defined]
+    assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert any("Remote VC prepared" in w for w in done.warnings)
+    st = status(fs)
+    assert "Split LXC (no local VC)" in st
+
+
+def test_complete_charon_only_host_strips_builder_api(tmp_path: Path) -> None:
+    """VC/Charon host complete strips --builder-api without BN/MEV."""
+    fs = _fs(tmp_path)
+    _write(
+        fs,
+        "charon",
+        generate_charon_service("mainnet", "http://10.0.0.1:5052", builder_api=True),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:3600",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--enable-builder",
+        ),
+    )
+    done = complete(fs, apply=True)
+    assert done.applied
+    assert done.disable_mevboost is False
+    assert not charon_has_builder_api(
+        Path(fs.unit_path("charon")).read_text(encoding="utf-8")
+    )
+    assert "charon" in done.services_to_restart
+    st = status(fs)
+    assert "Split LXC (VC/Charon host)" in st
+
+
+def test_complete_solo_vc_host_is_noop(tmp_path: Path) -> None:
+    """Solo VC host complete reports nothing local after import."""
+    fs = _fs(tmp_path)
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://10.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--enable-builder",
+        ),
+    )
+    done = complete(fs, apply=False)
+    assert done.disable_mevboost is False
+    assert any("nothing local to complete" in a.detail for a in done.actions)
+
+
+def test_load_migration_file_rejects_bad_format(tmp_path: Path) -> None:
+    """Unknown format / empty relays raise EpbsError."""
+    bad = tmp_path / "bad.ethpillar.epbs-migration"
+    bad.write_text(json.dumps({"format": "nope", "version": 1, "relays": ["x"]}), encoding="utf-8")
+    with pytest.raises(EpbsError, match="Unknown migration format"):
+        load_migration_file(str(bad))
+    empty = tmp_path / "empty.ethpillar.epbs-migration"
+    empty.write_text(
+        json.dumps({"format": MIGRATION_FORMAT, "version": MIGRATION_VERSION, "relays": []}),
+        encoding="utf-8",
+    )
+    with pytest.raises(EpbsError, match="no relays"):
+        load_migration_file(str(empty))

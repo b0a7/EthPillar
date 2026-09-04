@@ -133,19 +133,69 @@ EOF
   [ "$status" -ne 0 ]
 }
 
-@test "epbsTuiSupported is false when no VC is installed" {
+@test "epbsTuiSupported is false when no VC and no MEV are installed" {
   rm -f "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
   export CONSENSUS_SERVICE_FILE="/nonexistent/consensus.service"
   export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
   export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
   run epbsTuiSupported
   [ "$status" -ne 0 ]
+}
+
+@test "epbsTuiSupported is true for MEV without local VC (split LXC export)" {
+  rm -f "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
+  export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE
+  MEVBOOST_SERVICE_FILE=$(mktemp)
+  echo "[Service]" > "$MEVBOOST_SERVICE_FILE"
+  run epbsTuiSupported
+  status_rc=$status
+  rm -f "$MEVBOOST_SERVICE_FILE"
+  [ "$status_rc" -eq 0 ]
+}
+
+@test "epbsImportUnderValidator is true for Prysm VC without MEV" {
+  write_prysm_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsImportUnderValidator
+  [ "$status" -eq 0 ]
+}
+
+@test "epbsImportUnderValidator is false when MEV is installed" {
+  write_prysm_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE
+  MEVBOOST_SERVICE_FILE=$(mktemp)
+  echo "[Service]" > "$MEVBOOST_SERVICE_FILE"
+  run epbsImportUnderValidator
+  status_rc=$status
+  rm -f "$MEVBOOST_SERVICE_FILE"
+  [ "$status_rc" -ne 0 ]
+}
+
+@test "epbsImportUnderCharon is false while charonEpbsSupported stub returns false" {
+  write_lodestar_validator_service
+  write_charon_service
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run charonEpbsSupported
+  [ "$status" -ne 0 ]
+  run epbsImportUnderCharon
+  [ "$status" -ne 0 ]
+  # Until Charon ePBS ships, DV with supported VC imports under Validator.
+  run epbsImportUnderValidator
+  [ "$status" -eq 0 ]
 }
 
 @test "epbsTuiSupported is false for Lighthouse VC" {
   write_lighthouse_validator_service
   rm -f "$CHARON_SERVICE_FILE"
   export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
   run epbsTuiSupported
   [ "$status" -ne 0 ]
 }
@@ -154,6 +204,7 @@ EOF
   rm -f "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
   export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
   export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
   write_grandine_integrated_consensus
   run epbsTuiSupported
   [ "$status" -ne 0 ]
