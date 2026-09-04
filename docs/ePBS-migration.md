@@ -19,17 +19,15 @@ Do **not** run the after-fork step until Gloas is live on your network. Doing it
 
 ### Open the menu
 
-**Without Charon:** **MEV-Boost → 9 ePBS migration**
+**MEV-Boost → 9 ePBS migration**
 
-That item appears only when the installed validator client **supports the migration** (currently **Prysm** and **Lodestar** v1.47.0+). Lighthouse, Teku, Nimbus, and Grandine do not get the MEV menu entry; the CLI in the developer section still works for those clients.
+That item appears only for **solo** installs when the validator client fully supports the migration (currently **Prysm** and **Lodestar** v1.47.0+). Lighthouse, Teku, Nimbus, and Grandine do not get the menu; the CLI still works for those clients.
 
-**With Obol Charon:** **Obol Charon DV → 8 ePBS migration**
-
-Charon owns the builder/MEV path, so the menu lives under Charon (not MEV-Boost), for any signer VC. Prepare does **not** write VC relay lists.
+**Obol Charon DVT:** the menu is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon (that would bypass the middleware).
 
 | Menu item | When to use it |
 |-----------|----------------|
-| Before Gloas Fork — Apply Relays to VC *(solo)* / Keep Charon builder-api *(Charon)* | Before the Gloas fork |
+| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork |
 | After Gloas Fork — Complete ePBS migration | After the Gloas fork |
 | Show current ePBS status | Anytime (read-only) |
 
@@ -73,7 +71,7 @@ If you ran Complete too early: restore `consensus.service` from the newest `cons
 
 Charon sits between your validator client and beacon node and proxies builder/MEV traffic. On the pre-Gloas path that means `charon.service` runs with **`--builder-api`** (MEV-Boost builder proxy).
 
-Open the cutover from **Obol Charon DV → ePBS migration** (not under MEV-Boost).
+Open the cutover from **MEV-Boost → ePBS migration** when Charon is **not** installed. While Charon is present the TUI entry is hidden (signer VC support does not apply). CLI prepare still skips VC relay writes so relays are not written behind Charon by mistake.
 
 | Step | Charon behavior |
 |------|-----------------|
@@ -123,7 +121,7 @@ PYTHONPATH="${PWD}" python3 -m manage.epbs complete --apply --force
 
 Changed units and Prysm settings are copied to `*.bak.epbs.<timestamp>` before overwrite. `complete` stops and disables `mevboost.service`; the unit file is kept. If you completed too early: restore the newest `consensus.service.bak.epbs.*` over `consensus.service`, then `sudo systemctl enable --now mevboost && sudo systemctl daemon-reload && sudo systemctl restart consensus`.
 
-Implementation: `manage/epbs.py`. TUI wrappers: `runEpbsCli` / `runEpbsMigrationStep` / `submenuEPBS` in `functions.sh`. Menu visibility: `epbsTuiSupported` (Prysm and Lodestar under MEV; any Charon install under Charon).
+Implementation: `manage/epbs.py`. TUI wrappers: `runEpbsCli` / `runEpbsMigrationStep` / `submenuEPBS` in `functions.sh`. Menu visibility: `epbsTuiSupported` (Prysm/Lodestar only when Charon is absent).
 
 ### What each command changes
 
@@ -133,7 +131,7 @@ Relays and `-min-bid` are read from `mevboost.service`. Sidecar URLs are those c
 
 | Client | Behavior |
 |--------|----------|
-| **Obol Charon** (any signer VC) | Keeps `--builder-api`; **skips** VC relay writes. TUI under Charon menu. |
+| **Obol Charon** (any signer VC) | Keeps `--builder-api`; **skips** VC relay writes (CLI). TUI entry hidden until Obol ships Gloas/ePBS support. |
 | **Prysm** (v7.1.7+, no Charon) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema v2) with `default_config.builder.enabled`, `relays`, and `max_execution_payment: "0"` (Gloas execution-payment cap; `0` is the public-bid / proto default and does not disable builder payments). Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Upserts VC `--enable-builder` and `--proposer-settings-file`. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
 | **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. Older builds are skipped so the VC can still start. |
 | **Lighthouse, Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |

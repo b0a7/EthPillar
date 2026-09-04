@@ -112,21 +112,25 @@ EOF
 
 @test "epbsTuiSupported is true for Prysm VC" {
   write_prysm_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
   run epbsTuiSupported
   [ "$status" -eq 0 ]
 }
 
 @test "epbsTuiSupported is true for Lodestar VC" {
   write_lodestar_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
   run epbsTuiSupported
   [ "$status" -eq 0 ]
 }
 
-@test "epbsTuiSupported is true when Charon is installed (any VC)" {
-  write_lighthouse_validator_service
+@test "epbsTuiSupported is false when Charon is installed (even with Lodestar VC)" {
+  write_lodestar_validator_service
   write_charon_service
   run epbsTuiSupported
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
 }
 
 @test "epbsTuiSupported is false when no VC is installed" {

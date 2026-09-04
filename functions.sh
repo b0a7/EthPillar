@@ -779,13 +779,14 @@ getValidatorClient(){
     echo "$VALIDATOR_CLIENT"
 }
 
-# True when the TUI should offer ePBS migration.
+# True when the MEV-Boost TUI should offer ePBS migration.
+# Charon DVT: hide until Obol ships Gloas/ePBS support — signer VC capability
+# does not matter (builder path is Charon's, not the VC's).
 # Solo: manage.epbs.support_level == "full" (Prysm, Lodestar).
-# Charon DVT: Charon owns the builder path — menu lives under Charon.
 # CLI (`python -m manage.epbs`) is not gated; placeholders stay there.
 epbsTuiSupported() {
     if isCharonEnabled; then
-        return 0
+        return 1
     fi
     local client
     client=$(getValidatorClient)
