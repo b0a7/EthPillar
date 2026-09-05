@@ -10,12 +10,16 @@ Two-step operator flow (EthStaker Glamsterdam guidance):
    list from step 1. Refused unless the VC already has a relay list (or
    ``--force``).
 
+**Obol Charon DVT:** when ``charon.service`` is installed, Charon owns the
+builder path (``--builder-api`` → MEV-Boost). Prepare keeps that flag and does
+**not** write VC relay lists (which would bypass Charon). Complete is allowed
+while ``--builder-api`` remains, and strips it with the BN sidecar.
+
 Support levels:
 
-* ``full`` — Prysm (shipped ``BuilderConfig.Relays`` in proposer-settings).
-* ``prerelease`` — Lodestar flags from open PR ChainSafe/lodestar#9832;
-  prepare writes them only when ``lodestar validator --help`` lists
-  ``--builder.urls``.
+* ``full`` — Prysm (proposer-settings relays) and Lodestar v1.47.0+
+  (VC ``--builder.urls`` / ``--builder.minBid``). Lodestar prepare still
+  probes ``lodestar validator --help`` so older binaries are skipped.
 * ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
   list; prepare is a documented no-op. Complete is refused without
   ``--force``.
@@ -30,6 +34,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from deploy.common import BASE_DATA_DIR, write_service_file
@@ -47,6 +52,7 @@ from manage.service_parse import (
 )
 
 SIDECAR_MARKERS = ("127.0.0.1:18550", "localhost:18550", "[::1]:18550")
+GWEI_PER_ETH = Decimal("1000000000")
 PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
 
 
@@ -90,9 +96,9 @@ CHARON_EPBS_NOTE = (
     "https://github.com/ObolNetwork/charon/releases for upstream support."
 )
 COMPLETE_REFUSED = (
-    "Complete refused: this validator has no relay list to replace MEV-Boost. "
-    "Run prepare first, or pass --force to stop MEV-Boost and use local EL + "
-    "P2P bids only."
+    "Complete refused: this validator has no relay list to replace MEV-Boost "
+    "(and Charon has no --builder-api). Run prepare first, or pass --force to "
+    "stop MEV-Boost and use local EL + P2P bids only."
 )
 
 # BN flags whose *value* is a builder/relay URL (strip only sidecar URLs).
@@ -117,10 +123,9 @@ SUPPORT_NOTES: Dict[str, str] = {
         "Requires Prysm v7.1.7+."
     ),
     "Lodestar": (
-        "Prerelease: VC flags --builder.urls / --builder.minBid from "
-        "ChainSafe/lodestar#9832. Prepare writes them only when "
-        "`lodestar validator --help` lists --builder.urls; tagged releases "
-        "are skipped so the VC can still start."
+        "Full: VC flags --builder.urls / --builder.minBid (v1.47.0+). "
+        "Prepare writes them only when `lodestar validator --help` lists "
+        "--builder.urls."
     ),
     "Lighthouse": (
         "Placeholder: VC has --builder-proposals only; no released relay-list "
@@ -187,7 +192,7 @@ class MigrationPlan:
     Attributes:
         command: ``prepare`` or ``complete``.
         client: Detected validator (or BN for integrated Grandine).
-        support: ``full``, ``prerelease``, or ``placeholder``.
+        support: ``full`` or ``placeholder``.
         notes: Per-client support blurb from :data:`SUPPORT_NOTES`.
         actions: Files or systemd operations that would change (or did).
         warnings: Operator cautions (do not complete pre-fork, unknown flags).
@@ -199,7 +204,7 @@ class MigrationPlan:
 
     command: str
     client: str
-    support: str  # full | prerelease | placeholder
+    support: str  # full | placeholder
     notes: str
     actions: List[PlanAction] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -518,14 +523,12 @@ def support_level(client: str) -> str:
         client: Validator client name (``Prysm``, ``Lodestar``, …).
 
     Returns:
-        ``full`` (Prysm), ``prerelease`` (Lodestar), or ``placeholder``.
+        ``full`` (Prysm, Lodestar) or ``placeholder``.
         The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) is shown
         only for ``full``.
     """
-    if client == "Prysm":
+    if client in ("Prysm", "Lodestar"):
         return "full"
-    if client == "Lodestar":
-        return "prerelease"
     return "placeholder"
 
 
@@ -654,23 +657,49 @@ def apply_relays_prysm(
     return new_unit, settings_json, settings_path
 
 
+def eth_min_bid_to_gwei(eth: str) -> str:
+    """Convert MEV-Boost ``-min-bid`` (ETH) to Lodestar ``--builder.minBid`` (Gwei).
+
+    Lodestar ``parseBuilderMinBid`` rejects decimals. Flashbots MEV-Boost
+    ``-min-bid`` is ETH (EthPillar default ``0.006`` → ``6000000`` Gwei).
+
+    Args:
+        eth: Non-negative ETH amount as a decimal string.
+
+    Returns:
+        Integer Gwei string with no decimal point.
+
+    Raises:
+        EpbsError: If *eth* is not a non-negative number.
+    """
+    try:
+        value = Decimal(str(eth).strip())
+    except (InvalidOperation, AttributeError) as exc:
+        raise EpbsError(f"Cannot convert MEV-Boost min-bid {eth!r} to Gwei") from exc
+    if value < 0:
+        raise EpbsError(f"MEV-Boost min-bid must be non-negative, got {eth!r}")
+    gwei = (value * GWEI_PER_ETH).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return str(int(gwei))
+
+
 def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
-    """Add prerelease Lodestar VC builder URL / min-bid flags (PR #9832).
+    """Add Lodestar VC builder URL / min-bid flags (v1.47.0+).
 
     Args:
         vc_content: Current ``validator.service`` text.
-        relays: Relays and optional min-bid from MEV-Boost.
+        relays: Relays and optional min-bid from MEV-Boost. ``min_bid`` is ETH
+            and is converted to integer Gwei for ``--builder.minBid``.
 
     Returns:
         Unit text with ``--builder``, ``--builder.urls``, and optional
-        ``--builder.minBid``. Tagged Lodestar may reject these flags.
+        ``--builder.minBid``. Older Lodestar may reject these flags.
     """
     unit = parse_unit(vc_content)
     args = normalize_cli_args(unit.exec_args)
     args = upsert_flag(args, "--builder")
     args = upsert_flag(args, "--builder.urls", ",".join(relays.urls))
     if relays.min_bid:
-        args = upsert_flag(args, "--builder.minBid", relays.min_bid)
+        args = upsert_flag(args, "--builder.minBid", eth_min_bid_to_gwei(relays.min_bid))
     return _rebuild_unit(vc_content, args)
 
 
@@ -707,7 +736,7 @@ def lodestar_has_builder_urls_flag(fs: EpbsFilesystem, vc_content: str) -> bool:
         vc_content: Current ``validator.service`` text (binary + subcommand).
 
     Returns:
-        True if help text contains ``--builder.urls`` (ChainSafe/lodestar#9832).
+        True if help text contains ``--builder.urls`` (Lodestar v1.47.0+).
     """
     args = normalize_cli_args(parse_unit(vc_content).exec_args)
     if not args:
@@ -776,6 +805,15 @@ def strip_bn_sidecar(bn_content: str, bn_client: str) -> str:
     return _rebuild_unit(bn_content, args)
 
 
+def charon_installed(fs: EpbsFilesystem) -> bool:
+    """Return True when ``charon.service`` exists.
+
+    Args:
+        fs: IO adapter used to locate systemd units.
+    """
+    return fs.exists(fs.unit_path("charon"))
+
+
 def charon_has_builder_api(charon_content: str) -> bool:
     """Return True when ``charon.service`` ExecStart includes ``--builder-api``.
 
@@ -784,6 +822,18 @@ def charon_has_builder_api(charon_content: str) -> bool:
     """
     args = normalize_cli_args(parse_unit(charon_content).exec_args)
     return has_flag(args, "--builder-api")
+
+
+def charon_ready_for_complete(fs: EpbsFilesystem) -> bool:
+    """True when Charon still has ``--builder-api`` (prepare kept the MEV path).
+
+    Args:
+        fs: IO adapter used to read ``charon.service``.
+    """
+    path = fs.unit_path("charon")
+    if not fs.exists(path):
+        return False
+    return charon_has_builder_api(fs.read_text(path) or "")
 
 
 def strip_charon_builder_api(charon_content: str) -> str:
@@ -866,7 +916,9 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     """Copy mev-boost relays onto the VC. Keep the sidecar running.
 
     Prysm writes proposer-settings JSON and VC flags. Lodestar gets
-    prerelease ``--builder.urls``. Other VCs are a documented no-op.
+    ``--builder.urls`` when the binary documents that flag. Other VCs are
+    a documented no-op. When Charon is installed, VC relay writes are skipped
+    (Charon ``--builder-api`` owns the MEV path until complete).
     Beacon-node sidecar flags are not touched.
 
     Args:
@@ -896,8 +948,9 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     plan.warnings.append(
         "Do not stop MEV-Boost yet. Pre-Gloas proposals still use the sidecar."
     )
-    charon_path = fs.unit_path("charon")
-    if fs.exists(charon_path):
+    via_charon = charon_installed(fs)
+    if via_charon:
+        charon_path = fs.unit_path("charon")
         ch_content = fs.read_text(charon_path) or ""
         if charon_has_builder_api(ch_content):
             plan.actions.append(
@@ -906,12 +959,30 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
                     "unchanged: keep --builder-api until complete (MEV-Boost path)",
                 )
             )
+        else:
+            plan.actions.append(
+                PlanAction(
+                    charon_path,
+                    "warning: Charon has no --builder-api (MEV builder path unset)",
+                )
+            )
+        plan.actions.append(
+            PlanAction(
+                "validator",
+                "skipped: Charon DVT owns builder path (no VC relay list)",
+            )
+        )
         plan.warnings.append(CHARON_EPBS_NOTE)
     if relays.min_bid:
         plan.actions.append(PlanAction("mevboost min-bid", relays.min_bid))
     plan.actions.append(
         PlanAction("relays", f"{len(relays.urls)} URL(s) from mevboost.service")
     )
+
+    if via_charon:
+        plan.applied = apply
+        _ = bn_name  # BN sidecar stays until complete()
+        return plan
 
     vc_key = "consensus" if mode == "integrated_grandine" else "validator"
     vc_path, vc_content = _read_required_unit(fs, vc_key)
@@ -953,13 +1024,13 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
             plan.actions.append(
                 PlanAction(
                     "Lodestar VC",
-                    "skipped: binary --help has no --builder.urls (tagged release)",
+                    "skipped: binary --help has no --builder.urls (need v1.47.0+)",
                 )
             )
             plan.warnings.append(
                 "Prepare: no-op on this Lodestar build — Complete will stop "
-                "MEV-Boost without a VC relay replacement. Install a build with "
-                "ChainSafe/lodestar#9832, or wait for a tagged release."
+                "MEV-Boost without a VC relay replacement. Install Lodestar "
+                "v1.47.0 or later."
             )
         else:
             new_vc = apply_relays_lodestar(vc_content, relays)
@@ -967,7 +1038,7 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
                 plan.actions.append(
                     PlanAction(
                         vc_path,
-                        "add --builder --builder.urls --builder.minBid (PR #9832)",
+                        "add --builder --builder.urls --builder.minBid",
                     )
                 )
                 plan.services_to_restart.append("validator")
@@ -1044,8 +1115,8 @@ def complete(
         Plan including BN strip actions and ``disable_mevboost``.
 
     Raises:
-        EpbsError: If no consensus unit exists, or the VC has no relay list
-            and *force* is False.
+        EpbsError: If no consensus unit exists, or neither a VC relay list nor
+            Charon ``--builder-api`` is present and *force* is False.
     """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
@@ -1069,9 +1140,14 @@ def complete(
     if mode == "separate":
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
-    if not has_relays and not force:
+    via_charon = charon_ready_for_complete(fs)
+    if not has_relays and not via_charon and not force:
         raise EpbsError(COMPLETE_REFUSED)
-    if not has_relays:
+    if via_charon and not has_relays:
+        plan.warnings.append(
+            "Charon DVT path: complete strips --builder-api (no VC relay list)."
+        )
+    elif not has_relays:
         plan.warnings.append(
             "Prepare was a no-op / this VC has no relay list. After this step "
             "the node will use local EL + P2P builder bids only (no off-protocol "
@@ -1148,7 +1224,18 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
         lines.append("VC relays: " + ("yes" if has_relays else "no"))
-        if not has_relays:
+        if charon_installed(fs):
+            if charon_ready_for_complete(fs):
+                lines.append(
+                    "Complete: allowed via Charon --builder-api "
+                    "(DVT owns builder path; no VC relay list required)."
+                )
+            elif not has_relays:
+                lines.append(
+                    "Charon --builder-api: already removed (or never set). "
+                    "Complete needs a VC relay list or --force."
+                )
+        elif not has_relays:
             if level == "placeholder":
                 lines.append(
                     "Prepare: no-op on this client — Complete will stop "

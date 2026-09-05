@@ -7,7 +7,7 @@ setup() {
 @test "MEV menu lists ePBS migration only for a supported VC" {
   grep -q 'ePBS migration' ethpillar.sh
   grep -q 'submenuEPBS' ethpillar.sh
-  grep -A30 '^submenuMEV-Boost()' ethpillar.sh | grep -q 'epbsTuiSupported'
+  grep -A40 '^submenuMEV-Boost()' ethpillar.sh | grep -q 'epbsTuiSupported'
 }
 
 @test "functions.sh defines ePBS CLI wrappers" {
@@ -27,8 +27,9 @@ setup() {
   grep -q 'enable --now mevboost' docs/ePBS-migration.md
 }
 
-@test "integration matrix has Prysm ePBS migration case" {
-  grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
+@test "integration matrix has Prysm and Lodestar ePBS migration cases" {
+    grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
+    grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_inside_docker.py
   grep -q -- '--force-validator' tests/integration/run_inside_docker.py

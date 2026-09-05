@@ -137,7 +137,6 @@ def download_lodestar(eth_network: str) -> str:
     setup_client_user_and_dir("consensus", "lodestar")
     setup_client_user_and_dir("validator", "lodestar_validator")
 
-    # Resolve version and download URL
     arch_amd64 = get_machine_architecture() == "amd64"
     info = get_release_info("LATEST", arch_amd64)
     lodestar_version = info["version"]

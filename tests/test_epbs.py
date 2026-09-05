@@ -23,6 +23,7 @@ from manage.epbs import (
     EpbsFilesystem,
     charon_has_builder_api,
     complete,
+    eth_min_bid_to_gwei,
     parse_mevboost_relays,
     prepare,
     status,
@@ -100,7 +101,8 @@ def _args(content: str) -> list[str]:
 def test_tui_is_gated_to_full_support_only() -> None:
     """MEV-Boost TUI (``epbsTuiSupported``) matches ``support_level == full``."""
     assert support_level("Prysm") == "full"
-    for client in ("Lodestar", "Lighthouse", "Teku", "Nimbus", "Grandine", ""):
+    assert support_level("Lodestar") == "full"
+    for client in ("Lighthouse", "Teku", "Nimbus", "Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -189,8 +191,20 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
     assert "Complete: refused" not in after
 
 
+def test_eth_min_bid_to_gwei() -> None:
+    """MEV-Boost ETH min-bid becomes Lodestar integer Gwei."""
+    assert eth_min_bid_to_gwei("0") == "0"
+    assert eth_min_bid_to_gwei("0.006") == "6000000"
+    assert eth_min_bid_to_gwei("0.01") == "10000000"
+    assert eth_min_bid_to_gwei("1") == "1000000000"
+    with pytest.raises(EpbsError, match="Cannot convert"):
+        eth_min_bid_to_gwei("not-a-number")
+    with pytest.raises(EpbsError, match="non-negative"):
+        eth_min_bid_to_gwei("-0.1")
+
+
 def test_prysm_charon_prepare_and_complete(tmp_path: Path) -> None:
-    """Charon DVT: prepare keeps --builder-api; complete strips it with BN sidecar."""
+    """Charon DVT: prepare skips VC relays; complete strips --builder-api + BN."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(
@@ -227,7 +241,13 @@ def test_prysm_charon_prepare_and_complete(tmp_path: Path) -> None:
     ch = Path(fs.unit_path("charon")).read_text(encoding="utf-8")
     assert charon_has_builder_api(ch)
     assert any("unchanged: keep --builder-api" in a.detail for a in prep.actions)
+    assert any("Charon DVT owns builder path" in a.detail for a in prep.actions)
     assert CHARON_EPBS_NOTE in prep.warnings
+    # Must not bypass Charon with a VC relay list.
+    assert "--proposer-settings-file" not in Path(fs.unit_path("validator")).read_text(
+        encoding="utf-8"
+    )
+    assert not Path(fs.prysm_settings_path).exists()
 
     done = complete(fs, apply=True)
     assert done.applied
@@ -235,6 +255,7 @@ def test_prysm_charon_prepare_and_complete(tmp_path: Path) -> None:
     assert not charon_has_builder_api(ch_after)
     assert "charon" in done.services_to_restart
     assert CHARON_EPBS_NOTE in done.warnings
+    assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
     hint = complete_rollback_hint(fs)
     assert hint in done.format_text()
     assert "charon.service.bak.epbs" in hint
@@ -242,6 +263,58 @@ def test_prysm_charon_prepare_and_complete(tmp_path: Path) -> None:
     st = status(fs)
     assert "Charon: installed" in st
     assert "builder-api=no" in st
+    assert "already removed (or never set)" in st
+    assert "Complete: refused" not in st
+
+
+def test_lodestar_charon_prepare_skips_vc_builder_urls(tmp_path: Path) -> None:
+    """Charon + Lodestar: prepare must not write --builder.urls on the VC."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "--builder.urls --builder.minBid\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.01", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_lodestar_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--builder --builder.urls http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "charon",
+        generate_charon_service(
+            "mainnet",
+            "http://127.0.0.1:5052",
+            builder_api=True,
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_lodestar_vc_service(
+            "mainnet",
+            "ep",
+            "--beaconNodes=http://127.0.0.1:3600",
+            fee_parameters=f"--suggestedFeeRecipient={FEE}",
+            extra_parameters="--builder --distributed",
+        ),
+    )
+    prep = prepare(fs, apply=True)
+    assert prep.applied
+    assert any("Charon DVT owns builder path" in a.detail for a in prep.actions)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(vc_args, "--builder.urls")
+    assert not has_flag(vc_args, "--builder.minBid")
+    assert has_flag(vc_args, "--builder")
+
+    done = complete(fs, apply=True)
+    assert done.applied
+    assert not charon_has_builder_api(
+        Path(fs.unit_path("charon")).read_text(encoding="utf-8")
+    )
+    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
+    assert not has_flag(bn_args, "--builder.urls")
 
 
 def test_complete_rollback_hint_omits_missing_units(tmp_path: Path) -> None:
@@ -263,7 +336,7 @@ def test_strip_charon_builder_api() -> None:
     assert not charon_has_builder_api(stripped)
 
 
-def test_lodestar_prepare_prerelease_flags(tmp_path: Path) -> None:
+def test_lodestar_prepare_adds_builder_urls(tmp_path: Path) -> None:
     """Lodestar prepare adds ``--builder.urls`` when ``--help`` lists the flag."""
     fs = _fs(tmp_path)
     fs.run_help = lambda _argv: "--builder.urls --builder.minBid\n"
@@ -288,12 +361,12 @@ def test_lodestar_prepare_prerelease_flags(tmp_path: Path) -> None:
         ),
     )
     plan = prepare(fs, apply=True)
-    assert plan.support == "prerelease"
+    assert plan.support == "full"
     args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
     assert has_flag(args, "--builder")
     urls = get_flag_value(args, "--builder.urls")
     assert "boost-relay.flashbots.net" in urls
-    assert get_flag_value(args, "--builder.minBid") == "0.01"
+    assert get_flag_value(args, "--builder.minBid") == "10000000"  # 0.01 ETH → Gwei
 
     complete(fs, apply=True)
     bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
