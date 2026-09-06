@@ -19,40 +19,53 @@ Do **not** run the after-fork step until Gloas is live on your network. Doing it
 
 ### Open the menu
 
-**MEV-Boost → 9 ePBS migration**
+There are two TUI paths, depending on which host you are on.
+
+**MEV/CC host (or solo with local MEV-Boost)** — **MEV-Boost → ePBS migration**
 
 That item appears when:
 
 - **Solo co-located** — MEV + local VC, no Charon, and the VC fully supports migration (**Prysm**, **Lodestar** v1.47.0+)
 - **Split LXC (MEV/CC host)** — `mevboost.service` present and **no** local `validator.service` (always shown; export / remote complete)
 
-Lighthouse, Teku, Nimbus, and Grandine do not get the solo menu; the CLI still works for those clients.
+When this host has MEV but **no local validator**, the submenu title is **ePBS migration (remote VC)**. When MEV and the validator share a host, the submenu title is **ePBS migration**.
 
-**Obol Charon DVT (co-located with MEV):** the MEV menu entry is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon on a co-located prepare (that would bypass the middleware).
+**VC host (validator, no local MEV-Boost)** — **Validator → ePBS migration (import)**
 
-| Menu item | When to use it |
-|-----------|----------------|
-| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork (co-located) |
-| Before Gloas Fork — Export migration file | Before the Gloas fork (MEV host, remote VC) |
-| After Gloas Fork — Complete ePBS migration | After the Gloas fork |
-| Show current ePBS status | Anytime (read-only) |
+That item appears when `mevboost.service` is absent and the VC is Prysm or Lodestar. It opens the submenu titled **ePBS migration (import)**.
+
+Lighthouse, Teku, Nimbus, and Grandine do not get the solo or import TUI menus; the CLI still works for those clients.
+
+**Obol Charon DVT (co-located with MEV):** the MEV menu entry is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon on a co-located prepare (that would bypass the middleware). Until Obol ships Charon ePBS, DV setups with a supported signer VC use **Validator → ePBS migration (import)**. Once `charonEpbsSupported` is true, the Charon menu shows **ePBS migration (import)** instead.
+
+| Submenu title | Menu item | When to use it |
+|---------------|-----------|----------------|
+| **ePBS migration** (MEV + local VC) | Before Gloas Fork — Apply Relays to VC | Before the Gloas fork (co-located) |
+| **ePBS migration (remote VC)** (MEV, no local VC) | Before Gloas Fork — Export migration file | Before the Gloas fork (MEV host, remote VC) |
+| **ePBS migration (import)** (VC host) | Before Gloas Fork — Import migration file | Before the Gloas fork (VC host, no local MEV) |
+| any of the above | After Gloas Fork — Complete ePBS migration | After the Gloas fork |
+| any of the above | Show current ePBS status | Anytime (read-only) |
 
 ### Split LXC / remote VC
 
 When the beacon node + MEV-Boost live on one host and the validator (or Charon + VC) on another:
 
-1. **MEV/CC host** — **MEV-Boost → ePBS migration → Export migration file**. Writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` (relays + min-bid). Copy that file to the VC host.
-2. **VC host** — **Validator → ePBS migration (import)** (or **Charon → ePBS migration** once `charonEpbsSupported` is true). Import applies prepare from the file. Until Obol ships Charon ePBS, DV setups with a supported signer VC use the Validator menu.
+1. **MEV/CC host** — **MEV-Boost → ePBS migration**. With no local validator the submenu is **ePBS migration (remote VC)**. Choose **Before Gloas Fork — Export migration file**. EthPillar writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` immediately (relays + min-bid) and shows one result textbox. Copy that file to the VC host.
+2. **VC host** — **Validator → ePBS migration (import)** (or **Charon → ePBS migration (import)** once `charonEpbsSupported` is true). The submenu is **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. You get a path inputbox first, then the four-screen import flow. Until Obol ships Charon ePBS, DV setups with a supported signer VC use the Validator menu.
 3. **After Gloas** — Complete on the **MEV/CC host** (stops MEV, strips BN sidecar; confirm the other host already imported). Complete on the **VC/Charon host** strips Charon `--builder-api` when present; solo VC is a no-op locally.
 
 EC placement does not matter for this flow.
 
 ### What you see
 
-**Before Gloas Fork** and **After Gloas Fork** use the same four screens. Nothing is written until you say yes on the second screen.
+**Export** writes the file immediately, then shows one result textbox. **Before Gloas Fork — Export migration file** always writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` and then opens a textbox titled **Export ePBS migration file** (path plus a JSON preview). There is no dry-run, confirm, or apply step — Export does not use the four screens below.
+
+**Import** starts with a path inputbox titled **Import ePBS migration file**. After you submit a valid path, it uses the same four screens as prepare/complete (dry-run → confirm → apply → optional restart).
+
+**Prepare** (co-located **Before Gloas Fork — Apply Relays to VC**) and **Complete** (**After Gloas Fork**) keep that four-screen flow. Nothing is written until you say yes on the confirm screen.
 
 1. **Preview (dry-run).** A scrollable textbox titled with the menu item. It lists your client, what *would* change, warnings, and which services would need a restart. The last line is **`Dry-run (no files written).`** Press OK. Disk is unchanged.
-2. **Confirm.** Yes/no. Before-fork: *Write these VC changes now?* (MEV-Boost stays running). After-fork: *Stop MEV-Boost and remove BN sidecar flags now?* (cutting over early can miss proposals). **No** or Esc returns to the ePBS menu with no changes.
+2. **Confirm.** Yes/no. Co-located prepare: *Write these VC changes now?* (MEV-Boost stays running). Import: *Write these VC changes now?* (MEV-Boost on the other host stays running until after Gloas). After-fork: *Stop MEV-Boost and remove BN sidecar flags now?* (cutting over early can miss proposals). **No** or Esc returns to the ePBS menu with no changes.
 3. **Applied.** If you confirmed, EthPillar copies the old files next to the originals, writes the new config, then shows a second textbox titled **`… — applied`**.
 4. **Restart?** Only if something actually changed. Example: *Restart now so the new flags take effect?* **No** leaves the new config on disk; it takes effect the next time you restart that client from the usual menus. After Complete, the applied textbox also shows how to roll back (restore `*.bak.epbs.*` and `systemctl enable --now mevboost`).
 
@@ -208,9 +221,22 @@ The MEV-Boost TUI shows ePBS migration for **full** support (solo) or always on 
 
 ### Inspecting a running Prysm VC
 
+After import (or co-located prepare), Prysm’s journal may show **both**:
+
+- `Proposer settings loaded from default` — from `--suggested-fee-recipient`
+- `Proposer settings loaded from file` — from `--proposer-settings-file`
+
+That pair is expected. Relays live in the JSON at `default_config.builder.relays`. Seeing “loaded from default” does **not** mean import failed.
+
+Confirm the import from the running process flags and the JSON file, not from that journal line alone:
+
 ```bash
+# journal: both "from default" and "from file" is OK
+sudo journalctl -u validator --no-pager -n 80 | grep -i "proposer settings"
+
 pid=$(sudo systemctl show -p MainPID --value validator)
 tr '\0' ' ' < /proc/${pid}/cmdline
 # expect --enable-builder and --proposer-settings-file=...
 sudo cat /var/lib/prysm_validator/proposer-settings.json
+# relays are under default_config.builder.relays
 ```
