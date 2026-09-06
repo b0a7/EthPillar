@@ -29,7 +29,7 @@ Use this when execution, consensus, MEV-Boost, and a **solo** validator client a
 
 **MEV-Boost → ePBS migration**
 
-That item appears when the local validator fully supports migration (**Prysm** or **Lodestar** v1.47.0+). Lighthouse, Teku, Nimbus, and Grandine do not get the TUI entry; the [CLI](#for-automation-and-developers) still works for those clients.
+That item appears when the local validator fully supports migration (**Prysm** or **Lodestar** v1.47.0+). Lighthouse, Teku, Nimbus, and Grandine do not get the TUI entry.
 
 | Menu item | When to use it |
 |-----------|----------------|
@@ -56,7 +56,7 @@ That item appears when the local validator fully supports migration (**Prysm** o
 |----------------|---------------------|
 | **Prysm** (v7.1.7+) | Writes your MEV-Boost relays into Prysm’s proposer settings and turns builder mode on. Restarts the validator if you agree. **Does not** stop MEV-Boost. |
 | **Lodestar** (v1.47.0+) | Writes `--builder.urls` and `--builder.minBid` on the validator. Older Lodestar builds skip this so the client can still start. **Does not** stop MEV-Boost. |
-| **Lighthouse, Teku, Nimbus, Grandine** | Not offered in the TUI. Prepare is a no-op; Complete is refused unless you use the CLI `--force`. |
+| **Lighthouse, Teku, Nimbus, Grandine** | Not offered in the TUI. |
 
 After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks keep working as they do today.
 
@@ -96,7 +96,7 @@ Use this when Charon sits between your validator client and beacon node on the *
 
 On the pre-Gloas path, `charon.service` runs with **`--builder-api`** (MEV-Boost builder proxy). Charon owns the builder path — not the signer VC.
 
-**TUI:** **MEV-Boost → ePBS migration** is **hidden** while Charon is installed, even if the signer VC is Prysm or Lodestar. Obol has not shipped stable Gloas/ePBS support yet (`charonEpbsSupported` is false). When upstream support lands, the cutover will be offered under Charon rather than under the validator menu.
+**TUI:** **MEV-Boost → ePBS migration** is **hidden** while Charon is installed, even if the signer VC is Prysm or Lodestar. Obol has not shipped stable Gloas/ePBS support yet (`charonEpbsSupported` is false). When upstream support lands, that same **MEV-Boost → ePBS migration** entry will be shown again for co-located Charon nodes.
 
 **CLI today** (`python -m manage.epbs`):
 
