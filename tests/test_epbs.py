@@ -753,8 +753,12 @@ def test_import_lodestar_applies_builder_urls(tmp_path: Path) -> None:
     assert get_flag_value(args, "--builder.minBid") == "10000000"
 
 
-def test_import_writes_vc_relays_even_with_charon(tmp_path: Path) -> None:
-    """Split DV import still writes VC relays (unlike co-located prepare)."""
+def test_import_refused_when_charon_lacks_epbs_support(tmp_path: Path) -> None:
+    """Import refuses on Charon hosts until charon_epbs_supported is True."""
+    from manage.epbs import CHARON_IMPORT_REFUSED, charon_epbs_supported
+
+    assert charon_epbs_supported() is False
+
     mev_fs = _fs(tmp_path / "mev")
     _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     out = tmp_path / "dv.ethpillar.epbs-migration"
@@ -777,10 +781,10 @@ def test_import_writes_vc_relays_even_with_charon(tmp_path: Path) -> None:
             extra_parameters="--enable-builder",
         ),
     )
-    plan = import_migration(str(out), vc_fs, apply=True)
-    assert plan.applied
-    assert Path(vc_fs.prysm_settings_path).is_file()
-    assert CHARON_EPBS_NOTE in plan.warnings
+    with pytest.raises(EpbsError, match="Import refused") as exc:
+        import_migration(str(out), vc_fs, apply=False)
+    assert str(exc.value) == CHARON_IMPORT_REFUSED
+    assert not Path(vc_fs.prysm_settings_path).exists()
 
 
 def test_complete_remote_vc_prepared_without_local_vc(tmp_path: Path) -> None:

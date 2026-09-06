@@ -33,7 +33,11 @@ setup() {
   grep -q 'export' docs/ePBS-migration.md
   grep -q 'import' docs/ePBS-migration.md
   grep -q 'enable --now mevboost' docs/ePBS-migration.md
-  grep -q 'Split LXC' docs/ePBS-migration.md
+  grep -q 'Split hosts' docs/ePBS-migration.md
+  grep -q 'Solo node' docs/ePBS-migration.md
+  grep -q 'Obol Charon DV' docs/ePBS-migration.md
+  grep -q 'Import refused' manage/epbs.py
+  grep -q 'charon_epbs_supported' manage/epbs.py
 }
 
 @test "integration matrix has Prysm and Lodestar ePBS migration cases" {

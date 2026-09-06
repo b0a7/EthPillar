@@ -20,8 +20,8 @@ only strips Charon ``--builder-api`` when present.
 MEV, Charon owns the builder path (``--builder-api`` → MEV-Boost). Prepare
 keeps that flag and does **not** write VC relay lists (which would bypass
 Charon). Complete is allowed while ``--builder-api`` remains, and strips it
-with the BN sidecar. Split-LXC ``import`` still writes VC relays so the
-signer is ready after Charon complete.
+with the BN sidecar. Split-LXC ``import`` is refused while Charon lacks ePBS
+support (same gate as ``charonEpbsSupported`` in the TUI).
 
 Support levels:
 
@@ -107,6 +107,14 @@ CHARON_EPBS_NOTE = (
     "Obol Charon has no stable ePBS/Gloas release yet; EthPillar removes "
     "--builder-api on complete (MEV-Boost proxy path). Watch "
     "https://github.com/ObolNetwork/charon/releases for upstream support."
+)
+CHARON_IMPORT_REFUSED = (
+    "Import refused: Charon is installed and does not support ePBS yet "
+    "(builder path is Charon's, not the signer VC's). Wait for an Obol "
+    "release with Gloas/ePBS support — see "
+    "https://github.com/ObolNetwork/charon/releases. Co-located Charon "
+    "hosts use prepare/complete via CLI only after upstream support; "
+    "split-LXC import will appear under the Charon menu then."
 )
 COMPLETE_REFUSED = (
     "Complete refused: this validator has no relay list to replace MEV-Boost "
@@ -828,6 +836,21 @@ def charon_installed(fs: EpbsFilesystem) -> bool:
     return fs.exists(fs.unit_path("charon"))
 
 
+def charon_epbs_supported(fs: Optional[EpbsFilesystem] = None) -> bool:
+    """Return True when Charon has shipped Gloas/ePBS support.
+
+    Mirrors ``charonEpbsSupported`` in ``functions.sh``. Stub: always False
+    until Obol publishes a stable ePBS release
+    (https://github.com/ObolNetwork/charon/releases). When True, split-LXC
+    import is allowed on Charon hosts and the Charon TUI menu owns it.
+
+    Args:
+        fs: Unused today; reserved for a future version-gate probe.
+    """
+    _ = fs
+    return False
+
+
 def charon_has_builder_api(charon_content: str) -> bool:
     """Return True when ``charon.service`` ExecStart includes ``--builder-api``.
 
@@ -1228,9 +1251,10 @@ def import_migration(
 ) -> MigrationPlan:
     """Apply a portable migration file onto the local validator client.
 
-    Does not require local ``mevboost.service``. Unlike co-located prepare,
-    Charon does **not** skip VC relay writes — split DV needs the signer ready
-    before Charon ``--builder-api`` is stripped on complete.
+    Does not require local ``mevboost.service``. When Charon is installed,
+    import is refused until :func:`charon_epbs_supported` is True (same gate
+    as the Charon TUI menu). Writing VC relays while Charon still owns the
+    builder path would bypass the middleware.
 
     Args:
         path: Path to a ``.ethpillar.epbs-migration`` file.
@@ -1241,9 +1265,13 @@ def import_migration(
         Plan including actions, warnings, and services to restart.
 
     Raises:
-        EpbsError: If no validator unit exists or the migration file is invalid.
+        EpbsError: If no validator unit exists, Charon blocks import, or the
+            migration file is invalid.
     """
     fs = fs or EpbsFilesystem()
+    if charon_installed(fs) and not charon_epbs_supported(fs):
+        raise EpbsError(CHARON_IMPORT_REFUSED)
+
     vc_name, bn_name, mode = detect_clients(fs)
     if mode == "none" or not vc_name:
         raise EpbsError("No validator client unit found.")
