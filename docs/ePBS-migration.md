@@ -19,27 +19,24 @@ Do **not** run the after-fork step until Gloas is live on your network. Doing it
 
 ### Open the menu
 
-There are two TUI paths, depending on which host you are on.
+There are two TUI paths, depending on which sort of node you are on.
 
-**MEV/CC host (or solo with local MEV-Boost)** — **MEV-Boost → ePBS migration**
+**MEV/CC host (or full solo with local MEV-Boost)** — **MEV-Boost → ePBS migration**
 
 That item appears when:
 
-- **Solo co-located** — MEV + local VC, no Charon, and the VC fully supports migration (**Prysm**, **Lodestar** v1.47.0+)
-- **Split LXC (MEV/CC host)** — `mevboost.service` present and **no** local `validator.service` (always shown; export / remote complete)
+- **Solo co-located** — MEV + local VC, and the VC fully supports migration (**Prysm**, **Lodestar** v1.47.0+)
+- **MEV/CC host, with VC on a different host** — `mevboost.service` present and **no** local `validator.service` (always shown; export / remote complete)
 
 When this host has MEV but **no local validator**, the submenu title is **ePBS migration (remote VC)**. When MEV and the validator share a host, the submenu title is **ePBS migration**.
 
 **VC host (validator, no local MEV-Boost, no Charon)** — **Validator → ePBS migration (import)**
 
-That item appears when `mevboost.service` is absent, Charon is not installed, and the VC is Prysm or Lodestar. It opens the submenu titled **ePBS migration (import)**.
+That item appears when `mevboost.service` is absent, Charon is not installed, and the VC supports ePBS (currently Prysm or Lodestar). It opens the submenu titled **ePBS migration (import)**.
 
-**Charon host (split LXC, no local MEV-Boost)** — **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true; otherwise hidden.
-Lighthouse, Teku, Nimbus, and Grandine do not get the solo or import TUI menus; the CLI still works for those clients.
+**Obol Charon DVT (co-located with MEV):** the MEV menu entry is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon on a co-located prepare (that would bypass the charon middleware).
 
-**Obol Charon DVT (co-located with MEV):** the MEV menu entry is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon on a co-located prepare (that would bypass the middleware).
-
-**Obol Charon DVT (split LXC, no local MEV):** import lives under **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true. Until then the import entry is **hidden** (not under Validator).
+**Obol Charon DVT (no local MEV):** import lives under **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true. Until then the import entry is **hidden**.
 
 | Submenu title | Menu item | When to use it |
 |---------------|-----------|----------------|
@@ -49,12 +46,13 @@ Lighthouse, Teku, Nimbus, and Grandine do not get the solo or import TUI menus; 
 | any of the above | After Gloas Fork — Complete ePBS migration | After the Gloas fork |
 | any of the above | Show current ePBS status | Anytime (read-only) |
 
-### Split LXC / remote VC
+### remote VC
 
 When the beacon node + MEV-Boost live on one host and the validator (or Charon + VC) on another:
 
 1. **MEV/CC host** — **MEV-Boost → ePBS migration**. With no local validator the submenu is **ePBS migration (remote VC)**. Choose **Before Gloas Fork — Export migration file**. EthPillar writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` immediately (relays + min-bid) and shows one result textbox. Copy that file to the VC host.
-2. **VC / Charon host** — solo supported VC: **Validator → ePBS migration (import)**. With Charon installed: **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true; until Obol ships Charon ePBS the import entry is **hidden** (not under Validator). The submenu is **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. You get a path inputbox first, then the four-screen import flow.3. **After Gloas** — Complete on the **MEV/CC host** (stops MEV, strips BN sidecar; confirm the other host already imported). Complete on the **VC/Charon host** strips Charon `--builder-api` when present; solo VC is a no-op locally.
+2. **VC / Charon host** — solo supported VC: **Validator → ePBS migration (import)**. With Charon installed: **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true; until Obol ships Charon ePBS the import entry is **hidden**. The submenu is **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. You get a path inputbox first, then the four-screen import flow.
+3. **After Gloas** — Complete on the **MEV/CC host** (stops MEV, strips BN sidecar; confirm the other host already imported). Complete on the **VC/Charon host** strips Charon `--builder-api` when present; solo VC is a no-op locally.
 
 EC placement does not matter for this flow.
 
@@ -94,7 +92,7 @@ After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks kee
 
 Restart order after complete when Charon is present: **consensus → charon → validator**.
 
-If you skipped the first step, **Complete is refused** so you do not drop MEV-Boost with no VC relay replacement.
+]If you skipped the first step, **Complete is refused** so you do not drop MEV-Boost with no VC relay replacement.
 
 If you ran Complete too early: restore `consensus.service` from the newest `consensus.service.bak.epbs.*`, then `sudo systemctl enable --now mevboost` and restart consensus (`sudo systemctl daemon-reload && sudo systemctl restart consensus`).
 
