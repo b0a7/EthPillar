@@ -30,13 +30,16 @@ That item appears when:
 
 When this host has MEV but **no local validator**, the submenu title is **ePBS migration (remote VC)**. When MEV and the validator share a host, the submenu title is **ePBS migration**.
 
-**VC host (validator, no local MEV-Boost)** — **Validator → ePBS migration (import)**
+**VC host (validator, no local MEV-Boost, no Charon)** — **Validator → ePBS migration (import)**
 
-That item appears when `mevboost.service` is absent and the VC is Prysm or Lodestar. It opens the submenu titled **ePBS migration (import)**.
+That item appears when `mevboost.service` is absent, Charon is not installed, and the VC is Prysm or Lodestar. It opens the submenu titled **ePBS migration (import)**.
 
+**Charon host (split LXC, no local MEV-Boost)** — **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true; otherwise hidden.
 Lighthouse, Teku, Nimbus, and Grandine do not get the solo or import TUI menus; the CLI still works for those clients.
 
-**Obol Charon DVT (co-located with MEV):** the MEV menu entry is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon on a co-located prepare (that would bypass the middleware). Until Obol ships Charon ePBS, DV setups with a supported signer VC use **Validator → ePBS migration (import)**. Once `charonEpbsSupported` is true, the Charon menu shows **ePBS migration (import)** instead.
+**Obol Charon DVT (co-located with MEV):** the MEV menu entry is **hidden** while Charon is installed — even if the signer VC is Prysm or Lodestar. Builder/MEV traffic goes through Charon, and Obol has not shipped stable Gloas/ePBS support yet. The CLI still refuses to write VC relay lists behind Charon on a co-located prepare (that would bypass the middleware).
+
+**Obol Charon DVT (split LXC, no local MEV):** import lives under **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true. Until then the import entry is **hidden** (not under Validator).
 
 | Submenu title | Menu item | When to use it |
 |---------------|-----------|----------------|
@@ -51,8 +54,7 @@ Lighthouse, Teku, Nimbus, and Grandine do not get the solo or import TUI menus; 
 When the beacon node + MEV-Boost live on one host and the validator (or Charon + VC) on another:
 
 1. **MEV/CC host** — **MEV-Boost → ePBS migration**. With no local validator the submenu is **ePBS migration (remote VC)**. Choose **Before Gloas Fork — Export migration file**. EthPillar writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` immediately (relays + min-bid) and shows one result textbox. Copy that file to the VC host.
-2. **VC host** — **Validator → ePBS migration (import)** (or **Charon → ePBS migration (import)** once `charonEpbsSupported` is true). The submenu is **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. You get a path inputbox first, then the four-screen import flow. Until Obol ships Charon ePBS, DV setups with a supported signer VC use the Validator menu.
-3. **After Gloas** — Complete on the **MEV/CC host** (stops MEV, strips BN sidecar; confirm the other host already imported). Complete on the **VC/Charon host** strips Charon `--builder-api` when present; solo VC is a no-op locally.
+2. **VC / Charon host** — solo supported VC: **Validator → ePBS migration (import)**. With Charon installed: **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true; until Obol ships Charon ePBS the import entry is **hidden** (not under Validator). The submenu is **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. You get a path inputbox first, then the four-screen import flow.3. **After Gloas** — Complete on the **MEV/CC host** (stops MEV, strips BN sidecar; confirm the other host already imported). Complete on the **VC/Charon host** strips Charon `--builder-api` when present; solo VC is a no-op locally.
 
 EC placement does not matter for this flow.
 
@@ -100,7 +102,9 @@ If you ran Complete too early: restore `consensus.service` from the newest `cons
 
 Charon sits between your validator client and beacon node and proxies builder/MEV traffic. On the pre-Gloas path that means `charon.service` runs with **`--builder-api`** (MEV-Boost builder proxy).
 
-Open the cutover from **MEV-Boost → ePBS migration** when Charon is **not** installed. While Charon is present the TUI entry is hidden (signer VC support does not apply). CLI prepare still skips VC relay writes so relays are not written behind Charon by mistake.
+Open the cutover from **MEV-Boost → ePBS migration** when Charon is **not** installed (co-located). While Charon is present the co-located MEV TUI entry is hidden (signer VC support does not apply). CLI prepare still skips VC relay writes so relays are not written behind Charon by mistake.
+
+On a **split LXC** Charon+VC host (no local MEV), import lives under **Charon → ePBS migration** only after `charonEpbsSupported` is true; until then that entry is hidden (not shown under Validator).
 
 | Step | Charon behavior |
 |------|-----------------|

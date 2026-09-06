@@ -178,6 +178,16 @@ EOF
   [ "$status_rc" -ne 0 ]
 }
 
+@test "epbsImportUnderValidator is false when Charon is installed even with Prysm VC" {
+  write_prysm_validator_service
+  write_charon_service
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsImportUnderValidator
+  [ "$status" -ne 0 ]
+  run epbsImportUnderCharon
+  [ "$status" -ne 0 ]
+}
+
 @test "epbsImportUnderCharon is false while charonEpbsSupported stub returns false" {
   write_lodestar_validator_service
   write_charon_service
@@ -186,9 +196,9 @@ EOF
   [ "$status" -ne 0 ]
   run epbsImportUnderCharon
   [ "$status" -ne 0 ]
-  # Until Charon ePBS ships, DV with supported VC imports under Validator.
+  # Charon owns the builder path: hide import entirely until Charon ePBS ships.
   run epbsImportUnderValidator
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
 }
 
 @test "epbsTuiSupported is false for Lighthouse VC" {

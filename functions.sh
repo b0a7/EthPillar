@@ -810,21 +810,20 @@ epbsTuiSupported() {
     esac
 }
 
-# True when Validator/Charon menus should offer split-LXC ePBS import.
-# Charon host: only when charonEpbsSupported. Otherwise (or until then):
-# solo VC full-support under the Validator menu (including DV with VC support
-# when Charon ePBS is not yet available).
-epbsImportMenuSupported() {
+# True when the Charon submenu should show split-LXC ePBS import.
+# Charon owns the builder path; hide entirely until charonEpbsSupported.
+epbsImportUnderCharon() {
     local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
-    # Co-located / Machine A use the MEV menu, not import.
     [[ -f "$mev_svc" ]] && return 1
+    isCharonEnabled && charonEpbsSupported
+}
 
-    if isCharonEnabled; then
-        if charonEpbsSupported; then
-            return 0
-        fi
-        # Until Charon ships ePBS, fall through to VC capability below.
-    fi
+# True when the Validator submenu should show split-LXC ePBS import.
+# Solo VC only — never when Charon is installed (Charon menu or hidden).
+epbsImportUnderValidator() {
+    local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    [[ -f "$mev_svc" ]] && return 1
+    isCharonEnabled && return 1
     local client
     client=$(getValidatorClient)
     case "$client" in
@@ -833,17 +832,9 @@ epbsImportMenuSupported() {
     esac
 }
 
-# True when the Charon submenu (not Validator) should show ePBS import.
-epbsImportUnderCharon() {
-    isCharonEnabled && charonEpbsSupported
-}
-
-# True when the Validator submenu should show ePBS import.
-epbsImportUnderValidator() {
-    epbsImportMenuSupported || return 1
-    # Prefer Charon menu when Charon ePBS is supported.
-    epbsImportUnderCharon && return 1
-    return 0
+# True when either import menu entry should appear (VC-only or Charon ePBS).
+epbsImportMenuSupported() {
+    epbsImportUnderCharon || epbsImportUnderValidator
 }
 
 # True when this MEV host has no local VC (split-LXC export/complete mode).
