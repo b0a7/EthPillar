@@ -4,6 +4,11 @@ name: CI — Integration
 # Scheduled full-suite runs use ci-nightly.yml; use workflow_dispatch for ad-hoc integration only.
 on:
   workflow_dispatch:
+  # Agent tokens cannot workflow_dispatch (403). Push on this stacked branch
+  # is the fallback so CI — Integration still runs after Nimbus ePBS lands.
+  push:
+    branches:
+      - cursor/epbs-lighthouse-teku-b82c
 
 permissions:
   contents: read
