@@ -216,6 +216,32 @@ assert_complete_units() {
     esac
 }
 
+# Teku treats a missing --validator-keys path as a key FILE and exits
+# INVALIDARGUMENT ("Could not find the key file"). An empty directory is a
+# valid 0-keystore wallet (Teku warns and stays up; --exit-when-no-validator-keys
+# is off by default). Test-only: empty-wallet smoke; not operator prepare/complete.
+enable_teku_empty_wallet() {
+    local spec keys_dir pass_dir unit_user
+    spec=$(grep -oE -- '--validator-keys=[^[:space:]\\]+' "$VC_UNIT" | head -1 | cut -d= -f2-)
+    keys_dir="${spec%%:*}"
+    pass_dir="${spec#*:}"
+    if [[ -z "$keys_dir" ]]; then
+        keys_dir="/var/lib/teku_validator/validator_keys"
+        pass_dir="$keys_dir"
+    fi
+    unit_user=$(grep -m1 '^User=' "$VC_UNIT" | cut -d= -f2)
+    unit_user="${unit_user:-validator}"
+    sudo mkdir -p "$keys_dir"
+    sudo chown "${unit_user}:${unit_user}" "$keys_dir"
+    sudo chmod 700 "$keys_dir"
+    if [[ -n "$pass_dir" && "$pass_dir" != "$keys_dir" ]]; then
+        sudo mkdir -p "$pass_dir"
+        sudo chown "${unit_user}:${unit_user}" "$pass_dir"
+        sudo chmod 700 "$pass_dir"
+    fi
+    echo "✅ test-only: created empty $keys_dir so Teku can start without keystores"
+}
+
 # Lodestar exits without keys unless --keymanager is set (warn instead of YargsError).
 # Test-only: empty-wallet smoke; not part of operator prepare/complete.
 enable_lodestar_empty_wallet() {
@@ -287,9 +313,10 @@ if ! sudo systemctl is-active --quiet mevboost; then
 fi
 echo "✅ prepare: VC ePBS flags written; BN sidecar and MEV-Boost still present"
 
-if [[ "$VC_CLIENT" == "Lodestar" ]]; then
-    enable_lodestar_empty_wallet
-fi
+case "$VC_CLIENT" in
+    Lodestar) enable_lodestar_empty_wallet ;;
+    Teku) enable_teku_empty_wallet ;;
+esac
 
 reload_and_restart validator
 check_service_health validator --force-validator

@@ -54,4 +54,6 @@ setup() {
   grep -q -- '--force-validator' tests/integration/run_inside_docker.py
   test -f tests/integration/test_epbs.sh
   grep -q -- '--force-validator' tests/integration/test_epbs.sh
+  grep -q 'enable_lodestar_empty_wallet' tests/integration/test_epbs.sh
+  grep -q 'enable_teku_empty_wallet' tests/integration/test_epbs.sh
 }
