@@ -63,7 +63,9 @@ variations = [
 custom_tests = [
     ("Geth-Lighthouse-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"),
     ("Nethermind-Grandine-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Nethermind --cc Grandine --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"),
-    ("Prysm-Reth-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config 'Custom Setup'"),
+    # Prysm has no predefined combo; this is the only Prysm+MEV deploy. Live-binary
+    # ePBS (empty-wallet VC start) runs here instead of a second full deploy.
+    ("Prysm-Reth-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config 'Custom Setup' --test-epbs"),
     ("Ethrex-Teku-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Ethrex --cc Teku --network SEPOLIA --config 'Custom Setup'"),
     ("Teku-VC-Only-HOODI", f"{RUN_TEST} deploy/deploy-node.py --combo Teku-Besu --network HOODI --config 'Validator Client Only' --vc_only_bn_address http://192.168.1.123:5052"),
     ("Geth-Lighthouse-Charon-Lodestar-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lodestar --network SEPOLIA --mev --charon --config 'Custom Setup'"),
@@ -82,33 +84,16 @@ switch_tests = [
     ("Switch-Reth-Lighthouse-to-Besu-Nimbus", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-switching"),
 ]
 
-# Post-install ePBS migration cases (empty-wallet VC start).
-epbs_tests = [
-    (
-        "Prysm-Reth-ePBS-Migration-SEPOLIA",
-        f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Prysm --vc Prysm --network SEPOLIA --mev --config 'Custom Setup' --test-epbs",
-    ),
-    (
-        "Lodestar-Reth-ePBS-Migration-SEPOLIA",
-        f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lodestar --vc Lodestar --network SEPOLIA "
-        "--mev --config 'Custom Setup' --test-epbs",
-    ),
-    (
-        "Lighthouse-Reth-ePBS-Migration-SEPOLIA",
-        f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --vc Lighthouse --network SEPOLIA "
-        "--mev --config 'Custom Setup' --test-epbs",
-    ),
-    (
-        "Teku-Besu-ePBS-Migration-SEPOLIA",
-        f"{RUN_TEST} deploy/deploy-node.py --ec Besu --cc Teku --vc Teku --network SEPOLIA "
-        "--mev --config 'Custom Setup' --test-epbs",
-    ),
-    (
-        "Nimbus-Nethermind-ePBS-Migration-SEPOLIA",
-        f"{RUN_TEST} deploy/deploy-node.py --ec Nethermind --cc Nimbus --vc Nimbus --network SEPOLIA "
-        "--mev --config 'Custom Setup' --test-epbs",
-    ),
-]
+# Combos whose Solo Staking variation already deploys VC+MEV. Attach live-binary
+# ePBS (``test_epbs.sh`` empty-wallet start) there instead of a second full deploy.
+# Caplin-Erigon is excluded (Caplin is not an ePBS VC). Prysm is attached on the
+# Custom Setup row above. Per-client flag logic stays in tests/test_epbs.py.
+EPBS_SOLO_COMBOS = frozenset({
+    "Lighthouse-Reth",
+    "Lodestar-Besu",
+    "Nimbus-Nethermind",
+    "Teku-Besu",
+})
 
 def parse_clients_from_cmd(cmd: str) -> Tuple[Optional[str], Optional[str]]:
     """Extract execution and consensus client names from a deploy command."""
@@ -233,6 +218,11 @@ class TestTask:
         self.start_time = 0
         self.failure_reason: Optional[str] = None
 
+def _combo_gets_epbs(combo: str, variation: str) -> bool:
+    """Return True when this combo row already deploys VC+MEV (live-binary ePBS host)."""
+    return combo in EPBS_SOLO_COMBOS and "--mev" in variation and "Solo Staking" in variation
+
+
 def generate_tests():
     """Build the full integration matrix as :class:`TestTask` instances."""
     tests = []
@@ -245,7 +235,13 @@ def generate_tests():
             local_network = match.group(1) if match else ""
             
             cmd = f"{RUN_TEST} deploy/deploy-node.py --combo \"{combo}\" {actual_var}"
-            tests.append(TestTask(combo, cmd, actual_var, local_network))
+            display_var = actual_var
+            log_suffix = local_network
+            if _combo_gets_epbs(combo, actual_var):
+                cmd += " --test-epbs"
+                display_var = f"{actual_var} + ePBS"
+                log_suffix = f"{local_network}-ePBS" if local_network else "ePBS"
+            tests.append(TestTask(combo, cmd, display_var, log_suffix))
 
     for label, cmd in custom_tests:
         tests.append(TestTask(label, cmd, "Custom"))
@@ -253,8 +249,6 @@ def generate_tests():
         tests.append(TestTask(label, cmd, "Upgrade"))
     for label, cmd in switch_tests:
         tests.append(TestTask(label, cmd, "Switch"))
-    for label, cmd in epbs_tests:
-        tests.append(TestTask(label, cmd, "ePBS"))
 
     return tests
 
@@ -609,7 +603,7 @@ async def main():
         "--filter",
         action="append",
         default=[],
-        help="Only run tests whose label/log name contains this substring (repeatable)",
+        help="Only run tests whose label, log name, or command contains this substring (repeatable)",
     )
     args = parser.parse_args()
     if args.parallel != 1:
@@ -662,7 +656,10 @@ async def main():
         needles = [f.lower() for f in args.filter]
         tasks = [
             t for t in tasks
-            if any(n in t.label.lower() or n in t.log_name.lower() for n in needles)
+            if any(
+                n in t.label.lower() or n in t.log_name.lower() or n in t.cmd.lower()
+                for n in needles
+            )
         ]
         if not tasks:
             print(f"No tests matched --filter {args.filter!r}")

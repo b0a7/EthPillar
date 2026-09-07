@@ -14,6 +14,22 @@ The integration tests simulate various validator configurations (Solo Staking, L
 
 > **Why systemd in Docker?** Without a real systemd PID 1, we can only verify that service *files* are generated — not that they are correct. The systemd-enabled container lets us run `systemctl start <service>` and verify the service reaches the `active` state, catching bugs like wrong binary paths, bad flags, or permission issues that file generation tests would miss.
 
+### ePBS migration (live binary)
+
+Client-specific ePBS flag logic (Prysm proposer-settings, Lodestar `builder.urls`/`minBid`, Lighthouse `--builder-proposals`, Teku registration flag, Nimbus `--payload-builder=true`) is covered by unit tests in `tests/test_epbs.py`. The Docker matrix still starts each supported VC so the **real binary accepts those flags**, but it does not pay for a second full deploy.
+
+`--test-epbs` runs `test_epbs.sh` in the **same container** after an existing VC+MEV install (~100–160s). Dedicated `*-ePBS-Migration-*` cases were removed because they repeated Custom Setup / combo deploys of the same stack.
+
+| VC | Live-binary ePBS attached to |
+|----|------------------------------|
+| Prysm | `Prysm-Reth-Custom-Setup-SEPOLIA` (no predefined combo) |
+| Lodestar | combo `Lodestar-Besu` Solo Staking (HOODI, `--mev`) |
+| Lighthouse | combo `Lighthouse-Reth` Solo Staking (HOODI, `--mev`) |
+| Teku | combo `Teku-Besu` Solo Staking (HOODI, `--mev`) |
+| Nimbus | combo `Nimbus-Nethermind` Solo Staking (HOODI, `--mev`) |
+
+`--filter epbs` matches these rows via the `--test-epbs` flag on the command. Charon and Full Node Only rows are not attached (no supported ePBS VC+MEV path).
+
 ## Requirements
 
 - **Docker**: The tests must be run on a system with Docker installed and the daemon running.

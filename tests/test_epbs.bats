@@ -46,13 +46,17 @@ setup() {
   grep -q 'charon_epbs_supported' manage/epbs.py
 }
 
-@test "integration matrix has Prysm, Lodestar, Lighthouse, Teku, and Nimbus ePBS migration cases" {
-    grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
-    grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
-    grep -q 'Lighthouse-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
-    grep -q 'Teku-Besu-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
-    grep -q 'Nimbus-Nethermind-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
-  grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
+@test "integration matrix attaches live-binary ePBS once per supported VC" {
+  # Prysm has no combo; ePBS piggybacks on the existing Custom Setup deploy.
+  grep -q "Prysm-Reth-Custom-Setup-SEPOLIA" tests/integration/run_docker_tests.py
+  grep 'Prysm-Reth-Custom-Setup-SEPOLIA' tests/integration/run_docker_tests.py | grep -q -- '--test-epbs'
+  # Other VCs attach to Solo Staking combo rows (VC+MEV already deployed).
+  grep -q 'EPBS_SOLO_COMBOS' tests/integration/run_docker_tests.py
+  grep -A8 'EPBS_SOLO_COMBOS' tests/integration/run_docker_tests.py | grep -q 'Lighthouse-Reth'
+  grep -A8 'EPBS_SOLO_COMBOS' tests/integration/run_docker_tests.py | grep -q 'Lodestar-Besu'
+  grep -A8 'EPBS_SOLO_COMBOS' tests/integration/run_docker_tests.py | grep -q 'Teku-Besu'
+  grep -A8 'EPBS_SOLO_COMBOS' tests/integration/run_docker_tests.py | grep -q 'Nimbus-Nethermind'
+  grep -q '_combo_gets_epbs' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_inside_docker.py
   grep -q -- '--force-validator' tests/integration/run_inside_docker.py
   test -f tests/integration/test_epbs.sh
@@ -60,4 +64,9 @@ setup() {
   grep -q 'enable_lodestar_empty_wallet' tests/integration/test_epbs.sh
   grep -q 'enable_teku_empty_wallet' tests/integration/test_epbs.sh
   grep -q 'enable_nimbus_empty_wallet' tests/integration/test_epbs.sh
+}
+
+@test "integration matrix has no dedicated ePBS-Migration duplicate deploys" {
+  run grep -E 'ePBS-Migration' tests/integration/run_docker_tests.py
+  [ "$status" -ne 0 ]
 }
