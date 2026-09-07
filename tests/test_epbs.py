@@ -19,6 +19,8 @@ from manage.epbs import (
     CHARON_EPBS_NOTE,
     COMPLETE_REFUSED,
     LIGHTHOUSE_EPBS_MIN_VERSION,
+    NIMBUS_EPBS_MIN_VERSION,
+    NIMBUS_PAYLOAD_BUILDER_FLAG,
     TEKU_BUILDER_REGISTRATION_FLAG,
     TEKU_EPBS_MIN_VERSION,
     TEKU_EXTERNAL_SIGNER_REFUSED,
@@ -34,9 +36,11 @@ from manage.epbs import (
     eth_min_bid_to_gwei,
     export_migration,
     extract_lighthouse_version,
+    extract_nimbus_version,
     extract_teku_version,
     import_migration,
     lighthouse_supports_epbs,
+    nimbus_supports_epbs,
     teku_supports_epbs,
     load_migration_file,
     parse_mevboost_relays,
@@ -119,7 +123,8 @@ def test_tui_is_gated_to_full_support_only() -> None:
     assert support_level("Lodestar") == "full"
     assert support_level("Lighthouse") == "full"
     assert support_level("Teku") == "full"
-    for client in ("Nimbus", "Grandine", ""):
+    assert support_level("Nimbus") == "full"
+    for client in ("Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -1033,9 +1038,20 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
         complete(fs, apply=False)
 
 
-def test_nimbus_placeholder_complete_strips_sidecar(tmp_path: Path) -> None:
-    """Nimbus prepare is a no-op; complete is refused without ``--force``."""
+def test_extract_nimbus_version() -> None:
+    """``nimbus_* --version`` text yields x.y.z and ignores commit suffixes."""
+    assert extract_nimbus_version("Nimbus beacon node v26.8.0") == "26.8.0"
+    assert extract_nimbus_version("Nimbus validator client v26.8.0-00aedddf") == "26.8.0"
+    assert extract_nimbus_version("Nimbus beacon node v26.7.0-abc1234") == "26.7.0"
+    assert extract_nimbus_version("v26.8.0") == "26.8.0"
+    assert extract_nimbus_version("Usage: nimbus_validator_client [OPTIONS]") == ""
+    assert extract_nimbus_version("") == ""
+
+
+def test_nimbus_prepare_and_complete(tmp_path: Path) -> None:
+    """Nimbus v26.8.0+ prepare writes --payload-builder=true; complete strips BN URL."""
     fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Nimbus validator client v26.8.0\n"
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(
         fs,
@@ -1052,19 +1068,256 @@ def test_nimbus_placeholder_complete_strips_sidecar(tmp_path: Path) -> None:
             "mainnet",
             "ep",
             "--beacon-node=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+        ),
+    )
+    dry = prepare(fs, apply=False)
+    assert dry.support == "full"
+    assert dry.applied is False
+    assert "--payload-builder=true" not in Path(fs.unit_path("validator")).read_text(
+        encoding="utf-8"
+    )
+
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    args = _args(vc)
+    assert has_flag(args, NIMBUS_PAYLOAD_BUILDER_FLAG)
+    assert get_flag_value(args, NIMBUS_PAYLOAD_BUILDER_FLAG) == "true"
+    assert "boost-relay.flashbots.net" not in vc
+    assert any("no --payload-builder-url on the VC" in w for w in plan.warnings)
+    assert "validator" in plan.services_to_restart
+
+    again = prepare(fs, apply=True)
+    assert again.applied
+    assert any("already has --payload-builder=true" in w for w in again.warnings)
+
+    bn_before = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" in bn_before
+    assert has_flag(_args(bn_before), "--payload-builder")
+
+    done = complete(fs, apply=True)
+    assert done.disable_mevboost
+    assert fs.mevboost_disabled is True  # type: ignore[attr-defined]
+    bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" not in bn
+    bn_args = _args(bn)
+    assert not has_flag(bn_args, "--payload-builder-url")
+    assert has_flag(bn_args, "--payload-builder")
+    assert has_flag(
+        _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8")),
+        NIMBUS_PAYLOAD_BUILDER_FLAG,
+    )
+    after = status(fs)
+    assert "VC relays: yes" in after
+    assert "already removed" in after
+    assert "Complete: refused" not in after
+
+
+def test_nimbus_prepare_skips_old_version(tmp_path: Path) -> None:
+    """Nimbus below v26.8.0 is a prepare no-op; complete is refused."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Nimbus validator client v26.7.0-abc1234\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_nimbus_bn_service(
+            "mainnet", JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
             extra_parameters="--payload-builder=true",
         ),
     )
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
     plan = prepare(fs, apply=True)
-    assert plan.support == "placeholder"
+    assert plan.applied
+    assert plan.support == "full"
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+    assert any("below v26.8.0" in a.detail for a in plan.actions)
+    assert nimbus_supports_epbs(fs, before) is False
+    assert NIMBUS_EPBS_MIN_VERSION == "26.8.0"
     with pytest.raises(EpbsError, match="Complete refused"):
         complete(fs, apply=False)
 
-    complete(fs, apply=True, force=True)
+
+def test_nimbus_complete_refused_without_payload_builder(tmp_path: Path) -> None:
+    """Nimbus v26.8.0+ complete without --payload-builder is refused."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Nimbus validator client v26.8.0\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_nimbus_bn_service(
+            "mainnet", JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+        ),
+    )
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
+
+
+def test_nimbus_charon_prepare_skips_vc_payload_builder(tmp_path: Path) -> None:
+    """Charon + Nimbus: prepare must not write --payload-builder on the VC."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Nimbus validator client v26.8.0\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_nimbus_bn_service(
+            "mainnet", JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "charon",
+        generate_charon_service(
+            "mainnet",
+            "http://127.0.0.1:5052",
+            builder_api=True,
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://127.0.0.1:3600",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--distributed",
+        ),
+    )
+    prep = prepare(fs, apply=True)
+    assert prep.applied
+    assert any("Charon DVT owns builder path" in a.detail for a in prep.actions)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(vc_args, NIMBUS_PAYLOAD_BUILDER_FLAG)
+
+    done = complete(fs, apply=True)
+    assert done.applied
+    assert not charon_has_builder_api(
+        Path(fs.unit_path("charon")).read_text(encoding="utf-8")
+    )
     bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
     assert not has_flag(bn_args, "--payload-builder-url")
-    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
-    assert "payload-builder=true" in vc or "--payload-builder=true" in vc
+
+
+def test_nimbus_prepare_warns_without_fee_recipient(tmp_path: Path) -> None:
+    """Nimbus prepare warns when VC --suggested-fee-recipient is missing."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Nimbus validator client v26.8.0\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_nimbus_bn_service(
+            "mainnet", JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://127.0.0.1:5052",
+        ),
+    )
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    assert any("suggested-fee-recipient" in w for w in plan.warnings)
+    assert has_flag(
+        _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8")),
+        NIMBUS_PAYLOAD_BUILDER_FLAG,
+    )
+
+
+def test_status_reports_nimbus(tmp_path: Path) -> None:
+    """Status lists Nimbus full support and payload-builder readiness."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Nimbus validator client v26.8.0\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_nimbus_bn_service(
+            "mainnet", JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+        ),
+    )
+    text = status(fs)
+    assert "Nimbus" in text
+    assert "full" in text
+    assert "VC relays: no" in text
+    assert "Complete: refused until Prepare writes a VC relay list" in text
+
+    prepare(fs, apply=True)
+    after = status(fs)
+    assert "VC relays: yes" in after
+
+
+def test_import_nimbus_applies_payload_builder(tmp_path: Path) -> None:
+    """Import writes Nimbus --payload-builder=true from a migration file."""
+    mev_fs = _fs(tmp_path / "mev")
+    _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    out = tmp_path / "mig.ethpillar.epbs-migration"
+    export_migration(mev_fs, output=str(out), hostname="x")
+
+    vc_fs = _fs(tmp_path / "vc")
+    vc_fs.run_help = lambda _argv: "Nimbus validator client v26.8.0\n"
+    _write(
+        vc_fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://10.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+        ),
+    )
+    plan = import_migration(str(out), vc_fs, apply=True)
+    assert plan.applied
+    assert plan.support == "full"
+    args = _args(Path(vc_fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert has_flag(args, NIMBUS_PAYLOAD_BUILDER_FLAG)
+    assert get_flag_value(args, NIMBUS_PAYLOAD_BUILDER_FLAG) == "true"
+    assert "boost-relay.flashbots.net" not in Path(vc_fs.unit_path("validator")).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_grandine_integrated_placeholder_and_complete(tmp_path: Path) -> None:

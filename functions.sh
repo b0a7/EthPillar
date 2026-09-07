@@ -795,7 +795,7 @@ charonEpbsSupported() {
 # True when the MEV-Boost TUI should offer ePBS migration.
 # - Split LXC (MEV, no local VC): always show (export / remote complete).
 # - Charon DVT on this host: hide until charonEpbsSupported (builder path is Charon's).
-# - Solo: manage.epbs.support_level == "full" (Prysm, Lodestar, Lighthouse, Teku).
+# - Solo: manage.epbs.support_level == "full" (Prysm, Lodestar, Lighthouse, Teku, Nimbus).
 # CLI (`python -m manage.epbs`) is not gated; placeholders stay there.
 epbsTuiSupported() {
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
@@ -816,7 +816,7 @@ epbsTuiSupported() {
     local client
     client=$(getValidatorClient)
     case "$client" in
-        Prysm|Lodestar|Lighthouse|Teku) return 0 ;;
+        Prysm|Lodestar|Lighthouse|Teku|Nimbus) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -838,7 +838,7 @@ epbsImportUnderValidator() {
     local client
     client=$(getValidatorClient)
     case "$client" in
-        Prysm|Lodestar|Lighthouse) return 0 ;;
+        Prysm|Lodestar|Lighthouse|Nimbus) return 0 ;;
         Teku) return 1 ;;  # remote/standalone VC Gloas gaps (Consensys/teku#11099)
         *) return 1 ;;
     esac

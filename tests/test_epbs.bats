@@ -40,15 +40,18 @@ setup() {
   grep -q 'suggested-fee-recipient' docs/ePBS-migration.md
   grep -q 'Teku 26.6.0' docs/ePBS-migration.md
   grep -q '11099' docs/ePBS-migration.md
+  grep -q 'Nimbus v26.8.0' docs/ePBS-migration.md
+  grep -q 'payload-builder=true' docs/ePBS-migration.md
   grep -q 'Import refused' manage/epbs.py
   grep -q 'charon_epbs_supported' manage/epbs.py
 }
 
-@test "integration matrix has Prysm, Lodestar, Lighthouse, and Teku ePBS migration cases" {
+@test "integration matrix has Prysm, Lodestar, Lighthouse, Teku, and Nimbus ePBS migration cases" {
     grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lighthouse-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Teku-Besu-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
+    grep -q 'Nimbus-Nethermind-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_inside_docker.py
   grep -q -- '--force-validator' tests/integration/run_inside_docker.py
@@ -56,4 +59,5 @@ setup() {
   grep -q -- '--force-validator' tests/integration/test_epbs.sh
   grep -q 'enable_lodestar_empty_wallet' tests/integration/test_epbs.sh
   grep -q 'enable_teku_empty_wallet' tests/integration/test_epbs.sh
+  grep -q 'enable_nimbus_empty_wallet' tests/integration/test_epbs.sh
 }

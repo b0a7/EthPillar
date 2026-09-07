@@ -28,15 +28,16 @@ Support levels:
 * ``full`` — Prysm (proposer-settings relays), Lodestar v1.47.0+
   (VC ``--builder.urls`` / ``--builder.minBid``), Lighthouse v8.2.0+
   (VC ``--builder-proposals``; BN ``--builder`` sidecar until complete),
-  and Teku 26.6.0+ (VC/combined ``--validators-builder-registration-default-enabled``;
-  BN ``--builder-endpoint`` sidecar until complete). Lodestar prepare
-  probes ``lodestar validator --help`` for ``--builder.urls``.
-  Lighthouse/Teku prepare probe ``--version`` so older binaries are
-  skipped. Neither Lighthouse nor Teku has a VC relay-list flag.
-  Teku prefers combined BN+VC; remote VC / Web3Signer is refused
-  (Consensys/teku#11099).
-* ``placeholder`` — Nimbus, Grandine: no released VC relay list;
-  prepare is a documented no-op. Complete is refused without ``--force``.
+  Teku 26.6.0+ (VC/combined ``--validators-builder-registration-default-enabled``;
+  BN ``--builder-endpoint`` sidecar until complete), and Nimbus v26.8.0+
+  (VC ``--payload-builder=true``; BN ``--payload-builder-url`` sidecar until
+  complete). Lodestar prepare probes ``lodestar validator --help`` for
+  ``--builder.urls``. Lighthouse/Teku/Nimbus prepare probe ``--version`` so
+  older binaries are skipped. Lighthouse, Teku, and Nimbus have no VC
+  relay-list flag. Teku prefers combined BN+VC; remote VC / Web3Signer is
+  refused (Consensys/teku#11099).
+* ``placeholder`` — Grandine: no released VC relay list; prepare is a
+  documented no-op. Complete is refused without ``--force``.
 """
 
 from __future__ import annotations
@@ -80,6 +81,12 @@ LIGHTHOUSE_EPBS_MIN_VERSION = "v8.2.0"
 # Web3Signer still have gaps: https://github.com/Consensys/teku/issues/11099
 TEKU_EPBS_MIN_VERSION = "26.6.0"
 TEKU_BUILDER_REGISTRATION_FLAG = "--validators-builder-registration-default-enabled"
+# First Nimbus release with official Platåberget / Gloas / ePBS support
+# (``--network=plataberget``, status-im/nimbus-eth2#8893). Documented builder
+# surface is still BN ``--payload-builder`` + ``--payload-builder-url`` and
+# VC ``--payload-builder`` only (https://nimbus.guide/external-block-builder.html).
+NIMBUS_EPBS_MIN_VERSION = "26.8.0"
+NIMBUS_PAYLOAD_BUILDER_FLAG = "--payload-builder"
 MIGRATION_FORMAT = "ethpillar.epbs-migration"
 MIGRATION_VERSION = 1
 MIGRATION_EXTENSION = ".ethpillar.epbs-migration"
@@ -143,6 +150,12 @@ TEKU_EPBS_NOTE = (
     "flag — relays stay on MEV-Boost until complete strips BN "
     "--builder-endpoint."
 )
+NIMBUS_EPBS_NOTE = (
+    "Nimbus v26.8.0+ has official Platåberget/Gloas/ePBS support. VC flag "
+    "is --payload-builder=true only (no --payload-builder-url on the VC; "
+    "https://nimbus.guide/external-block-builder.html). Relays stay on "
+    "MEV-Boost until complete strips BN --payload-builder-url."
+)
 CHARON_IMPORT_REFUSED = (
     "Import refused: Charon is installed and does not support ePBS yet "
     "(builder path is Charon's, not the signer VC's). Wait for an Obol "
@@ -198,8 +211,11 @@ SUPPORT_NOTES: Dict[str, str] = {
         "Remote VC / Web3Signer refused (Consensys/teku#11099)."
     ),
     "Nimbus": (
-        "Placeholder: VC has --payload-builder=true only. Prepare is a no-op. "
-        "Complete is refused without --force."
+        "Full: VC --payload-builder=true (v26.8.0+ Platåberget/Gloas). No VC "
+        "relay-list or --payload-builder-url on the VC; BN "
+        "--payload-builder-url sidecar until complete. Prepare writes "
+        "--payload-builder=true only when `nimbus_validator_client --version` "
+        "is v26.8.0+."
     ),
     "Grandine": (
         "Placeholder: integrated client; --builder-url takes a single sidecar. "
@@ -596,11 +612,12 @@ def support_level(client: str) -> str:
         client: Validator client name (``Prysm``, ``Lodestar``, …).
 
     Returns:
-        ``full`` (Prysm, Lodestar, Lighthouse, Teku) or ``placeholder``.
-        The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) is shown
-        only for ``full``. Lighthouse/Teku prepare still version-gate.
+        ``full`` (Prysm, Lodestar, Lighthouse, Teku, Nimbus) or
+        ``placeholder``. The MEV-Boost TUI (``epbsTuiSupported`` in
+        ``functions.sh``) is shown only for ``full``. Lighthouse/Teku/Nimbus
+        prepare still version-gate.
     """
-    if client in ("Prysm", "Lodestar", "Lighthouse", "Teku"):
+    if client in ("Prysm", "Lodestar", "Lighthouse", "Teku", "Nimbus"):
         return "full"
     return "placeholder"
 
@@ -974,17 +991,111 @@ def apply_relays_teku(unit_content: str, relays: RelaysConfig) -> str:
     return _rebuild_unit(unit_content, args)
 
 
+def extract_nimbus_version(text: str) -> str:
+    """Return ``x.y.z`` from ``nimbus_* --version`` output.
+
+    Accepts ``Nimbus beacon node v26.8.0-00aedddf`` and ``v26.8.0``.
+    Ignores trailing hex commit suffixes. Returns ``""`` when no semver
+    is found.
+
+    Args:
+        text: Combined stdout/stderr from ``--version``.
+
+    Returns:
+        Numeric ``major.minor.patch`` string, or empty.
+    """
+    if not text:
+        return ""
+    lowered = text.lower()
+    idx = lowered.find("nimbus")
+    sample = text[idx:] if idx >= 0 else text
+    for raw in sample.replace(",", " ").split():
+        token = raw.strip().lstrip("vV").rstrip(".,;:")
+        core = token.split("-")[0]
+        parts = core.split(".")
+        if len(parts) >= 3 and all(part.isdigit() for part in parts[:3]):
+            return ".".join(parts[:3])
+    return ""
+
+
+def nimbus_supports_epbs(fs: EpbsFilesystem, vc_content: str) -> bool:
+    """True when the Nimbus binary is v26.8.0+ (Platåberget/Gloas/ePBS).
+
+    Args:
+        fs: IO adapter used to run ``nimbus_validator_client --version``.
+        vc_content: Current ``validator.service`` text (binary path).
+
+    Returns:
+        True if parsed version is at least
+        :data:`NIMBUS_EPBS_MIN_VERSION`. False when the binary cannot
+        be run or the version is older / unparseable.
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    if not args:
+        return False
+    tokens = list(args[0].split())
+    binary = tokens[0]
+    text = _command_help(fs, [binary, "--version"])
+    version = extract_nimbus_version(text)
+    if not version and len(tokens) > 1:
+        text = _command_help(fs, tokens + ["--version"])
+        version = extract_nimbus_version(text)
+    if not version:
+        return False
+    return compare_versions(version, NIMBUS_EPBS_MIN_VERSION) >= 0
+
+
+def nimbus_payload_builder_enabled(args: Sequence[str]) -> bool:
+    """True when ExecStart enables ``--payload-builder`` (not false/0/no/off).
+
+    Args:
+        args: Normalized CLI tokens from a Nimbus VC unit.
+    """
+    if not has_flag(args, NIMBUS_PAYLOAD_BUILDER_FLAG):
+        return False
+    enabled = (get_flag_value(args, NIMBUS_PAYLOAD_BUILDER_FLAG) or "true").lower()
+    return enabled not in ("false", "0", "no", "off")
+
+
+def apply_relays_nimbus(vc_content: str, relays: RelaysConfig) -> str:
+    """Ensure Nimbus VC ``--payload-builder=true`` (v26.8.0+ Gloas path).
+
+    Official docs and ``ValidatorClientConf`` expose a boolean
+    ``--payload-builder`` on the VC. The builder URL
+    (``--payload-builder-url``) exists only on the beacon node
+    (`nimbus.guide/external-block-builder`_, ``BeaconNodeConf``). There
+    is no VC relay-list flag. Relays stay on MEV-Boost until complete
+    strips the BN sidecar. ``relays`` is accepted for API symmetry and
+    is not written onto the VC. Optional ``--builder-boost-factor`` is
+    not added.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        relays: Unused; kept so prepare/import share one apply signature.
+
+    Returns:
+        Unit text with ``--payload-builder=true`` upserted.
+
+    .. _nimbus.guide/external-block-builder:
+        https://nimbus.guide/external-block-builder.html
+    """
+    _ = relays
+    unit = parse_unit(vc_content)
+    args = normalize_cli_args(unit.exec_args)
+    args = upsert_flag(args, NIMBUS_PAYLOAD_BUILDER_FLAG, "true")
+    return _rebuild_unit(vc_content, args)
+
+
 def apply_relays_placeholder(client: str) -> str:
     """Return a planned-flag blurb; do not mutate units.
 
     Args:
-        client: Placeholder VC name (Nimbus, Grandine).
+        client: Placeholder VC name (Grandine).
 
     Returns:
         Human-readable description of the unreleased relay-list surface.
     """
     planned = {
-        "Nimbus": "--payload-builder-relays=<urls> (not shipped; VC still --payload-builder=true)",
         "Grandine": "multi --builder-url list (not shipped; single --builder-url today)",
     }
     return planned.get(client, "no VC relay-list flag shipped")
@@ -1435,6 +1546,41 @@ def _apply_vc_relays(
                 plan.warnings.append(
                     "Teku already has builder registration enabled; nothing to change."
                 )
+    elif vc_name == "Nimbus":
+        if not nimbus_supports_epbs(fs, vc_content):
+            plan.actions.append(
+                PlanAction(
+                    "Nimbus VC",
+                    "skipped: binary --version is below v26.8.0 (need Gloas/ePBS)",
+                )
+            )
+            plan.warnings.append(
+                "Prepare: no-op on this Nimbus build — Complete will stop "
+                "MEV-Boost without a Gloas-capable VC. Install Nimbus "
+                "v26.8.0 or later "
+                "(https://github.com/status-im/nimbus-eth2/releases/tag/v26.8.0)."
+            )
+        else:
+            new_vc = apply_relays_nimbus(vc_content, relays)
+            vc_args = normalize_cli_args(parse_unit(new_vc).exec_args)
+            if not get_flag_value(vc_args, "--suggested-fee-recipient"):
+                plan.warnings.append(
+                    "Nimbus v26.8.0+ should have --suggested-fee-recipient on "
+                    "the VC. Set it before restarting validator."
+                )
+            plan.warnings.append(NIMBUS_EPBS_NOTE)
+            if _write_unit_if_changed(fs, vc_path, vc_content, new_vc, apply):
+                plan.actions.append(
+                    PlanAction(
+                        vc_path,
+                        f"add {NIMBUS_PAYLOAD_BUILDER_FLAG}=true",
+                    )
+                )
+                plan.services_to_restart.append("validator")
+            else:
+                plan.warnings.append(
+                    "Nimbus VC already has --payload-builder=true; nothing to change."
+                )
     else:
         planned = apply_relays_placeholder(vc_name)
         plan.actions.append(PlanAction(f"{vc_name} VC (placeholder)", planned))
@@ -1456,7 +1602,8 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     ``--builder.urls`` when the binary documents that flag. Lighthouse
     v8.2.0+ gets ``--builder-proposals``. Teku 26.6.0+ gets
     ``--validators-builder-registration-default-enabled=true`` (combined
-    BN+VC preferred). Other VCs are a documented no-op. When Charon is
+    BN+VC preferred). Nimbus v26.8.0+ gets ``--payload-builder=true``.
+    Other VCs are a documented no-op. When Charon is
     installed, VC relay writes are skipped (Charon ``--builder-api`` owns
     the MEV path until complete). Beacon-node sidecar flags are not touched.
 
@@ -1607,9 +1754,10 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
     Returns:
         True for Prysm when ``default_config.builder.relays`` is non-empty,
         for Lodestar when ``--builder.urls`` is set and is not the sidecar,
-        for Lighthouse v8.2.0+ when ``--builder-proposals`` is set, or for
+        for Lighthouse v8.2.0+ when ``--builder-proposals`` is set, for
         Teku 26.6.0+ when ``--validators-builder-registration-default-enabled``
-        is true. Always False for placeholder clients.
+        is true, or for Nimbus v26.8.0+ when ``--payload-builder`` is true.
+        Always False for placeholder clients.
     """
     if vc_name == "Prysm":
         args = normalize_cli_args(parse_unit(vc_content).exec_args)
@@ -1642,6 +1790,11 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         if enabled in ("false", "0", "no"):
             return False
         return teku_supports_epbs(fs, vc_content)
+    if vc_name == "Nimbus":
+        args = normalize_cli_args(parse_unit(vc_content).exec_args)
+        return nimbus_payload_builder_enabled(args) and nimbus_supports_epbs(
+            fs, vc_content
+        )
     return False
 
 
@@ -1801,7 +1954,7 @@ def complete(
     if "consensus" in plan.services_to_restart and _is_integrated_mode(mode):
         # Combined/integrated clients restart with consensus.service only.
         pass
-    elif vc_name in ("Prysm", "Lodestar", "Lighthouse", "Teku"):
+    elif vc_name in ("Prysm", "Lodestar", "Lighthouse", "Teku", "Nimbus"):
         # VC flags do not change on complete; BN restart is enough.
         pass
 

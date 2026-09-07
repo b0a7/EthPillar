@@ -1,5 +1,5 @@
 #!/bin/bash
-# EthPillar ePBS migration integration test (Prysm, Lodestar, Lighthouse, or Teku + MEV-Boost).
+# EthPillar ePBS migration integration test (Prysm, Lodestar, Lighthouse, Teku, or Nimbus + MEV-Boost).
 # Runs inside the Docker container after a VC+MEV node is deployed.
 #
 # Starts the validator with an empty wallet (no keystores) so we can
@@ -43,9 +43,9 @@ assert_supported_vc() {
         exit 1
     fi
     case "$VC_CLIENT" in
-        Prysm|Lodestar|Lighthouse|Teku) ;;
+        Prysm|Lodestar|Lighthouse|Teku|Nimbus) ;;
         *)
-            echo "❌ ePBS integration test requires a Prysm, Lodestar, Lighthouse, or Teku validator client"
+            echo "❌ ePBS integration test requires a Prysm, Lodestar, Lighthouse, Teku, or Nimbus validator client"
             grep Description= "$VC_UNIT" || true
             exit 1
             ;;
@@ -159,6 +159,14 @@ assert_vc_process_has_epbs_flags() {
             fi
             echo "✅ running VC pid=${pid} has --validators-builder-registration-default-enabled"
             ;;
+        Nimbus)
+            if [[ "$cmdline" != *"--payload-builder=true"* && "$cmdline" != *"--payload-builder true"* ]]; then
+                echo "❌ running VC is missing --payload-builder=true"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            echo "✅ running VC pid=${pid} has --payload-builder=true"
+            ;;
     esac
 }
 
@@ -188,6 +196,10 @@ assert_prepare_units() {
             assert_unit_has "$VC_UNIT" "--validators-builder-registration-default-enabled"
             assert_unit_lacks "$VC_UNIT" "$SIDECAR"
             ;;
+        Nimbus)
+            assert_unit_has "$VC_UNIT" "--payload-builder=true"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            ;;
     esac
     assert_unit_has "$BN_UNIT" "$SIDECAR"
 }
@@ -211,6 +223,10 @@ assert_complete_units() {
             ;;
         Teku)
             assert_unit_has "$VC_UNIT" "--validators-builder-registration-default-enabled"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            ;;
+        Nimbus)
+            assert_unit_has "$VC_UNIT" "--payload-builder=true"
             assert_unit_lacks "$VC_UNIT" "$SIDECAR"
             ;;
     esac
@@ -265,6 +281,21 @@ PY
     echo "✅ test-only: added --keymanager so Lodestar can start with an empty wallet"
 }
 
+# Nimbus looks for keystores under --data-dir/validators (and secrets). Empty
+# dirs are a valid 0-keystore wallet. Test-only: empty-wallet smoke; not
+# operator prepare/complete.
+enable_nimbus_empty_wallet() {
+    local data_dir unit_user
+    data_dir=$(grep -oE -- '--data-dir=[^[:space:]\\]+' "$VC_UNIT" | head -1 | cut -d= -f2-)
+    data_dir="${data_dir:-/var/lib/nimbus_validator}"
+    unit_user=$(grep -m1 '^User=' "$VC_UNIT" | cut -d= -f2)
+    unit_user="${unit_user:-validator}"
+    sudo mkdir -p "$data_dir/validators" "$data_dir/secrets"
+    sudo chown -R "${unit_user}:${unit_user}" "$data_dir"
+    sudo chmod 700 "$data_dir/validators" "$data_dir/secrets" 2>/dev/null || true
+    echo "✅ test-only: created empty $data_dir/validators so Nimbus can start without keystores"
+}
+
 # daemon-reload then restart each listed systemd unit (exits 1 on failure).
 reload_and_restart() {
     local svc
@@ -316,6 +347,7 @@ echo "✅ prepare: VC ePBS flags written; BN sidecar and MEV-Boost still present
 case "$VC_CLIENT" in
     Lodestar) enable_lodestar_empty_wallet ;;
     Teku) enable_teku_empty_wallet ;;
+    Nimbus) enable_nimbus_empty_wallet ;;
 esac
 
 reload_and_restart validator
@@ -343,9 +375,11 @@ reload_and_restart consensus validator
 # Pre-Gloas Sepolia may log builder-client errors once the sidecar is gone.
 # Unknown flags / EXEC failures are still fatal.
 check_service_health consensus \
-    --ignore-journal-pattern "cannot connect to builder client"
+    --ignore-journal-pattern "cannot connect to builder client" \
+    --ignore-journal-pattern "payload builder"
 check_service_health validator --force-validator \
-    --ignore-journal-pattern "cannot connect to builder client"
+    --ignore-journal-pattern "cannot connect to builder client" \
+    --ignore-journal-pattern "payload builder"
 assert_vc_process_has_epbs_flags
 epbs_cli status
 

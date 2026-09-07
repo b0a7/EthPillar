@@ -79,6 +79,16 @@ ExecStart=/usr/local/bin/teku/bin/teku validator-client --beacon-node-api-endpoi
 EOF
 }
 
+write_nimbus_validator_service() {
+  cat > "$VALIDATOR_SERVICE_FILE" <<EOF
+[Unit]
+Description=Nimbus Validator Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/nimbus_validator_client --beacon-node=http://127.0.0.1:5052
+EOF
+}
+
 write_teku_combined_consensus() {
   cat > "$CONSENSUS_SERVICE_FILE" <<EOF
 [Unit]
@@ -255,6 +265,24 @@ EOF
   export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
   run epbsImportUnderValidator
   [ "$status" -ne 0 ]
+}
+
+@test "epbsTuiSupported is true for Nimbus VC" {
+  write_nimbus_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsTuiSupported
+  [ "$status" -eq 0 ]
+}
+
+@test "epbsImportUnderValidator is true for Nimbus VC without MEV" {
+  write_nimbus_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsImportUnderValidator
+  [ "$status" -eq 0 ]
 }
 
 @test "getValidatorMode returns integrated_teku when BN has --validator-keys" {
