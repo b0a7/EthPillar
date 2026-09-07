@@ -6,6 +6,21 @@ EthPillar follows EthStaker’s two-step cutover so you do not drop MEV too earl
 
 Most operators only need [Solo node (everything on one host)](#solo-node-everything-on-one-host). Read the Charon or split-host sections only if they apply to you.
 
+## Client support
+
+Whether EthPillar’s ePBS migration path is implemented yet. Edit a row when a client lands or drops. Implementation detail is under [Client support levels](#client-support-levels).
+
+| Client | Status | Notes |
+|--------|--------|-------|
+| Prysm | **Supported** | v7.1.7+ |
+| Lodestar | **Supported** | v1.47.0+ |
+| Lighthouse | **Supported** | v8.2.0+ |
+| Teku | **Supported** | 26.6.0+; prefer combined BN+VC; remote VC gaps ([teku#11099](https://github.com/Consensys/teku/issues/11099)) |
+| Nimbus | Not yet | |
+| Grandine | Not yet | |
+| Caplin / Erigon | Not yet | |
+| Obol Charon | Not yet | Import hidden/refused until Charon ePBS support |
+
 ---
 
 ## For node operators
@@ -220,6 +235,8 @@ Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is 
 
 ### Client support levels
 
+Operator Yes/Not-yet matrix: [Client support](#client-support). `manage/epbs.py` levels:
+
 | Validator | Support | Notes |
 |-----------|---------|--------|
 | Prysm v7.1.7+ | **full** | TUI + CLI. Relays in proposer-settings (`BuilderConfig.Relays`). BN `--http-mev-relay` until complete. |
@@ -228,6 +245,8 @@ Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is 
 | Teku 26.6.0+ | **full** | TUI + CLI on combined/co-located BN+VC. `--validators-builder-registration-default-enabled=true`; BN `--builder-endpoint` until complete. JDK 25 required. Remote VC import and Web3Signer refused ([#11099](https://github.com/Consensys/teku/issues/11099)). |
 | Nimbus | **placeholder** | VC `--payload-builder=true`; URL on BN. |
 | Grandine | **placeholder** | Integrated client; single `--builder-url`. |
+| Caplin / Erigon | **placeholder** | BN `--caplin.mev-relay-url` sidecar strip only. |
+| Obol Charon | **placeholder** | Import hidden/refused until Charon ePBS support. |
 
 ### Lighthouse notes (solo and split-host)
 
