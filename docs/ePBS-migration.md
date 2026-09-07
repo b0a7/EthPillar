@@ -29,7 +29,7 @@ Use this when execution, consensus, MEV-Boost, and a **solo** validator client a
 
 **MEV-Boost → ePBS migration**
 
-That item appears when the local validator fully supports migration (**Prysm** or **Lodestar** v1.47.0+). Lighthouse, Teku, Nimbus, and Grandine do not get the TUI entry.
+That item appears when the local validator fully supports migration (**Prysm**, **Lodestar** v1.47.0+, or **Lighthouse** v8.2.0+). Teku, Nimbus, and Grandine do not get the TUI entry.
 
 | Menu item | When to use it |
 |-----------|----------------|
@@ -56,7 +56,8 @@ That item appears when the local validator fully supports migration (**Prysm** o
 |----------------|---------------------|
 | **Prysm** (v7.1.7+) | Writes your MEV-Boost relays into Prysm’s proposer settings and turns builder mode on. Restarts the validator if you agree. **Does not** stop MEV-Boost. |
 | **Lodestar** (v1.47.0+) | Writes `--builder.urls` and `--builder.minBid` on the validator. Older Lodestar builds skip this so the client can still start. **Does not** stop MEV-Boost. |
-| **Lighthouse, Teku, Nimbus, Grandine** | Not offered in the TUI. |
+| **Lighthouse** (v8.2.0+) | Writes `--builder-proposals` on the validator. Older Lighthouse builds skip this. Lighthouse has no VC relay-list flag — relays stay on MEV-Boost until Complete. **Does not** stop MEV-Boost. |
+| **Teku, Nimbus, Grandine** | Not offered in the TUI. |
 
 After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks keep working as they do today.
 
@@ -96,7 +97,7 @@ Use this when Charon sits between your validator client and beacon node on the *
 
 On the pre-Gloas path, `charon.service` runs with **`--builder-api`** (MEV-Boost builder proxy). Charon owns the builder path — not the signer VC.
 
-**TUI:** **MEV-Boost → ePBS migration** is **hidden** while Charon is installed, even if the signer VC is Prysm or Lodestar. Obol has not shipped stable Gloas/ePBS support yet (`charonEpbsSupported` is false). When upstream support lands, that same **MEV-Boost → ePBS migration** entry will be shown again for co-located Charon nodes.
+**TUI:** **MEV-Boost → ePBS migration** is **hidden** while Charon is installed, even if the signer VC is Prysm, Lodestar, or Lighthouse. Obol has not shipped stable Gloas/ePBS support yet (`charonEpbsSupported` is false). When upstream support lands, that same **MEV-Boost → ePBS migration** entry will be shown again for co-located Charon nodes.
 
 **CLI today** (`python -m manage.epbs`):
 
@@ -121,7 +122,7 @@ You still do the same two steps (before Gloas / after Gloas), but relays move vi
 
 1. **MEV/CC host** — **MEV-Boost → ePBS migration** (always shown when MEV is present and there is no local `validator.service`). The submenu title is **ePBS migration (remote VC)**. Choose **Before Gloas Fork — Export migration file**. EthPillar writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` immediately (relays + min-bid) and shows one result textbox. There is no dry-run/confirm — Export always writes. Copy that file to the VC/DV host.
 
-2. **Solo VC host** (no Charon, no local MEV) — **Validator → ePBS migration (import)** when the VC is Prysm or Lodestar. Submenu title **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. Path inputbox, then the usual four-screen dry-run → confirm → apply → optional restart.
+2. **Solo VC host** (no Charon, no local MEV) — **Validator → ePBS migration (import)** when the VC is Prysm, Lodestar, or Lighthouse. Submenu title **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. Path inputbox, then the usual four-screen dry-run → confirm → apply → optional restart.
 
 3. **Charon + VC host** (no local MEV) — **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true. Until Obol ships Charon ePBS, that entry is **hidden** (not under Validator). The CLI `import` command also **refuses** while Charon is installed without ePBS support.
 
@@ -184,7 +185,8 @@ Relays and `-min-bid` are read from `mevboost.service` (or from a migration file
 | **Obol Charon** (any signer VC, co-located) | Keeps `--builder-api`; **skips** VC relay writes. TUI entry hidden until Obol ships Gloas/ePBS support. |
 | **Prysm** (v7.1.7+, no Charon) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema v2) with `default_config.builder.enabled`, `relays`, and `max_execution_payment: "0"` (Gloas execution-payment cap; `0` is the public-bid / proto default and does not disable builder payments). Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Upserts VC `--enable-builder` and `--proposer-settings-file`. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
 | **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. Older builds are skipped so the VC can still start. |
-| **Lighthouse, Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |
+| **Lighthouse** (v8.2.0+, no Charon) | Adds VC `--builder-proposals` **only when** `lighthouse --version` is v8.2.0+. Does **not** write a relay list (no such flag; [sigp/lighthouse#9590](https://github.com/sigp/lighthouse/issues/9590)). Warns if `--suggested-fee-recipient` is missing (mandatory on the VC). Older builds are skipped. |
+| **Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |
 
 BN sidecar flags stay until `complete`.
 
@@ -212,7 +214,7 @@ On a **MEV/CC** host:
 
 3. Do not rewrite VC relay config from `prepare` / `import`.
 
-Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare/import). Prysm/Lodestar VC flags do not change on this step alone.
+Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare/import). Prysm/Lodestar/Lighthouse VC flags do not change on this step alone.
 
 ### Client support levels
 
@@ -220,10 +222,31 @@ Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is 
 |-----------|---------|--------|
 | Prysm v7.1.7+ | **full** | TUI + CLI. Relays in proposer-settings (`BuilderConfig.Relays`). BN `--http-mev-relay` until complete. |
 | Lodestar v1.47.0+ | **full** | TUI + CLI. VC `--builder.urls` / `--builder.minBid` written only if `--help` lists them. |
-| Lighthouse | **placeholder** | VC `--builder-proposals` only; one BN `--builder` URL. |
+| Lighthouse v8.2.0+ | **full** | TUI + CLI. VC `--builder-proposals` written only if `--version` is v8.2.0+. No VC relay list ([#9590](https://github.com/sigp/lighthouse/issues/9590)); BN `--builder` sidecar until complete. |
 | Teku | **placeholder** | Staked Builder REST client ([Consensys/teku#11026](https://github.com/Consensys/teku/issues/11026)) not wired. Relays stay on BN `--builder-endpoint`. |
 | Nimbus | **placeholder** | VC `--payload-builder=true`; URL on BN. |
 | Grandine | **placeholder** | Integrated client; single `--builder-url`. |
+
+### Lighthouse notes (solo and split-host)
+
+Lighthouse [v8.2.0](https://github.com/sigp/lighthouse/releases/tag/v8.2.0) is the first release with Gloas/ePBS protocol support (payload envelopes, PTC / payload attestations, proposer preferences). EthPillar treats that as **full** for the TUI/CLI, with a `--version` probe so older binaries are skipped.
+
+**What prepare / import actually write.** Lighthouse’s documented builder surface is still:
+
+- BN: a **single** `--builder <url>` (EthPillar points this at local MEV-Boost until complete)
+- VC: `--builder-proposals` (plus optional `--prefer-builder-proposals` / `--builder-boost-factor`, which EthPillar does not invent)
+
+There is **no** VC relay-list flag or proposer-settings file. Upstream has not shipped a Gloas builder-list API for the VC yet ([sigp/lighthouse#9590](https://github.com/sigp/lighthouse/issues/9590)). Prepare/import therefore only upsert `--builder-proposals`. Relays stay on `mevboost.service` until complete strips the BN sidecar URL. After Gloas, the VC uses `--builder-proposals` plus in-protocol payload bids and the local EL.
+
+**Operator caveats (v8.2.0+):**
+
+- `--suggested-fee-recipient` is **mandatory on the VC**. Prepare warns if it is missing; set it before restarting validator.
+- Beacon DB schema **v29** — allow time for the first start after upgrading.
+- New Gloas duties: PTC and payload attestations. Pair with a Glamsterdam-capable execution client.
+- Optional BN flag `--enable-partial-columns` (not added by EthPillar; opt in only if you want it).
+- Experimental/testnet images: `ethpandaops/lighthouse:glamsterdam-devnet-8` and trunk `:unstable`.
+
+**Split-host:** Export on the MEV/CC host is unchanged. Import on a Lighthouse VC host writes `--builder-proposals` (same as solo prepare). Complete on the MEV/CC host still needs `--remote-vc-prepared` after that import.
 
 ### Inspecting a running Prysm VC
 

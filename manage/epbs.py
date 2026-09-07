@@ -25,12 +25,15 @@ support (same gate as ``charonEpbsSupported`` in the TUI).
 
 Support levels:
 
-* ``full`` — Prysm (proposer-settings relays) and Lodestar v1.47.0+
-  (VC ``--builder.urls`` / ``--builder.minBid``). Lodestar prepare still
-  probes ``lodestar validator --help`` so older binaries are skipped.
-* ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
-  list; prepare is a documented no-op. Complete is refused without
-  ``--force``.
+* ``full`` — Prysm (proposer-settings relays), Lodestar v1.47.0+
+  (VC ``--builder.urls`` / ``--builder.minBid``), and Lighthouse v8.2.0+
+  (VC ``--builder-proposals``; BN ``--builder`` sidecar until complete).
+  Lodestar prepare probes ``lodestar validator --help`` for
+  ``--builder.urls``. Lighthouse prepare probes ``lighthouse --version``
+  so older binaries are skipped. Lighthouse has no VC relay-list flag
+  (sigp/lighthouse#9590); prepare enables builder proposals only.
+* ``placeholder`` — Teku, Nimbus, Grandine: no released VC relay list;
+  prepare is a documented no-op. Complete is refused without ``--force``.
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from client_requirements import compare_versions
 from deploy.common import BASE_DATA_DIR, write_service_file
 from manage.service_parse import (
     SERVICE_FILES,
@@ -64,6 +68,10 @@ from manage.service_parse import (
 SIDECAR_MARKERS = ("127.0.0.1:18550", "localhost:18550", "[::1]:18550")
 GWEI_PER_ETH = Decimal("1000000000")
 PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
+# First Lighthouse release with Gloas/ePBS protocol support (payload
+# envelopes, PTC, proposer preferences). There is still no VC relay-list
+# flag: https://github.com/sigp/lighthouse/issues/9590
+LIGHTHOUSE_EPBS_MIN_VERSION = "v8.2.0"
 MIGRATION_FORMAT = "ethpillar.epbs-migration"
 MIGRATION_VERSION = 1
 MIGRATION_EXTENSION = ".ethpillar.epbs-migration"
@@ -150,9 +158,11 @@ SUPPORT_NOTES: Dict[str, str] = {
         "--builder.urls."
     ),
     "Lighthouse": (
-        "Placeholder: VC has --builder-proposals only; no released relay-list "
-        "flag. Prepare is a no-op. Complete is refused without --force "
-        "(would stop MEV-Boost with no VC relay replacement)."
+        "Full: VC --builder-proposals (v8.2.0+ Gloas/ePBS). No VC relay-list "
+        "flag yet (sigp/lighthouse#9590); relays stay on MEV-Boost until "
+        "complete strips BN --builder sidecar. Prepare writes "
+        "--builder-proposals only when `lighthouse --version` is v8.2.0+. "
+        "--suggested-fee-recipient is mandatory on the VC."
     ),
     "Teku": (
         "Placeholder: Staked Builder API REST client (Consensys/teku#11026) is "
@@ -285,7 +295,8 @@ class EpbsFilesystem:
         write_unit: Optional override for writing systemd units.
         write_data: Optional override for writing JSON/data files.
         stop_disable_mevboost: Optional override for ``systemctl stop/disable``.
-        run_help: Optional ``argv -> help text`` probe (Lodestar ``--help``).
+        run_help: Optional ``argv -> help/version text`` probe (Lodestar
+            ``--help``, Lighthouse ``--version``).
     """
 
     systemd_dir: str = "/etc/systemd/system"
@@ -545,11 +556,11 @@ def support_level(client: str) -> str:
         client: Validator client name (``Prysm``, ``Lodestar``, …).
 
     Returns:
-        ``full`` (Prysm, Lodestar) or ``placeholder``.
+        ``full`` (Prysm, Lodestar, Lighthouse) or ``placeholder``.
         The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) is shown
-        only for ``full``.
+        only for ``full``. Lighthouse prepare still version-gates v8.2.0+.
     """
-    if client in ("Prysm", "Lodestar"):
+    if client in ("Prysm", "Lodestar", "Lighthouse"):
         return "full"
     return "placeholder"
 
@@ -769,6 +780,86 @@ def lodestar_has_builder_urls_flag(fs: EpbsFilesystem, vc_content: str) -> bool:
     return "--builder.urls" in _command_help(fs, help_cmd)
 
 
+def extract_lighthouse_version(text: str) -> str:
+    """Return ``x.y.z`` from ``lighthouse --version`` output.
+
+    Ignores hex commit suffixes (``v8.2.0-abc1234`` → ``8.2.0``) and
+    rustc/crate noise. Returns ``""`` when no Lighthouse semver is found.
+
+    Args:
+        text: Combined stdout/stderr from ``lighthouse --version``.
+
+    Returns:
+        Numeric ``major.minor.patch`` string, or empty.
+    """
+    if not text:
+        return ""
+    lowered = text.lower()
+    idx = lowered.find("lighthouse")
+    sample = text[idx:] if idx >= 0 else text
+    for raw in sample.replace(",", " ").split():
+        token = raw.strip().lstrip("vV").rstrip(".,;:")
+        core = token.split("-")[0]
+        parts = core.split(".")
+        if len(parts) >= 3 and all(part.isdigit() for part in parts[:3]):
+            return ".".join(parts[:3])
+    return ""
+
+
+def lighthouse_supports_epbs(fs: EpbsFilesystem, vc_content: str) -> bool:
+    """True when the Lighthouse binary is v8.2.0+ (Gloas/ePBS).
+
+    Args:
+        fs: IO adapter used to run ``lighthouse --version``.
+        vc_content: Current ``validator.service`` text (binary path).
+
+    Returns:
+        True if parsed version is at least
+        :data:`LIGHTHOUSE_EPBS_MIN_VERSION`. False when the binary cannot
+        be run or the version is older / unparseable.
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    if not args:
+        return False
+    tokens = list(args[0].split())
+    binary = tokens[0]
+    text = _command_help(fs, [binary, "--version"])
+    version = extract_lighthouse_version(text)
+    if not version and len(tokens) > 1:
+        text = _command_help(fs, tokens + ["--version"])
+        version = extract_lighthouse_version(text)
+    if not version:
+        return False
+    return compare_versions(version, LIGHTHOUSE_EPBS_MIN_VERSION) >= 0
+
+
+def apply_relays_lighthouse(vc_content: str, relays: RelaysConfig) -> str:
+    """Ensure Lighthouse VC ``--builder-proposals`` (v8.2.0+ Gloas path).
+
+    Lighthouse documents a single BN ``--builder`` URL and VC
+    ``--builder-proposals`` / ``--prefer-builder-proposals`` /
+    ``--builder-boost-factor``. There is no VC relay-list flag (open
+    `sigp/lighthouse#9590`_). Relays stay on MEV-Boost until complete
+    strips the BN sidecar. ``relays`` is accepted for API symmetry with
+    Prysm/Lodestar and is not written onto the VC.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        relays: Unused; kept so prepare/import share one apply signature.
+
+    Returns:
+        Unit text with ``--builder-proposals`` upserted.
+
+    .. _sigp/lighthouse#9590:
+        https://github.com/sigp/lighthouse/issues/9590
+    """
+    _ = relays
+    unit = parse_unit(vc_content)
+    args = normalize_cli_args(unit.exec_args)
+    args = upsert_flag(args, "--builder-proposals")
+    return _rebuild_unit(vc_content, args)
+
+
 def apply_relays_placeholder(client: str) -> str:
     """Return a planned-flag blurb; do not mutate units.
 
@@ -779,7 +870,6 @@ def apply_relays_placeholder(client: str) -> str:
         Human-readable description of the unreleased relay-list surface.
     """
     planned = {
-        "Lighthouse": "--builder-relays=<urls> (not shipped; VC still --builder-proposals)",
         "Teku": "--validators-builder-relays=<urls> (not shipped; #11026 REST client unwired)",
         "Nimbus": "--payload-builder-relays=<urls> (not shipped; VC still --payload-builder=true)",
         "Grandine": "multi --builder-url list (not shipped; single --builder-url today)",
@@ -1152,6 +1242,43 @@ def _apply_vc_relays(
                 plan.warnings.append(
                     "Lodestar VC already has builder.urls; nothing to change."
                 )
+    elif vc_name == "Lighthouse":
+        if not lighthouse_supports_epbs(fs, vc_content):
+            plan.actions.append(
+                PlanAction(
+                    "Lighthouse VC",
+                    "skipped: binary --version is below v8.2.0 (need Gloas/ePBS)",
+                )
+            )
+            plan.warnings.append(
+                "Prepare: no-op on this Lighthouse build — Complete will stop "
+                "MEV-Boost without a Gloas-capable VC. Install Lighthouse "
+                "v8.2.0 or later "
+                "(https://github.com/sigp/lighthouse/releases/tag/v8.2.0)."
+            )
+        else:
+            new_vc = apply_relays_lighthouse(vc_content, relays)
+            vc_args = normalize_cli_args(parse_unit(new_vc).exec_args)
+            if not get_flag_value(vc_args, "--suggested-fee-recipient"):
+                plan.warnings.append(
+                    "Lighthouse v8.2.0+ requires --suggested-fee-recipient on "
+                    "the VC. Set it before restarting validator."
+                )
+            plan.warnings.append(
+                "Lighthouse has no VC relay-list flag yet "
+                "(https://github.com/sigp/lighthouse/issues/9590). Relays stay "
+                "on MEV-Boost until complete; after Gloas the VC uses "
+                "--builder-proposals plus in-protocol payload bids."
+            )
+            if _write_unit_if_changed(fs, vc_path, vc_content, new_vc, apply):
+                plan.actions.append(
+                    PlanAction(vc_path, "add --builder-proposals")
+                )
+                plan.services_to_restart.append("validator")
+            else:
+                plan.warnings.append(
+                    "Lighthouse VC already has --builder-proposals; nothing to change."
+                )
     else:
         planned = apply_relays_placeholder(vc_name)
         plan.actions.append(PlanAction(f"{vc_name} VC (placeholder)", planned))
@@ -1170,9 +1297,10 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     """Copy mev-boost relays onto the VC. Keep the sidecar running.
 
     Prysm writes proposer-settings JSON and VC flags. Lodestar gets
-    ``--builder.urls`` when the binary documents that flag. Other VCs are
-    a documented no-op. When Charon is installed, VC relay writes are skipped
-    (Charon ``--builder-api`` owns the MEV path until complete).
+    ``--builder.urls`` when the binary documents that flag. Lighthouse
+    v8.2.0+ gets ``--builder-proposals`` (no VC relay-list flag). Other
+    VCs are a documented no-op. When Charon is installed, VC relay writes
+    are skipped (Charon ``--builder-api`` owns the MEV path until complete).
     Beacon-node sidecar flags are not touched.
 
     Args:
@@ -1319,8 +1447,10 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
 
     Returns:
         True for Prysm when ``default_config.builder.relays`` is non-empty,
-        or for Lodestar when ``--builder.urls`` is set and is not the sidecar.
-        Always False for placeholder clients.
+        for Lodestar when ``--builder.urls`` is set and is not the sidecar,
+        or for Lighthouse v8.2.0+ when ``--builder-proposals`` is set
+        (Lighthouse has no VC relay-list flag). Always False for placeholder
+        clients.
     """
     if vc_name == "Prysm":
         args = normalize_cli_args(parse_unit(vc_content).exec_args)
@@ -1340,6 +1470,11 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         args = normalize_cli_args(parse_unit(vc_content).exec_args)
         urls = get_flag_value(args, "--builder.urls")
         return bool(urls) and not is_sidecar_url(urls)
+    if vc_name == "Lighthouse":
+        args = normalize_cli_args(parse_unit(vc_content).exec_args)
+        return has_flag(args, "--builder-proposals") and lighthouse_supports_epbs(
+            fs, vc_content
+        )
     return False
 
 
@@ -1488,7 +1623,7 @@ def complete(
     if "consensus" in plan.services_to_restart and mode == "integrated_grandine":
         # Integrated Grandine restarts with consensus.service only.
         pass
-    elif vc_name == "Prysm" or vc_name == "Lodestar":
+    elif vc_name in ("Prysm", "Lodestar", "Lighthouse"):
         # VC flags do not change on complete; BN restart is enough.
         pass
 
