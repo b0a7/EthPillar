@@ -201,13 +201,22 @@ EOF
   [ "$status" -ne 0 ]
 }
 
-@test "epbsTuiSupported is false for Lighthouse VC" {
+@test "epbsTuiSupported is true for Lighthouse VC" {
   write_lighthouse_validator_service
   rm -f "$CHARON_SERVICE_FILE"
   export CHARON_SERVICE_FILE="/nonexistent/charon.service"
   export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
   run epbsTuiSupported
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+}
+
+@test "epbsImportUnderValidator is true for Lighthouse VC without MEV" {
+  write_lighthouse_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsImportUnderValidator
+  [ "$status" -eq 0 ]
 }
 
 @test "epbsTuiSupported is false for Grandine integrated VC" {

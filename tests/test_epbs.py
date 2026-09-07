@@ -18,6 +18,7 @@ from deploy.charon import generate_charon_service
 from manage.epbs import (
     CHARON_EPBS_NOTE,
     COMPLETE_REFUSED,
+    LIGHTHOUSE_EPBS_MIN_VERSION,
     MIGRATION_FORMAT,
     MIGRATION_VERSION,
     EpbsError,
@@ -27,7 +28,9 @@ from manage.epbs import (
     complete,
     eth_min_bid_to_gwei,
     export_migration,
+    extract_lighthouse_version,
     import_migration,
+    lighthouse_supports_epbs,
     load_migration_file,
     parse_mevboost_relays,
     prepare,
@@ -107,7 +110,8 @@ def test_tui_is_gated_to_full_support_only() -> None:
     """MEV-Boost TUI (``epbsTuiSupported``) matches ``support_level == full``."""
     assert support_level("Prysm") == "full"
     assert support_level("Lodestar") == "full"
-    for client in ("Lighthouse", "Teku", "Nimbus", "Grandine", ""):
+    assert support_level("Lighthouse") == "full"
+    for client in ("Teku", "Nimbus", "Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -382,9 +386,19 @@ def test_lodestar_prepare_adds_builder_urls(tmp_path: Path) -> None:
     assert has_flag(vc_args, "--builder.urls")
 
 
-def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) -> None:
-    """Lighthouse prepare is a no-op; complete requires ``--force`` to strip BN sidecar."""
+def test_extract_lighthouse_version() -> None:
+    """``lighthouse --version`` text yields x.y.z and ignores commit suffixes."""
+    assert extract_lighthouse_version("Lighthouse v8.2.0") == "8.2.0"
+    assert extract_lighthouse_version("Lighthouse v8.2.1-abc1234") == "8.2.1"
+    assert extract_lighthouse_version("Lighthouse v8.1.3-def5678\nrustc 1.86.0") == "8.1.3"
+    assert extract_lighthouse_version("Usage: lighthouse [OPTIONS]") == ""
+    assert extract_lighthouse_version("") == ""
+
+
+def test_lighthouse_prepare_and_complete(tmp_path: Path) -> None:
+    """Lighthouse v8.2.0+ prepare writes --builder-proposals; complete strips BN sidecar."""
     fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Lighthouse v8.2.0\n"
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
     _write(
         fs,
@@ -401,23 +415,252 @@ def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) ->
             "mainnet",
             "ep",
             "--beacon-nodes=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+        ),
+    )
+    dry = prepare(fs, apply=False)
+    assert dry.support == "full"
+    assert dry.applied is False
+    assert "--builder-proposals" not in Path(fs.unit_path("validator")).read_text(
+        encoding="utf-8"
+    )
+
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    args = _args(vc)
+    assert has_flag(args, "--builder-proposals")
+    assert "boost-relay.flashbots.net" not in vc
+    assert any("no VC relay-list flag" in w for w in plan.warnings)
+    assert "validator" in plan.services_to_restart
+
+    again = prepare(fs, apply=True)
+    assert again.applied
+    assert any("already has --builder-proposals" in w for w in again.warnings)
+
+    bn_before = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" in bn_before
+
+    done = complete(fs, apply=True)
+    assert done.disable_mevboost
+    assert fs.mevboost_disabled is True  # type: ignore[attr-defined]
+    bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" not in bn
+    assert not has_flag(_args(bn), "--builder")
+    assert has_flag(
+        _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8")),
+        "--builder-proposals",
+    )
+    after = status(fs)
+    assert "VC relays: yes" in after
+    assert "already removed" in after
+    assert "Complete: refused" not in after
+
+
+def test_lighthouse_prepare_skips_old_version(tmp_path: Path) -> None:
+    """Lighthouse below v8.2.0 is a prepare no-op; complete is refused."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Lighthouse v8.1.3-abc1234\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_lighthouse_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--builder http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_lighthouse_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-nodes=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
             extra_parameters="--builder-proposals",
         ),
     )
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
     plan = prepare(fs, apply=True)
-    assert plan.support == "placeholder"
-    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
-    assert "--builder-proposals" in vc
-    assert "boost-relay.flashbots.net" not in vc
-    assert any("no-op on this client" in w for w in plan.warnings)
+    assert plan.applied
+    assert plan.support == "full"
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+    assert any("below v8.2.0" in a.detail for a in plan.actions)
+    assert lighthouse_supports_epbs(fs, before) is False
+    assert LIGHTHOUSE_EPBS_MIN_VERSION == "v8.2.0"
     with pytest.raises(EpbsError, match="Complete refused"):
         complete(fs, apply=False)
 
-    done = complete(fs, apply=True, force=True)
-    assert any("relay list" in w.lower() for w in done.warnings)
-    bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
-    assert "18550" not in bn
-    assert "--builder-proposals" in Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+
+def test_lighthouse_complete_refused_without_builder_proposals(tmp_path: Path) -> None:
+    """Lighthouse v8.2.0+ complete without --builder-proposals is refused."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Lighthouse v8.2.0\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_lighthouse_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--builder http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_lighthouse_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-nodes=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+        ),
+    )
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
+
+
+def test_lighthouse_charon_prepare_skips_vc_builder_proposals(tmp_path: Path) -> None:
+    """Charon + Lighthouse: prepare must not write --builder-proposals on the VC."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Lighthouse v8.2.0\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_lighthouse_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--builder http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "charon",
+        generate_charon_service(
+            "mainnet",
+            "http://127.0.0.1:5052",
+            builder_api=True,
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_lighthouse_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-nodes=http://127.0.0.1:3600",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--distributed",
+        ),
+    )
+    prep = prepare(fs, apply=True)
+    assert prep.applied
+    assert any("Charon DVT owns builder path" in a.detail for a in prep.actions)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(vc_args, "--builder-proposals")
+
+    done = complete(fs, apply=True)
+    assert done.applied
+    assert not charon_has_builder_api(
+        Path(fs.unit_path("charon")).read_text(encoding="utf-8")
+    )
+    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
+    assert not has_flag(bn_args, "--builder")
+
+
+def test_lighthouse_prepare_warns_without_fee_recipient(tmp_path: Path) -> None:
+    """Lighthouse prepare warns when VC --suggested-fee-recipient is missing."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Lighthouse v8.2.0\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_lighthouse_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--builder http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_lighthouse_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-nodes=http://127.0.0.1:5052",
+        ),
+    )
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    assert any("suggested-fee-recipient" in w for w in plan.warnings)
+    assert has_flag(
+        _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8")),
+        "--builder-proposals",
+    )
+
+
+def test_status_reports_lighthouse(tmp_path: Path) -> None:
+    """Status lists Lighthouse full support and builder-proposals readiness."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "Lighthouse v8.2.0\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_lighthouse_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--builder http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_lighthouse_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-nodes=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+        ),
+    )
+    text = status(fs)
+    assert "Lighthouse" in text
+    assert "full" in text
+    assert "VC relays: no" in text
+    assert "Complete: refused until Prepare writes a VC relay list" in text
+
+    prepare(fs, apply=True)
+    after = status(fs)
+    assert "VC relays: yes" in after
+
+
+def test_import_lighthouse_applies_builder_proposals(tmp_path: Path) -> None:
+    """Import writes Lighthouse --builder-proposals from a migration file."""
+    mev_fs = _fs(tmp_path / "mev")
+    _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    out = tmp_path / "mig.ethpillar.epbs-migration"
+    export_migration(mev_fs, output=str(out), hostname="x")
+
+    vc_fs = _fs(tmp_path / "vc")
+    vc_fs.run_help = lambda _argv: "Lighthouse v8.2.0\n"
+    _write(
+        vc_fs,
+        "validator",
+        generate_lighthouse_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-nodes=http://10.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+        ),
+    )
+    plan = import_migration(str(out), vc_fs, apply=True)
+    assert plan.applied
+    assert plan.support == "full"
+    args = _args(Path(vc_fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert has_flag(args, "--builder-proposals")
+    # Relays are not copied onto the VC (no such flag).
+    assert "boost-relay.flashbots.net" not in Path(vc_fs.unit_path("validator")).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_lodestar_prepare_skips_tagged_release_without_builder_urls(

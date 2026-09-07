@@ -1,5 +1,5 @@
 #!/bin/bash
-# EthPillar ePBS migration integration test (Prysm or Lodestar + MEV-Boost).
+# EthPillar ePBS migration integration test (Prysm, Lodestar, or Lighthouse + MEV-Boost).
 # Runs inside the Docker container after a VC+MEV node is deployed.
 #
 # Starts the validator with an empty wallet (no keystores) so we can
@@ -43,9 +43,9 @@ assert_supported_vc() {
         exit 1
     fi
     case "$VC_CLIENT" in
-        Prysm|Lodestar) ;;
+        Prysm|Lodestar|Lighthouse) ;;
         *)
-            echo "❌ ePBS integration test requires a Prysm or Lodestar validator client"
+            echo "❌ ePBS integration test requires a Prysm, Lodestar, or Lighthouse validator client"
             grep Description= "$VC_UNIT" || true
             exit 1
             ;;
@@ -143,6 +143,14 @@ assert_vc_process_has_epbs_flags() {
             fi
             echo "✅ running VC pid=${pid} has --builder.urls (not sidecar)"
             ;;
+        Lighthouse)
+            if [[ "$cmdline" != *"--builder-proposals"* ]]; then
+                echo "❌ running VC is missing --builder-proposals"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            echo "✅ running VC pid=${pid} has --builder-proposals"
+            ;;
     esac
 }
 
@@ -164,6 +172,10 @@ assert_prepare_units() {
                 exit 1
             fi
             ;;
+        Lighthouse)
+            assert_unit_has "$VC_UNIT" "--builder-proposals"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            ;;
     esac
     assert_unit_has "$BN_UNIT" "$SIDECAR"
 }
@@ -179,6 +191,10 @@ assert_complete_units() {
             ;;
         Lodestar)
             assert_unit_has "$VC_UNIT" "--builder.urls"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            ;;
+        Lighthouse)
+            assert_unit_has "$VC_UNIT" "--builder-proposals"
             assert_unit_lacks "$VC_UNIT" "$SIDECAR"
             ;;
     esac
