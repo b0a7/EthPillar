@@ -1,5 +1,5 @@
 #!/bin/bash
-# EthPillar ePBS migration integration test (Prysm, Lodestar, or Lighthouse + MEV-Boost).
+# EthPillar ePBS migration integration test (Prysm, Lodestar, Lighthouse, or Teku + MEV-Boost).
 # Runs inside the Docker container after a VC+MEV node is deployed.
 #
 # Starts the validator with an empty wallet (no keystores) so we can
@@ -43,9 +43,9 @@ assert_supported_vc() {
         exit 1
     fi
     case "$VC_CLIENT" in
-        Prysm|Lodestar|Lighthouse) ;;
+        Prysm|Lodestar|Lighthouse|Teku) ;;
         *)
-            echo "❌ ePBS integration test requires a Prysm, Lodestar, or Lighthouse validator client"
+            echo "❌ ePBS integration test requires a Prysm, Lodestar, Lighthouse, or Teku validator client"
             grep Description= "$VC_UNIT" || true
             exit 1
             ;;
@@ -151,6 +151,14 @@ assert_vc_process_has_epbs_flags() {
             fi
             echo "✅ running VC pid=${pid} has --builder-proposals"
             ;;
+        Teku)
+            if [[ "$cmdline" != *"--validators-builder-registration-default-enabled"* ]]; then
+                echo "❌ running VC is missing --validators-builder-registration-default-enabled"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            echo "✅ running VC pid=${pid} has --validators-builder-registration-default-enabled"
+            ;;
     esac
 }
 
@@ -176,6 +184,10 @@ assert_prepare_units() {
             assert_unit_has "$VC_UNIT" "--builder-proposals"
             assert_unit_lacks "$VC_UNIT" "$SIDECAR"
             ;;
+        Teku)
+            assert_unit_has "$VC_UNIT" "--validators-builder-registration-default-enabled"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            ;;
     esac
     assert_unit_has "$BN_UNIT" "$SIDECAR"
 }
@@ -195,6 +207,10 @@ assert_complete_units() {
             ;;
         Lighthouse)
             assert_unit_has "$VC_UNIT" "--builder-proposals"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            ;;
+        Teku)
+            assert_unit_has "$VC_UNIT" "--validators-builder-registration-default-enabled"
             assert_unit_lacks "$VC_UNIT" "$SIDECAR"
             ;;
     esac

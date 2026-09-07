@@ -26,13 +26,16 @@ support (same gate as ``charonEpbsSupported`` in the TUI).
 Support levels:
 
 * ``full`` — Prysm (proposer-settings relays), Lodestar v1.47.0+
-  (VC ``--builder.urls`` / ``--builder.minBid``), and Lighthouse v8.2.0+
-  (VC ``--builder-proposals``; BN ``--builder`` sidecar until complete).
-  Lodestar prepare probes ``lodestar validator --help`` for
-  ``--builder.urls``. Lighthouse prepare probes ``lighthouse --version``
-  so older binaries are skipped. Lighthouse has no VC relay-list flag
-  (sigp/lighthouse#9590); prepare enables builder proposals only.
-* ``placeholder`` — Teku, Nimbus, Grandine: no released VC relay list;
+  (VC ``--builder.urls`` / ``--builder.minBid``), Lighthouse v8.2.0+
+  (VC ``--builder-proposals``; BN ``--builder`` sidecar until complete),
+  and Teku 26.6.0+ (VC/combined ``--validators-builder-registration-default-enabled``;
+  BN ``--builder-endpoint`` sidecar until complete). Lodestar prepare
+  probes ``lodestar validator --help`` for ``--builder.urls``.
+  Lighthouse/Teku prepare probe ``--version`` so older binaries are
+  skipped. Neither Lighthouse nor Teku has a VC relay-list flag.
+  Teku prefers combined BN+VC; remote VC / Web3Signer is refused
+  (Consensys/teku#11099).
+* ``placeholder`` — Nimbus, Grandine: no released VC relay list;
   prepare is a documented no-op. Complete is refused without ``--force``.
 """
 
@@ -72,6 +75,11 @@ PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
 # envelopes, PTC, proposer preferences). There is still no VC relay-list
 # flag: https://github.com/sigp/lighthouse/issues/9590
 LIGHTHOUSE_EPBS_MIN_VERSION = "v8.2.0"
+# First Teku release with Gloas Beacon API additions (JDK 25 required).
+# Combined/embedded VC is the supported path; standalone remote VC and
+# Web3Signer still have gaps: https://github.com/Consensys/teku/issues/11099
+TEKU_EPBS_MIN_VERSION = "26.6.0"
+TEKU_BUILDER_REGISTRATION_FLAG = "--validators-builder-registration-default-enabled"
 MIGRATION_FORMAT = "ethpillar.epbs-migration"
 MIGRATION_VERSION = 1
 MIGRATION_EXTENSION = ".ethpillar.epbs-migration"
@@ -115,6 +123,25 @@ CHARON_EPBS_NOTE = (
     "Obol Charon has no stable ePBS/Gloas release yet; EthPillar removes "
     "--builder-api on complete (MEV-Boost proxy path). Watch "
     "https://github.com/ObolNetwork/charon/releases for upstream support."
+)
+TEKU_REMOTE_VC_REFUSED = (
+    "Import refused: Teku standalone/remote validator-client Gloas duties "
+    "are incomplete (https://github.com/Consensys/teku/issues/11099). "
+    "Prefer a combined BN+VC Teku process on one host. Web3Signer / "
+    "external signer is also unsupported for Gloas."
+)
+TEKU_EXTERNAL_SIGNER_REFUSED = (
+    "Teku Web3Signer/external signer cannot participate in Gloas duties "
+    "yet (https://github.com/Consensys/teku/issues/11099 — ExternalSigner "
+    "stubs). Use local keys on a combined BN+VC Teku process."
+)
+TEKU_EPBS_NOTE = (
+    "Teku Gloas is most complete in combined BN+VC mode with local keys "
+    "(26.6.0+, JDK 25). Standalone `teku validator-client` still has "
+    "remote-API gaps; Web3Signer is unsupported "
+    "(https://github.com/Consensys/teku/issues/11099). No VC relay-list "
+    "flag — relays stay on MEV-Boost until complete strips BN "
+    "--builder-endpoint."
 )
 CHARON_IMPORT_REFUSED = (
     "Import refused: Charon is installed and does not support ePBS yet "
@@ -165,9 +192,10 @@ SUPPORT_NOTES: Dict[str, str] = {
         "--suggested-fee-recipient is mandatory on the VC."
     ),
     "Teku": (
-        "Placeholder: Staked Builder API REST client (Consensys/teku#11026) is "
-        "not wired into proposing. Prepare is a no-op. Complete is refused "
-        "without --force."
+        "Full: --validators-builder-registration-default-enabled (26.6.0+ "
+        "Gloas, JDK 25). Prefer combined BN+VC with local keys. No VC "
+        "relay-list flag; complete strips BN --builder-endpoint sidecar. "
+        "Remote VC / Web3Signer refused (Consensys/teku#11099)."
     ),
     "Nimbus": (
         "Placeholder: VC has --payload-builder=true only. Prepare is a no-op. "
@@ -523,30 +551,42 @@ def detect_clients(fs: EpbsFilesystem) -> Tuple[str, str, str]:
     """Detect validator and beacon-node client names from systemd units.
 
     Grandine with ``keystore-dir`` on the consensus unit is treated as
-    integrated (no separate ``validator.service``).
+    integrated (no separate ``validator.service``). Teku with
+    ``--validator-keys`` on the consensus unit and no
+    ``validator.service`` is ``integrated_teku`` (combined BN+VC).
 
     Args:
         fs: IO adapter.
 
     Returns:
         ``(vc_name, bn_name, validator_mode)`` where *validator_mode* is
-        ``separate``, ``integrated_grandine``, or ``none``. Names are empty
-        strings when the corresponding unit is absent.
+        ``separate``, ``integrated_grandine``, ``integrated_teku``, or
+        ``none``. Names are empty strings when the corresponding unit is
+        absent.
     """
     bn_name = ""
     consensus_path = fs.unit_path("consensus")
+    consensus_content = ""
     if fs.exists(consensus_path):
-        content = fs.read_text(consensus_path) or ""
-        bn_name = parse_unit(content).client
-        if "keystore-dir" in content:
-            return "Grandine", bn_name or "Grandine", "integrated_grandine"
+        consensus_content = fs.read_text(consensus_path) or ""
+        bn_name = parse_unit(consensus_content).client
 
     vc_path = fs.unit_path("validator")
     if fs.exists(vc_path):
         content = fs.read_text(vc_path) or ""
         return parse_unit(content).client, bn_name, "separate"
 
+    if consensus_content and "keystore-dir" in consensus_content:
+        return "Grandine", bn_name or "Grandine", "integrated_grandine"
+    if bn_name == "Teku" and "--validator-keys" in consensus_content:
+        return "Teku", "Teku", "integrated_teku"
+
     return "", bn_name, "none"
+
+
+def _is_integrated_mode(mode: str) -> bool:
+    """True when validator duties run on ``consensus.service``."""
+    return mode.startswith("integrated_")
 
 
 def support_level(client: str) -> str:
@@ -556,11 +596,11 @@ def support_level(client: str) -> str:
         client: Validator client name (``Prysm``, ``Lodestar``, …).
 
     Returns:
-        ``full`` (Prysm, Lodestar, Lighthouse) or ``placeholder``.
+        ``full`` (Prysm, Lodestar, Lighthouse, Teku) or ``placeholder``.
         The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) is shown
-        only for ``full``. Lighthouse prepare still version-gates v8.2.0+.
+        only for ``full``. Lighthouse/Teku prepare still version-gate.
     """
-    if client in ("Prysm", "Lodestar", "Lighthouse"):
+    if client in ("Prysm", "Lodestar", "Lighthouse", "Teku"):
         return "full"
     return "placeholder"
 
@@ -860,17 +900,90 @@ def apply_relays_lighthouse(vc_content: str, relays: RelaysConfig) -> str:
     return _rebuild_unit(vc_content, args)
 
 
+def extract_teku_version(text: str) -> str:
+    """Return ``YY.M.P`` from ``teku --version`` output.
+
+    Accepts ``teku/v26.8.0/...`` and ``26.8.0``. Returns ``""`` when no
+    Teku semver is found.
+
+    Args:
+        text: Combined stdout/stderr from ``teku --version``.
+    """
+    if not text:
+        return ""
+    lowered = text.lower()
+    idx = lowered.find("teku")
+    sample = text[idx:] if idx >= 0 else text
+    for raw in sample.replace("/", " ").replace(",", " ").split():
+        token = raw.strip().lstrip("vV").rstrip(".,;:")
+        core = token.split("-")[0]
+        parts = core.split(".")
+        if len(parts) >= 3 and all(part.isdigit() for part in parts[:3]):
+            return ".".join(parts[:3])
+    return ""
+
+
+def teku_supports_epbs(fs: EpbsFilesystem, unit_content: str) -> bool:
+    """True when the Teku binary is 26.6.0+ (Gloas APIs, JDK 25).
+
+    Args:
+        fs: IO adapter used to run ``teku --version``.
+        unit_content: ``validator.service`` or combined ``consensus.service``.
+    """
+    args = normalize_cli_args(parse_unit(unit_content).exec_args)
+    if not args:
+        return False
+    tokens = list(args[0].split())
+    binary = tokens[0]
+    text = _command_help(fs, [binary, "--version"])
+    version = extract_teku_version(text)
+    if not version and len(tokens) > 1:
+        text = _command_help(fs, tokens + ["--version"])
+        version = extract_teku_version(text)
+    if not version:
+        return False
+    return compare_versions(version, TEKU_EPBS_MIN_VERSION) >= 0
+
+
+def teku_has_external_signer(unit_content: str) -> bool:
+    """True when ExecStart configures Web3Signer / external signer.
+
+    Args:
+        unit_content: Teku validator or combined consensus unit text.
+    """
+    args = normalize_cli_args(parse_unit(unit_content).exec_args)
+    return bool(get_flag_value(args, "--validators-external-signer-url"))
+
+
+def apply_relays_teku(unit_content: str, relays: RelaysConfig) -> str:
+    """Ensure Teku ``--validators-builder-registration-default-enabled=true``.
+
+    Official 26.8.0 CLI still documents a single BN ``--builder-endpoint``
+    and VC/combined builder registration. There is no VC relay-list flag
+    (Staked Builder REST client, Consensys/teku#11026, is a library and is
+    not a CLI relay list). ``relays`` is unused.
+
+    Args:
+        unit_content: Current validator or combined consensus unit text.
+        relays: Unused; kept so prepare/import share one apply signature.
+    """
+    _ = relays
+    unit = parse_unit(unit_content)
+    args = normalize_cli_args(unit.exec_args)
+    args = upsert_flag(args, TEKU_BUILDER_REGISTRATION_FLAG, "true")
+    return _rebuild_unit(unit_content, args)
+
+
 def apply_relays_placeholder(client: str) -> str:
     """Return a planned-flag blurb; do not mutate units.
 
     Args:
-        client: Placeholder VC name (Lighthouse, Teku, Nimbus, Grandine).
+        client: Placeholder VC name (Nimbus, Grandine).
 
     Returns:
         Human-readable description of the unreleased relay-list surface.
     """
     planned = {
-        "Teku": "--validators-builder-relays=<urls> (not shipped; #11026 REST client unwired)",
         "Nimbus": "--payload-builder-relays=<urls> (not shipped; VC still --payload-builder=true)",
         "Grandine": "multi --builder-url list (not shipped; single --builder-url today)",
     }
@@ -1180,7 +1293,7 @@ def _apply_vc_relays(
         PlanAction("relays", f"{len(relays.urls)} URL(s) from {relays_source}")
     )
 
-    vc_key = "consensus" if mode == "integrated_grandine" else "validator"
+    vc_key = "consensus" if _is_integrated_mode(mode) else "validator"
     vc_path, vc_content = _read_required_unit(fs, vc_key)
 
     if vc_name == "Prysm":
@@ -1279,6 +1392,49 @@ def _apply_vc_relays(
                 plan.warnings.append(
                     "Lighthouse VC already has --builder-proposals; nothing to change."
                 )
+    elif vc_name == "Teku":
+        if teku_has_external_signer(vc_content):
+            raise EpbsError(TEKU_EXTERNAL_SIGNER_REFUSED)
+        if not teku_supports_epbs(fs, vc_content):
+            plan.actions.append(
+                PlanAction(
+                    "Teku",
+                    "skipped: binary --version is below 26.6.0 (need Gloas/ePBS)",
+                )
+            )
+            plan.warnings.append(
+                "Prepare: no-op on this Teku build — Complete will stop "
+                "MEV-Boost without a Gloas-capable client. Install Teku "
+                "26.6.0 or later (JDK 25 required)."
+            )
+        else:
+            new_vc = apply_relays_teku(vc_content, relays)
+            vc_args = normalize_cli_args(parse_unit(new_vc).exec_args)
+            if not get_flag_value(vc_args, "--validators-proposer-default-fee-recipient"):
+                plan.warnings.append(
+                    "Teku should have --validators-proposer-default-fee-recipient "
+                    "set before restarting."
+                )
+            plan.warnings.append(TEKU_EPBS_NOTE)
+            if mode == "separate":
+                plan.warnings.append(
+                    "This host uses standalone `teku validator-client`. Combined "
+                    "BN+VC is the fully wired Gloas path; remote-API bid publish "
+                    "still has gaps (Consensys/teku#11099)."
+                )
+            restart_name = "consensus" if _is_integrated_mode(mode) else "validator"
+            if _write_unit_if_changed(fs, vc_path, vc_content, new_vc, apply):
+                plan.actions.append(
+                    PlanAction(
+                        vc_path,
+                        f"add {TEKU_BUILDER_REGISTRATION_FLAG}=true",
+                    )
+                )
+                plan.services_to_restart.append(restart_name)
+            else:
+                plan.warnings.append(
+                    "Teku already has builder registration enabled; nothing to change."
+                )
     else:
         planned = apply_relays_placeholder(vc_name)
         plan.actions.append(PlanAction(f"{vc_name} VC (placeholder)", planned))
@@ -1298,10 +1454,11 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
 
     Prysm writes proposer-settings JSON and VC flags. Lodestar gets
     ``--builder.urls`` when the binary documents that flag. Lighthouse
-    v8.2.0+ gets ``--builder-proposals`` (no VC relay-list flag). Other
-    VCs are a documented no-op. When Charon is installed, VC relay writes
-    are skipped (Charon ``--builder-api`` owns the MEV path until complete).
-    Beacon-node sidecar flags are not touched.
+    v8.2.0+ gets ``--builder-proposals``. Teku 26.6.0+ gets
+    ``--validators-builder-registration-default-enabled=true`` (combined
+    BN+VC preferred). Other VCs are a documented no-op. When Charon is
+    installed, VC relay writes are skipped (Charon ``--builder-api`` owns
+    the MEV path until complete). Beacon-node sidecar flags are not touched.
 
     Args:
         fs: IO adapter; production defaults if omitted.
@@ -1403,6 +1560,8 @@ def import_migration(
     vc_name, bn_name, mode = detect_clients(fs)
     if mode == "none" or not vc_name:
         raise EpbsError("No validator client unit found.")
+    if vc_name == "Teku" and mode == "separate" and not bn_name:
+        raise EpbsError(TEKU_REMOTE_VC_REFUSED)
 
     relays = load_migration_file(path, read_text=fs.read_text)
     level = support_level(vc_name)
@@ -1448,9 +1607,9 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
     Returns:
         True for Prysm when ``default_config.builder.relays`` is non-empty,
         for Lodestar when ``--builder.urls`` is set and is not the sidecar,
-        or for Lighthouse v8.2.0+ when ``--builder-proposals`` is set
-        (Lighthouse has no VC relay-list flag). Always False for placeholder
-        clients.
+        for Lighthouse v8.2.0+ when ``--builder-proposals`` is set, or for
+        Teku 26.6.0+ when ``--validators-builder-registration-default-enabled``
+        is true. Always False for placeholder clients.
     """
     if vc_name == "Prysm":
         args = normalize_cli_args(parse_unit(vc_content).exec_args)
@@ -1475,6 +1634,14 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         return has_flag(args, "--builder-proposals") and lighthouse_supports_epbs(
             fs, vc_content
         )
+    if vc_name == "Teku":
+        args = normalize_cli_args(parse_unit(vc_content).exec_args)
+        if not has_flag(args, TEKU_BUILDER_REGISTRATION_FLAG):
+            return False
+        enabled = (get_flag_value(args, TEKU_BUILDER_REGISTRATION_FLAG) or "true").lower()
+        if enabled in ("false", "0", "no"):
+            return False
+        return teku_supports_epbs(fs, vc_content)
     return False
 
 
@@ -1513,14 +1680,14 @@ def complete(
     """
     fs = fs or EpbsFilesystem()
     vc_name, bn_name, mode = detect_clients(fs)
-    has_bn = bool(bn_name) or mode == "integrated_grandine"
+    has_bn = bool(bn_name) or _is_integrated_mode(mode)
     has_mev = fs.exists(fs.unit_path("mevboost"))
     has_charon = charon_installed(fs)
 
     # Machine B: VC and/or Charon only — no BN/MEV to tear down locally.
     if not has_bn and not has_mev:
-        if mode == "integrated_grandine":
-            vc_name = vc_name or "Grandine"
+        if _is_integrated_mode(mode):
+            vc_name = vc_name or bn_name or "unknown"
         level = support_level(vc_name or "unknown")
         plan = MigrationPlan(
             command="complete",
@@ -1555,9 +1722,9 @@ def complete(
         plan.rollback_hint = complete_rollback_hint(fs)
         return plan
 
-    if mode == "integrated_grandine":
-        vc_name = vc_name or "Grandine"
-        bn_name = bn_name or "Grandine"
+    if _is_integrated_mode(mode):
+        vc_name = vc_name or bn_name or "unknown"
+        bn_name = bn_name or vc_name
 
     level = support_level(vc_name or bn_name or "unknown")
     plan = MigrationPlan(
@@ -1573,6 +1740,11 @@ def complete(
     if mode == "separate":
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
+    elif mode == "integrated_teku":
+        _, vc_content = _read_required_unit(fs, "consensus")
+        has_relays = _vc_has_relays(fs, "Teku", vc_content)
+    if vc_name == "Teku" and vc_content and teku_has_external_signer(vc_content):
+        raise EpbsError(TEKU_EXTERNAL_SIGNER_REFUSED)
     via_charon = charon_ready_for_complete(fs)
     if not has_relays and not via_charon and not force and not remote_vc_prepared:
         raise EpbsError(COMPLETE_REFUSED)
@@ -1581,6 +1753,12 @@ def complete(
             "Remote VC prepared: trusting that the other host already imported "
             "the ePBS migration file."
         )
+        if (bn_name or vc_name) == "Teku" or bn_name == "Teku":
+            plan.warnings.append(
+                "Teku remote/standalone VC Gloas duties are incomplete "
+                "(https://github.com/Consensys/teku/issues/11099). Prefer "
+                "combined BN+VC on one host."
+            )
     if via_charon and not has_relays:
         plan.warnings.append(
             "Charon DVT path: complete strips --builder-api (no VC relay list)."
@@ -1620,10 +1798,10 @@ def complete(
     else:
         plan.warnings.append("mevboost.service not installed; skipping disable.")
 
-    if "consensus" in plan.services_to_restart and mode == "integrated_grandine":
-        # Integrated Grandine restarts with consensus.service only.
+    if "consensus" in plan.services_to_restart and _is_integrated_mode(mode):
+        # Combined/integrated clients restart with consensus.service only.
         pass
-    elif vc_name in ("Prysm", "Lodestar", "Lighthouse"):
+    elif vc_name in ("Prysm", "Lodestar", "Lighthouse", "Teku"):
         # VC flags do not change on complete; BN restart is enough.
         pass
 
@@ -1675,11 +1853,15 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
             "file from the MEV/CC host. Complete here strips Charon "
             "--builder-api when present."
         )
+        if vc_name == "Teku":
+            lines.append(TEKU_REMOTE_VC_REFUSED)
 
     if mode == "separate":
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
         lines.append("VC relays: " + ("yes" if has_relays else "no"))
+        if vc_name == "Teku":
+            lines.append(TEKU_EPBS_NOTE)
         if charon_installed(fs):
             if charon_ready_for_complete(fs):
                 lines.append(
@@ -1699,6 +1881,16 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
                 )
             lines.append(
                 "Complete: refused until Prepare writes a VC relay list "
+                "(or --force for local EL + P2P only)."
+            )
+    elif mode == "integrated_teku":
+        _, vc_content = _read_required_unit(fs, "consensus")
+        has_relays = _vc_has_relays(fs, "Teku", vc_content)
+        lines.append("VC relays: " + ("yes" if has_relays else "no"))
+        lines.append(TEKU_EPBS_NOTE)
+        if not has_relays:
+            lines.append(
+                "Complete: refused until Prepare enables builder registration "
                 "(or --force for local EL + P2P only)."
             )
     elif mode == "integrated_grandine":

@@ -29,7 +29,7 @@ Use this when execution, consensus, MEV-Boost, and a **solo** validator client a
 
 **MEV-Boost → ePBS migration**
 
-That item appears when the local validator fully supports migration (**Prysm**, **Lodestar** v1.47.0+, or **Lighthouse** v8.2.0+). Teku, Nimbus, and Grandine do not get the TUI entry.
+That item appears when the local validator fully supports migration (**Prysm**, **Lodestar** v1.47.0+, **Lighthouse** v8.2.0+, or **Teku** 26.6.0+). Nimbus and Grandine do not get the TUI entry.
 
 | Menu item | When to use it |
 |-----------|----------------|
@@ -57,7 +57,8 @@ That item appears when the local validator fully supports migration (**Prysm**, 
 | **Prysm** (v7.1.7+) | Writes your MEV-Boost relays into Prysm’s proposer settings and turns builder mode on. Restarts the validator if you agree. **Does not** stop MEV-Boost. |
 | **Lodestar** (v1.47.0+) | Writes `--builder.urls` and `--builder.minBid` on the validator. Older Lodestar builds skip this so the client can still start. **Does not** stop MEV-Boost. |
 | **Lighthouse** (v8.2.0+) | Writes `--builder-proposals` on the validator. Older Lighthouse builds skip this. Lighthouse has no VC relay-list flag — relays stay on MEV-Boost until Complete. **Does not** stop MEV-Boost. |
-| **Teku, Nimbus, Grandine** | Not offered in the TUI. |
+| **Teku** (26.6.0+, JDK 25) | Writes `--validators-builder-registration-default-enabled=true`. Prefer combined BN+VC with local keys. Older Teku builds skip this. **Does not** stop MEV-Boost. |
+| **Nimbus, Grandine** | Not offered in the TUI. |
 
 After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks keep working as they do today.
 
@@ -97,7 +98,7 @@ Use this when Charon sits between your validator client and beacon node on the *
 
 On the pre-Gloas path, `charon.service` runs with **`--builder-api`** (MEV-Boost builder proxy). Charon owns the builder path — not the signer VC.
 
-**TUI:** **MEV-Boost → ePBS migration** is **hidden** while Charon is installed, even if the signer VC is Prysm, Lodestar, or Lighthouse. Obol has not shipped stable Gloas/ePBS support yet (`charonEpbsSupported` is false). When upstream support lands, that same **MEV-Boost → ePBS migration** entry will be shown again for co-located Charon nodes.
+**TUI:** **MEV-Boost → ePBS migration** is **hidden** while Charon is installed, even if the signer VC is Prysm, Lodestar, Lighthouse, or Teku. Obol has not shipped stable Gloas/ePBS support yet (`charonEpbsSupported` is false). When upstream support lands, that same **MEV-Boost → ePBS migration** entry will be shown again for co-located Charon nodes.
 
 **CLI today** (`python -m manage.epbs`):
 
@@ -122,7 +123,7 @@ You still do the same two steps (before Gloas / after Gloas), but relays move vi
 
 1. **MEV/CC host** — **MEV-Boost → ePBS migration** (always shown when MEV is present and there is no local `validator.service`). The submenu title is **ePBS migration (remote VC)**. Choose **Before Gloas Fork — Export migration file**. EthPillar writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` immediately (relays + min-bid) and shows one result textbox. There is no dry-run/confirm — Export always writes. Copy that file to the VC/DV host.
 
-2. **Solo VC host** (no Charon, no local MEV) — **Validator → ePBS migration (import)** when the VC is Prysm, Lodestar, or Lighthouse. Submenu title **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. Path inputbox, then the usual four-screen dry-run → confirm → apply → optional restart.
+2. **Solo VC host** (no Charon, no local MEV) — **Validator → ePBS migration (import)** when the VC is Prysm, Lodestar, or Lighthouse. **Teku is not offered** (remote/standalone VC Gloas duties are incomplete — [Consensys/teku#11099](https://github.com/Consensys/teku/issues/11099)). Submenu title **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. Path inputbox, then the usual four-screen dry-run → confirm → apply → optional restart.
 
 3. **Charon + VC host** (no local MEV) — **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true. Until Obol ships Charon ePBS, that entry is **hidden** (not under Validator). The CLI `import` command also **refuses** while Charon is installed without ePBS support.
 
@@ -186,7 +187,8 @@ Relays and `-min-bid` are read from `mevboost.service` (or from a migration file
 | **Prysm** (v7.1.7+, no Charon) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema v2) with `default_config.builder.enabled`, `relays`, and `max_execution_payment: "0"` (Gloas execution-payment cap; `0` is the public-bid / proto default and does not disable builder payments). Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Upserts VC `--enable-builder` and `--proposer-settings-file`. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
 | **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. Older builds are skipped so the VC can still start. |
 | **Lighthouse** (v8.2.0+, no Charon) | Adds VC `--builder-proposals` **only when** `lighthouse --version` is v8.2.0+. Does **not** write a relay list (no such flag; [sigp/lighthouse#9590](https://github.com/sigp/lighthouse/issues/9590)). Warns if `--suggested-fee-recipient` is missing (mandatory on the VC). Older builds are skipped. |
-| **Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |
+| **Teku** (26.6.0+, no Charon) | Adds `--validators-builder-registration-default-enabled=true` on the VC or combined BN **only when** `teku --version` is 26.6.0+. Does **not** write a relay list (no such CLI flag; Staked Builder REST client [#11026](https://github.com/Consensys/teku/issues/11026) is a library, not a relay list). **Import refused** on a Teku VC-only host; Web3Signer refused ([#11099](https://github.com/Consensys/teku/issues/11099)). Prefer combined BN+VC. |
+| **Nimbus, Grandine** | Documented no-op; units are not mutated. |
 
 BN sidecar flags stay until `complete`.
 
@@ -214,7 +216,7 @@ On a **MEV/CC** host:
 
 3. Do not rewrite VC relay config from `prepare` / `import`.
 
-Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare/import). Prysm/Lodestar/Lighthouse VC flags do not change on this step alone.
+Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare/import). Prysm/Lodestar/Lighthouse/Teku VC flags do not change on this step alone.
 
 ### Client support levels
 
@@ -223,7 +225,7 @@ Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is 
 | Prysm v7.1.7+ | **full** | TUI + CLI. Relays in proposer-settings (`BuilderConfig.Relays`). BN `--http-mev-relay` until complete. |
 | Lodestar v1.47.0+ | **full** | TUI + CLI. VC `--builder.urls` / `--builder.minBid` written only if `--help` lists them. |
 | Lighthouse v8.2.0+ | **full** | TUI + CLI. VC `--builder-proposals` written only if `--version` is v8.2.0+. No VC relay list ([#9590](https://github.com/sigp/lighthouse/issues/9590)); BN `--builder` sidecar until complete. |
-| Teku | **placeholder** | Staked Builder REST client ([Consensys/teku#11026](https://github.com/Consensys/teku/issues/11026)) not wired. Relays stay on BN `--builder-endpoint`. |
+| Teku 26.6.0+ | **full** | TUI + CLI on combined/co-located BN+VC. `--validators-builder-registration-default-enabled=true`; BN `--builder-endpoint` until complete. JDK 25 required. Remote VC import and Web3Signer refused ([#11099](https://github.com/Consensys/teku/issues/11099)). |
 | Nimbus | **placeholder** | VC `--payload-builder=true`; URL on BN. |
 | Grandine | **placeholder** | Integrated client; single `--builder-url`. |
 
@@ -247,6 +249,29 @@ There is **no** VC relay-list flag or proposer-settings file. Upstream has not s
 - Experimental/testnet images: `ethpandaops/lighthouse:glamsterdam-devnet-8` and trunk `:unstable`.
 
 **Split-host:** Export on the MEV/CC host is unchanged. Import on a Lighthouse VC host writes `--builder-proposals` (same as solo prepare). Complete on the MEV/CC host still needs `--remote-vc-prepared` after that import.
+
+### Teku notes (combined BN+VC preferred)
+
+Teku [26.6.0](https://github.com/Consensys/teku/releases/tag/26.6.0) added the first Gloas Beacon APIs and requires **JDK 25**. Combined/embedded validator (keys on the beacon-node process) is the path upstream has wired for Gloas duties ([Consensys/teku#11099](https://github.com/Consensys/teku/issues/11099)).
+
+**What prepare actually writes.** Teku’s documented builder surface (26.8.0 CLI / [builder-network](https://docs.teku.consensys.io/how-to/configure/builder-network)) is still:
+
+- BN: a **single** `--builder-endpoint=<url>` (EthPillar points this at local MEV-Boost until complete)
+- VC or combined BN: `--validators-builder-registration-default-enabled=true`
+- Fee recipient: `--validators-proposer-default-fee-recipient`
+
+There is **no** VC relay-list flag. The Staked Builder REST client ([#11026](https://github.com/Consensys/teku/issues/11026)) is a library, not a CLI relay list. Relays stay on `mevboost.service` until complete strips the BN sidecar URL.
+
+**Limitations (do not pretend these work):**
+
+- **Standalone / remote `teku validator-client`** — several Gloas remote-API methods are still incomplete (#11099). EthPillar **refuses split-host import** for Teku. Co-located separate VC+BN on one host is allowed with a warning; prefer combined BN+VC.
+- **Web3Signer / `--validators-external-signer-url`** — Gloas signing methods are stubs. Prepare and complete are refused.
+- Do **not** use `--remote-vc-prepared` as a substitute for a working remote Teku VC.
+
+**Operator caveats:**
+
+- JDK 25 is mandatory (Teku 26.6.0+ will not start on older JVMs).
+- Combined mode is detected when `consensus.service` has `--validator-keys` and there is no `validator.service`.
 
 ### Inspecting a running Prysm VC
 
