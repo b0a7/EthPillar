@@ -747,7 +747,7 @@ ufwAllowCharonP2p(){
 }
 
 # Classify how this node runs validator duties.
-# Returns: none | separate | integrated_grandine
+# Returns: none | separate | integrated_grandine | integrated_teku
 getValidatorMode(){
     local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
@@ -756,6 +756,8 @@ getValidatorMode(){
         echo "integrated_grandine"
     elif [[ -f "$validator_svc" ]]; then
         echo "separate"
+    elif [[ -f "$consensus_svc" ]] && grep -qE -- '--validator-keys' "$consensus_svc" 2>/dev/null; then
+        echo "integrated_teku"
     else
         echo "none"
     fi
@@ -773,6 +775,9 @@ getValidatorClient(){
         VALIDATOR_CLIENT=$(grep -m1 '^Description=' "$validator_svc" 2>/dev/null | awk -F'=' '{print $2}' | awk '{print $1}')
     elif [[ -f "$consensus_svc" ]] && grep -q 'keystore-dir' "$consensus_svc" 2>/dev/null; then
         VALIDATOR_CLIENT="Grandine"
+    elif [[ -f "$consensus_svc" ]] && grep -qE -- '--validator-keys' "$consensus_svc" 2>/dev/null; then
+        VALIDATOR_CLIENT=$(grep -m1 '^Description=' "$consensus_svc" 2>/dev/null | awk -F'=' '{print $2}' | awk '{print $1}')
+        VALIDATOR_CLIENT="${VALIDATOR_CLIENT:-Teku}"
     fi
 
     VC="$VALIDATOR_CLIENT"
@@ -790,13 +795,19 @@ charonEpbsSupported() {
 # True when the MEV-Boost TUI should offer ePBS migration.
 # - Split LXC (MEV, no local VC): always show (export / remote complete).
 # - Charon DVT on this host: hide until charonEpbsSupported (builder path is Charon's).
-# - Solo: manage.epbs.support_level == "full" (Prysm, Lodestar, Lighthouse).
+# - Solo: manage.epbs.support_level == "full" (Prysm, Lodestar, Lighthouse, Teku).
 # CLI (`python -m manage.epbs`) is not gated; placeholders stay there.
 epbsTuiSupported() {
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
     local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    local combined_teku=0
+    if [[ -f "$consensus_svc" && ! -f "$validator_svc" ]] && grep -qE -- '--validator-keys' "$consensus_svc" 2>/dev/null; then
+        combined_teku=1
+    fi
     # Machine A: MEV present, no local validator → always offer export/complete.
-    if [[ -f "$mev_svc" && ! -f "$validator_svc" ]]; then
+    # Combined Teku (keys on BN) is a local VC, not split-LXC.
+    if [[ -f "$mev_svc" && ! -f "$validator_svc" && "$combined_teku" -eq 0 ]]; then
         return 0
     fi
     if isCharonEnabled; then
@@ -805,7 +816,7 @@ epbsTuiSupported() {
     local client
     client=$(getValidatorClient)
     case "$client" in
-        Prysm|Lodestar|Lighthouse) return 0 ;;
+        Prysm|Lodestar|Lighthouse|Teku) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -828,6 +839,7 @@ epbsImportUnderValidator() {
     client=$(getValidatorClient)
     case "$client" in
         Prysm|Lodestar|Lighthouse) return 0 ;;
+        Teku) return 1 ;;  # remote/standalone VC Gloas gaps (Consensys/teku#11099)
         *) return 1 ;;
     esac
 }
@@ -840,8 +852,14 @@ epbsImportMenuSupported() {
 # True when this MEV host has no local VC (split-LXC export/complete mode).
 epbsRemoteVcMode() {
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
     local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
-    [[ -f "$mev_svc" && ! -f "$validator_svc" ]]
+    [[ -f "$mev_svc" && ! -f "$validator_svc" ]] || return 1
+    # Combined Teku keeps keys on consensus.service — not a remote-VC host.
+    if [[ -f "$consensus_svc" ]] && grep -qE -- '--validator-keys' "$consensus_svc" 2>/dev/null; then
+        return 1
+    fi
+    return 0
 }
 
 # Build the beacon node REST URL that a separate VC should target.
@@ -881,7 +899,7 @@ stopValidatorService(){
                 sudo systemctl stop validator
             fi
             ;;
-        integrated_grandine)
+        integrated_grandine|integrated_teku)
             if [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]; then
                 sudo systemctl stop consensus
             fi
@@ -902,7 +920,7 @@ startValidatorService(){
                 sudo systemctl start validator
             fi
             ;;
-        integrated_grandine)
+        integrated_grandine|integrated_teku)
             if [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]; then
                 sudo systemctl start consensus
             fi

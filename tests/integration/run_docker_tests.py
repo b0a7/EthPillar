@@ -98,6 +98,11 @@ epbs_tests = [
         f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --vc Lighthouse --network SEPOLIA "
         "--mev --config 'Custom Setup' --test-epbs",
     ),
+    (
+        "Teku-Besu-ePBS-Migration-SEPOLIA",
+        f"{RUN_TEST} deploy/deploy-node.py --ec Besu --cc Teku --vc Teku --network SEPOLIA "
+        "--mev --config 'Custom Setup' --test-epbs",
+    ),
 ]
 
 def parse_clients_from_cmd(cmd: str) -> Tuple[Optional[str], Optional[str]]:

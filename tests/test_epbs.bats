@@ -38,14 +38,17 @@ setup() {
   grep -q 'Obol Charon DV' docs/ePBS-migration.md
   grep -q 'Lighthouse v8.2.0' docs/ePBS-migration.md
   grep -q 'suggested-fee-recipient' docs/ePBS-migration.md
+  grep -q 'Teku 26.6.0' docs/ePBS-migration.md
+  grep -q '11099' docs/ePBS-migration.md
   grep -q 'Import refused' manage/epbs.py
   grep -q 'charon_epbs_supported' manage/epbs.py
 }
 
-@test "integration matrix has Prysm, Lodestar, and Lighthouse ePBS migration cases" {
+@test "integration matrix has Prysm, Lodestar, Lighthouse, and Teku ePBS migration cases" {
     grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lighthouse-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
+    grep -q 'Teku-Besu-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_inside_docker.py
   grep -q -- '--force-validator' tests/integration/run_inside_docker.py

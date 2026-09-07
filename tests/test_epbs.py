@@ -19,6 +19,10 @@ from manage.epbs import (
     CHARON_EPBS_NOTE,
     COMPLETE_REFUSED,
     LIGHTHOUSE_EPBS_MIN_VERSION,
+    TEKU_BUILDER_REGISTRATION_FLAG,
+    TEKU_EPBS_MIN_VERSION,
+    TEKU_EXTERNAL_SIGNER_REFUSED,
+    TEKU_REMOTE_VC_REFUSED,
     MIGRATION_FORMAT,
     MIGRATION_VERSION,
     EpbsError,
@@ -26,11 +30,14 @@ from manage.epbs import (
     EpbsFilesystem,
     charon_has_builder_api,
     complete,
+    detect_clients,
     eth_min_bid_to_gwei,
     export_migration,
     extract_lighthouse_version,
+    extract_teku_version,
     import_migration,
     lighthouse_supports_epbs,
+    teku_supports_epbs,
     load_migration_file,
     parse_mevboost_relays,
     prepare,
@@ -111,7 +118,8 @@ def test_tui_is_gated_to_full_support_only() -> None:
     assert support_level("Prysm") == "full"
     assert support_level("Lodestar") == "full"
     assert support_level("Lighthouse") == "full"
-    for client in ("Teku", "Nimbus", "Grandine", ""):
+    assert support_level("Teku") == "full"
+    for client in ("Nimbus", "Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -663,6 +671,333 @@ def test_import_lighthouse_applies_builder_proposals(tmp_path: Path) -> None:
     )
 
 
+def test_extract_teku_version() -> None:
+    """``teku --version`` text yields YY.M.P from teku/v… or bare semver."""
+    assert extract_teku_version(
+        "teku/v26.8.0/linux-x86_64/-eclipseadoptium-openjdk64bitservervm-java-25"
+    ) == "26.8.0"
+    assert extract_teku_version("teku/v26.6.0") == "26.6.0"
+    assert extract_teku_version("26.8.0") == "26.8.0"
+    assert extract_teku_version("Usage: teku [OPTIONS]") == ""
+    assert extract_teku_version("") == ""
+
+
+def test_teku_prepare_and_complete(tmp_path: Path) -> None:
+    """Teku 26.6.0+ prepare writes builder registration; complete strips BN sidecar."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "teku/v26.8.0/linux-x86_64\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:5052",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+        ),
+    )
+    dry = prepare(fs, apply=False)
+    assert dry.support == "full"
+    assert dry.applied is False
+    assert TEKU_BUILDER_REGISTRATION_FLAG not in Path(fs.unit_path("validator")).read_text(
+        encoding="utf-8"
+    )
+
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    args = _args(vc)
+    assert has_flag(args, TEKU_BUILDER_REGISTRATION_FLAG)
+    assert get_flag_value(args, TEKU_BUILDER_REGISTRATION_FLAG) == "true"
+    assert "boost-relay.flashbots.net" not in vc
+    assert any("11099" in w for w in plan.warnings)
+    assert any("standalone" in w for w in plan.warnings)
+    assert "validator" in plan.services_to_restart
+
+    again = prepare(fs, apply=True)
+    assert again.applied
+    assert any("already has builder registration" in w for w in again.warnings)
+
+    bn_before = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" in bn_before
+
+    done = complete(fs, apply=True)
+    assert done.disable_mevboost
+    assert fs.mevboost_disabled is True  # type: ignore[attr-defined]
+    bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" not in bn
+    assert not has_flag(_args(bn), "--builder-endpoint")
+    assert has_flag(
+        _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8")),
+        TEKU_BUILDER_REGISTRATION_FLAG,
+    )
+    after = status(fs)
+    assert "VC relays: yes" in after
+    assert "already removed" in after
+    assert "Complete: refused" not in after
+
+
+def test_teku_prepare_skips_old_version(tmp_path: Path) -> None:
+    """Teku below 26.6.0 is a prepare no-op; complete is refused."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "teku/v25.12.0/linux-x86_64\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:5052",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+            extra_parameters=f"{TEKU_BUILDER_REGISTRATION_FLAG}=true",
+        ),
+    )
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    assert plan.support == "full"
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+    assert any("below 26.6.0" in a.detail for a in plan.actions)
+    assert teku_supports_epbs(fs, before) is False
+    assert TEKU_EPBS_MIN_VERSION == "26.6.0"
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
+
+
+def test_teku_complete_refused_without_registration_flag(tmp_path: Path) -> None:
+    """Teku 26.6.0+ complete without builder registration is refused."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "teku/v26.8.0/linux-x86_64\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:5052",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+        ),
+    )
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
+
+
+def test_teku_combined_prepare_and_complete(tmp_path: Path) -> None:
+    """Combined BN+VC Teku writes registration on consensus.service."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "teku/v26.8.0/linux-x86_64\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet",
+            SYNC,
+            JWT,
+            "5052",
+            "9000",
+            "100",
+            fee_parameters=(
+                f"--validators-proposer-default-fee-recipient={FEE} "
+                "--validator-keys=/var/lib/teku/validator_keys:/var/lib/teku/validator_keys"
+            ),
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    vc_name, bn_name, mode = detect_clients(fs)
+    assert vc_name == "Teku"
+    assert bn_name == "Teku"
+    assert mode == "integrated_teku"
+
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    args = _args(bn)
+    assert has_flag(args, TEKU_BUILDER_REGISTRATION_FLAG)
+    assert has_flag(args, "--builder-endpoint")
+    assert "validator" not in plan.services_to_restart
+    assert "consensus" in plan.services_to_restart
+    assert not Path(fs.unit_path("validator")).exists()
+
+    done = complete(fs, apply=True)
+    assert done.applied
+    bn_done = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" not in bn_done
+    assert not has_flag(_args(bn_done), "--builder-endpoint")
+    assert has_flag(_args(bn_done), TEKU_BUILDER_REGISTRATION_FLAG)
+    assert has_flag(_args(bn_done), "--validator-keys")
+
+
+def test_teku_import_refused_on_remote_vc_host(tmp_path: Path) -> None:
+    """Teku VC-only import is refused until Consensys/teku#11099 lands."""
+    mev_fs = _fs(tmp_path / "mev")
+    _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    out = tmp_path / "mig.ethpillar.epbs-migration"
+    export_migration(mev_fs, output=str(out), hostname="x")
+
+    vc_fs = _fs(tmp_path / "vc")
+    vc_fs.run_help = lambda _argv: "teku/v26.8.0/linux-x86_64\n"
+    _write(
+        vc_fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://10.0.0.1:5052",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+        ),
+    )
+    with pytest.raises(EpbsError, match="Import refused") as exc:
+        import_migration(str(out), vc_fs, apply=False)
+    assert str(exc.value) == TEKU_REMOTE_VC_REFUSED
+    assert TEKU_BUILDER_REGISTRATION_FLAG not in Path(
+        vc_fs.unit_path("validator")
+    ).read_text(encoding="utf-8")
+
+
+def test_teku_external_signer_refused(tmp_path: Path) -> None:
+    """Web3Signer / --validators-external-signer-url is refused (#11099)."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "teku/v26.8.0/linux-x86_64\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:5052",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+            extra_parameters="--validators-external-signer-url=http://127.0.0.1:9000",
+        ),
+    )
+    with pytest.raises(EpbsError, match="Web3Signer") as exc:
+        prepare(fs, apply=False)
+    assert str(exc.value) == TEKU_EXTERNAL_SIGNER_REFUSED
+    with pytest.raises(EpbsError) as done_exc:
+        complete(fs, apply=False)
+    assert str(done_exc.value) == TEKU_EXTERNAL_SIGNER_REFUSED
+    assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+
+
+def test_teku_charon_prepare_skips_registration(tmp_path: Path) -> None:
+    """Charon + Teku: prepare must not write builder registration on the VC."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "teku/v26.8.0/linux-x86_64\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "charon",
+        generate_charon_service(
+            "mainnet",
+            "http://127.0.0.1:5052",
+            builder_api=True,
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:3600",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+        ),
+    )
+    prep = prepare(fs, apply=True)
+    assert prep.applied
+    assert any("Charon DVT owns builder path" in a.detail for a in prep.actions)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(vc_args, TEKU_BUILDER_REGISTRATION_FLAG)
+
+    done = complete(fs, apply=True)
+    assert done.applied
+    assert not charon_has_builder_api(
+        Path(fs.unit_path("charon")).read_text(encoding="utf-8")
+    )
+    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
+    assert not has_flag(bn_args, "--builder-endpoint")
+
+
+def test_status_reports_teku_combined(tmp_path: Path) -> None:
+    """Status lists Teku full support and combined BN+VC mode."""
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "teku/v26.8.0/linux-x86_64\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet",
+            SYNC,
+            JWT,
+            "5052",
+            "9000",
+            "100",
+            fee_parameters=(
+                f"--validators-proposer-default-fee-recipient={FEE} "
+                "--validator-keys=/var/lib/teku/validator_keys:/var/lib/teku/validator_keys"
+            ),
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    text = status(fs)
+    assert "Teku" in text
+    assert "full" in text
+    assert "integrated_teku" in text
+    assert "26.6.0" in text
+    assert "VC relays: no" in text
+    assert "Complete: refused until Prepare enables builder registration" in text
+
+    prepare(fs, apply=True)
+    after = status(fs)
+    assert "VC relays: yes" in after
+
+
 def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
     tmp_path: Path,
 ) -> None:
@@ -698,69 +1033,38 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
         complete(fs, apply=False)
 
 
-@pytest.mark.parametrize(
-    "client,bn_unit,vc_unit,sidecar_token",
-    [
-        (
-            "Teku",
-            generate_teku_bn_service(
-                "mainnet", SYNC, JWT, "5052", "9000", "100",
-                fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
-                mev_parameters="--validators-builder-registration-default-enabled=true --builder-endpoint=http://127.0.0.1:18550",
-            ),
-            generate_teku_vc_service(
-                "mainnet",
-                "ep",
-                "--beacon-node-api-endpoint=http://127.0.0.1:5052",
-                fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
-                extra_parameters="--validators-builder-registration-default-enabled=true",
-            ),
-            "--builder-endpoint",
-        ),
-        (
-            "Nimbus",
-            generate_nimbus_bn_service(
-                "mainnet", JWT, "5052", "9000", "9001", "100",
-                mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
-            ),
-            generate_nimbus_vc_service(
-                "mainnet",
-                "ep",
-                "--beacon-node=http://127.0.0.1:5052",
-                extra_parameters="--payload-builder=true",
-            ),
-            "--payload-builder-url",
-        ),
-    ],
-    ids=["Teku", "Nimbus"],
-)
-def test_placeholder_clients_complete_strips_sidecar(
-    tmp_path: Path,
-    client: str,
-    bn_unit: str,
-    vc_unit: str,
-    sidecar_token: str,
-) -> None:
-    """Teku/Nimbus prepare is a no-op; complete is refused without ``--force``."""
+def test_nimbus_placeholder_complete_strips_sidecar(tmp_path: Path) -> None:
+    """Nimbus prepare is a no-op; complete is refused without ``--force``."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
-    _write(fs, "consensus", bn_unit)
-    _write(fs, "validator", vc_unit)
+    _write(
+        fs,
+        "consensus",
+        generate_nimbus_bn_service(
+            "mainnet", JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://127.0.0.1:5052",
+            extra_parameters="--payload-builder=true",
+        ),
+    )
     plan = prepare(fs, apply=True)
     assert plan.support == "placeholder"
-    assert client.lower() in plan.client.lower() or plan.client == client
     with pytest.raises(EpbsError, match="Complete refused"):
         complete(fs, apply=False)
 
     complete(fs, apply=True, force=True)
     bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
-    assert not has_flag(bn_args, sidecar_token)
-    # VC builder-enable flags stay
+    assert not has_flag(bn_args, "--payload-builder-url")
     vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
-    if client == "Teku":
-        assert "validators-builder-registration-default-enabled" in vc
-    if client == "Nimbus":
-        assert "payload-builder=true" in vc or "--payload-builder=true" in vc
+    assert "payload-builder=true" in vc or "--payload-builder=true" in vc
 
 
 def test_grandine_integrated_placeholder_and_complete(tmp_path: Path) -> None:

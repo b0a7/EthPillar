@@ -69,6 +69,26 @@ ExecStart=/usr/local/bin/lodestar validator --beaconNodes=http://127.0.0.1:5052
 EOF
 }
 
+write_teku_validator_service() {
+  cat > "$VALIDATOR_SERVICE_FILE" <<EOF
+[Unit]
+Description=Teku Validator Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/teku/bin/teku validator-client --beacon-node-api-endpoint=http://127.0.0.1:5052
+EOF
+}
+
+write_teku_combined_consensus() {
+  cat > "$CONSENSUS_SERVICE_FILE" <<EOF
+[Unit]
+Description=Teku Beacon Node Consensus Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/teku/bin/teku --validator-keys=/var/lib/teku/validator_keys:/var/lib/teku/validator_keys --builder-endpoint=http://127.0.0.1:18550
+EOF
+}
+
 # ── getValidatorMode ─────────────────────────────────────────────────────────
 
 @test "getValidatorMode returns none when no validator services exist" {
@@ -217,6 +237,57 @@ EOF
   export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
   run epbsImportUnderValidator
   [ "$status" -eq 0 ]
+}
+
+@test "epbsTuiSupported is true for Teku VC" {
+  write_teku_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsTuiSupported
+  [ "$status" -eq 0 ]
+}
+
+@test "epbsImportUnderValidator is false for Teku VC (remote Gloas gaps)" {
+  write_teku_validator_service
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsImportUnderValidator
+  [ "$status" -ne 0 ]
+}
+
+@test "getValidatorMode returns integrated_teku when BN has --validator-keys" {
+  rm -f "$VALIDATOR_SERVICE_FILE"
+  export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  write_teku_combined_consensus
+  run getValidatorMode
+  [ "$output" = "integrated_teku" ]
+}
+
+@test "getValidatorClient detects combined Teku" {
+  rm -f "$VALIDATOR_SERVICE_FILE"
+  export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  write_teku_combined_consensus
+  run getValidatorClient
+  [ "$output" = "Teku" ]
+}
+
+@test "epbsTuiSupported is true for combined Teku with MEV (not treated as remote VC)" {
+  rm -f "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
+  export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  write_teku_combined_consensus
+  export MEVBOOST_SERVICE_FILE
+  MEVBOOST_SERVICE_FILE=$(mktemp)
+  echo "[Service]" > "$MEVBOOST_SERVICE_FILE"
+  run epbsTuiSupported
+  status_rc=$status
+  run epbsRemoteVcMode
+  remote_rc=$status
+  rm -f "$MEVBOOST_SERVICE_FILE"
+  [ "$status_rc" -eq 0 ]
+  [ "$remote_rc" -ne 0 ]
 }
 
 @test "epbsTuiSupported is false for Grandine integrated VC" {
