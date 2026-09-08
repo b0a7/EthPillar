@@ -3,7 +3,7 @@ import os
 from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, BASE_DATA_DIR
 from deploy.common import install_system_binary
 from client_requirements import validate_version_for_network
-from typing import Optional
+from typing import List, Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
 def generate_prysm_bn_service(eth_network: str, sync_url: str, jwtsecret_path: str,
@@ -84,6 +84,7 @@ def generate_prysm_vc_service(
     extra_parameters: str = '',
     network_override: Optional[str] = None,
     beacon_rpc_provider: Optional[str] = "127.0.0.1:4000",
+    unit_after: Optional[List[str]] = None,
 ) -> str:
     """Generate Prysm validator client systemd service file content.
 
@@ -101,6 +102,8 @@ def generate_prysm_vc_service(
         beacon_rpc_provider: Optional gRPC beacon endpoint (``host:port``).
             Set when the consensus client is Prysm (default ``127.0.0.1:4000``).
             Pass ``None`` to omit (non-Prysm beacon nodes).
+        unit_after: Optional extra systemd ``After=``/``Wants=`` units
+            (e.g. ``["charon.service"]`` when running behind Obol Charon).
 
     Returns:
         Service file content as a string
@@ -155,7 +158,8 @@ def generate_prysm_vc_service(
         extra_env=['"HOME=/home/validator"'],
         working_dir=None,
         timeout_stop_sec=900,
-        limit_nofile=65536
+        limit_nofile=65536,
+        unit_after=unit_after,
     )
 
 
@@ -245,6 +249,7 @@ def install_prysm_vc(
     fee_parameters: str = '',
     extra_parameters: str = '',
     beacon_rpc_provider: Optional[str] = "127.0.0.1:4000",
+    unit_after: Optional[List[str]] = None,
 ) -> str:
     """Generate and write Prysm validator client service file.
 
@@ -258,6 +263,7 @@ def install_prysm_vc(
         fee_parameters,
         extra_parameters,
         beacon_rpc_provider=beacon_rpc_provider,
+        unit_after=unit_after,
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')

@@ -394,25 +394,34 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
         vc = str(ctx["vc_client"])
         fee_params = _fee_params_for_client(vc, fee, "vc")
         extra_params = _mev_params_for_client(vc, "vc", mev)
-        # Match install: Charon adds per-VC DVT flags.
-        charon_enabled = Path("/etc/systemd/system/charon.service").is_file()
+        # Match install: Charon adds per-VC DVT flags and After=charon.service.
+        contents = ctx.get("contents") or {}
+        charon_enabled = (
+            "charon" in contents  # type: ignore[operator]
+            or Path("/etc/systemd/system/charon.service").is_file()
+        )
         extra_params = _with_dvt_params(extra_params, vc, charon_enabled)
+        vc_unit_after = ["charon.service"] if charon_enabled else None
         bn_arg = _beacon_flag_arg(vc, str(ctx["bn_endpoint"]))
         if vc == "Lighthouse":
             return lighthouse.generate_lighthouse_vc_service(
-                network, graffiti, bn_arg, fee_params, extra_params
+                network, graffiti, bn_arg, fee_params, extra_params,
+                unit_after=vc_unit_after,
             )
         if vc == "Nimbus":
             return nimbus.generate_nimbus_vc_service(
-                network, graffiti, bn_arg, fee_params, extra_params
+                network, graffiti, bn_arg, fee_params, extra_params,
+                unit_after=vc_unit_after,
             )
         if vc == "Teku":
             return teku.generate_teku_vc_service(
-                network, graffiti, bn_arg, fee_params, extra_params
+                network, graffiti, bn_arg, fee_params, extra_params,
+                unit_after=vc_unit_after,
             )
         if vc == "Lodestar":
             return lodestar.generate_lodestar_vc_service(
-                network, graffiti, bn_arg, fee_params, extra_params
+                network, graffiti, bn_arg, fee_params, extra_params,
+                unit_after=vc_unit_after,
             )
         if vc == "Prysm":
             cl = str(ctx["cl_client"])
@@ -424,6 +433,7 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
                 fee_params,
                 extra_params,
                 beacon_rpc_provider=beacon_rpc,
+                unit_after=vc_unit_after,
             )
         raise RuntimeError(f"Unsupported validator client for compare: {vc!r}")
 

@@ -364,6 +364,8 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             if charon_enabled
             else upstream_bn
         )
+        # Same-host ordering: start Charon before the VC talks to :3600.
+        vc_unit_after = ["charon.service"] if charon_enabled else None
 
         if vc_name == 'Lighthouse':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lighthouse.download_lighthouse(network)
@@ -375,7 +377,10 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 charon_enabled,
             )
             bn_arg = f'--beacon-nodes={addr}'
-            val_path = lighthouse.install_lighthouse_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
+            val_path = lighthouse.install_lighthouse_vc(
+                v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
+                unit_after=vc_unit_after,
+            )
         elif vc_name == 'Nimbus':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else nimbus.download_nimbus(network)
             val_ver = v_ver
@@ -386,7 +391,10 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 charon_enabled,
             )
             bn_arg = f'--beacon-node={addr}'
-            val_path = nimbus.install_nimbus_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
+            val_path = nimbus.install_nimbus_vc(
+                v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
+                unit_after=vc_unit_after,
+            )
         elif vc_name == 'Teku':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else teku.download_teku(network)
             val_ver = v_ver
@@ -397,7 +405,10 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 charon_enabled,
             )
             bn_arg = f'--beacon-node-api-endpoint={addr}'
-            val_path = teku.install_teku_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
+            val_path = teku.install_teku_vc(
+                v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
+                unit_after=vc_unit_after,
+            )
         elif vc_name == 'Lodestar':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lodestar.download_lodestar(network)
             val_ver = v_ver
@@ -408,7 +419,10 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 charon_enabled,
             )
             bn_arg = f'--beaconNodes={addr}'
-            val_path = lodestar.install_lodestar_vc(v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params)
+            val_path = lodestar.install_lodestar_vc(
+                v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
+                unit_after=vc_unit_after,
+            )
         elif vc_name == 'Prysm':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else prysm.download_prysm(network)
             val_ver = v_ver
@@ -430,6 +444,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 fee_params,
                 extra_params,
                 beacon_rpc_provider=beacon_rpc,
+                unit_after=vc_unit_after,
             )
 
     combo_name = role

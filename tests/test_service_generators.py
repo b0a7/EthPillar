@@ -86,6 +86,10 @@ class TestCharonService:
         assert f"--private-key-file={CHARON_PRIVATE_KEY_FILE}" in result
         assert "--builder-api" in result
         assert "--p2p-external-ip=203.0.113.10" in result
+        assert "TimeoutStartSec=infinity" in result
+        assert "ExecStartPre=/bin/bash -c" in result
+        assert "curl -sf -m 2" in result
+        assert "http://127.0.0.1:5052/eth/v1/node/version" in result
         check_constant_substitutions(result)
 
     def test_no_builder_without_external_ip(self):
@@ -93,6 +97,7 @@ class TestCharonService:
         assert "--beacon-node-endpoints=http://192.168.1.5:5052" in result
         assert "--builder-api" not in result
         assert "--p2p-external-ip" not in result
+        assert "http://192.168.1.5:5052/eth/v1/node/version" in result
 
     def test_nimbus_feature_set_enable(self):
         result = generate_charon_service(
@@ -101,6 +106,15 @@ class TestCharonService:
             feature_set_enable="json_requests",
         )
         assert "--feature-set-enable=json_requests" in result
+
+    def test_multi_endpoint_wait_pre(self):
+        result = generate_charon_service(
+            "mainnet",
+            "http://192.168.1.5:5052,http://192.168.1.6:5052",
+        )
+        assert "http://192.168.1.5:5052/eth/v1/node/version" in result
+        assert "http://192.168.1.6:5052/eth/v1/node/version" in result
+        assert " || " in result
 
 
 # ═══════════════════════════════════════════════
@@ -781,9 +795,12 @@ class TestLighthouseService:
         result = generate_lighthouse_vc_service(
             "mainnet", GRAFFITI, bn_addr,
             extra_parameters='--builder-proposals --distributed',
+            unit_after=["charon.service"],
         )
         assert "--beacon-nodes=http://127.0.0.1:3600" in result
         assert "--distributed" in result
+        assert "After=network-online.target charon.service" in result
+        assert "Wants=network-online.target charon.service" in result
 
     def test_vc_ephemery(self):
         bn_addr = f'--beacon-nodes=http://{CL_IP_ADDRESS}:{CL_REST_PORT}'
