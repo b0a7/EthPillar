@@ -37,7 +37,24 @@ def test_patch_beacon_endpoints_updates_url(tmp_path):
     updated = service_path.read_text(encoding="utf-8")
     assert "--beacon-node-endpoints=http://192.168.1.20:5052" in updated
     assert "http://127.0.0.1:5052" not in updated
+    assert "http://192.168.1.20:5052/eth/v1/node/version" in updated
     assert "--builder-api" in updated
+
+
+def test_patch_beacon_endpoints_adds_wait_to_legacy_unit(tmp_path):
+    """Older units without ExecStartPre get a BN wait when endpoints are patched."""
+    legacy = "\n".join(
+        line
+        for line in CHARON_UNIT.splitlines()
+        if not line.startswith("ExecStartPre=") and not line.startswith("TimeoutStartSec=")
+    )
+    service_path = tmp_path / "charon.service"
+    service_path.write_text(legacy + "\n", encoding="utf-8")
+    assert patch_beacon_endpoints(str(service_path), "http://10.0.0.5:5052")
+    updated = service_path.read_text(encoding="utf-8")
+    assert "ExecStartPre=/bin/bash -c" in updated
+    assert "http://10.0.0.5:5052/eth/v1/node/version" in updated
+    assert "TimeoutStartSec=infinity" in updated
 
 
 def test_patch_beacon_endpoints_no_change(tmp_path):

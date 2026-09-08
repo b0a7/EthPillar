@@ -1,6 +1,6 @@
 """Shared helpers for generating systemd unit file content."""
 
-from typing import List, Optional
+from typing import List, Optional, Union
 
 
 def generate_systemd_template(
@@ -13,6 +13,8 @@ def generate_systemd_template(
     limit_nofile: Optional[int] = None,
     unit_after: Optional[List[str]] = None,
     unit_requires: Optional[List[str]] = None,
+    exec_start_pre: Optional[List[str]] = None,
+    timeout_start_sec: Optional[Union[int, str]] = None,
 ) -> str:
     """Generate a systemd service file content.
 
@@ -26,6 +28,10 @@ def generate_systemd_template(
         limit_nofile: Optional file descriptor limit.
         unit_after: Additional systemd units that must start before this service.
         unit_requires: Hard dependencies on other systemd units.
+        exec_start_pre: Optional ``ExecStartPre=`` command lines (run as root
+            before dropping to ``user`` unless ``+``/``!`` prefixes are used).
+        timeout_start_sec: Optional ``TimeoutStartSec`` (e.g. ``infinity`` when
+            ``ExecStartPre`` waits indefinitely for a dependency).
 
     Returns:
         Complete systemd service file content as a string.
@@ -33,6 +39,10 @@ def generate_systemd_template(
     env_str = "".join(f"Environment={e}\n" for e in extra_env) if extra_env else ""
     wd_str = f"WorkingDirectory={working_dir}\n" if working_dir else ""
     nofile_str = f"LimitNOFILE={limit_nofile}\n" if limit_nofile else ""
+    pre_str = "".join(f"ExecStartPre={cmd}\n" for cmd in exec_start_pre) if exec_start_pre else ""
+    timeout_start_str = (
+        f"TimeoutStartSec={timeout_start_sec}\n" if timeout_start_sec is not None else ""
+    )
     after_units = ["network-online.target"]
     wants_units = ["network-online.target"]
     if unit_after:
@@ -55,7 +65,7 @@ Restart=on-failure
 RestartSec=3
 KillSignal=SIGINT
 TimeoutStopSec={timeout_stop_sec}
-{nofile_str}{wd_str}{env_str}ExecStart={exec_start}
+{timeout_start_str}{nofile_str}{wd_str}{env_str}{pre_str}ExecStart={exec_start}
 
 [Install]
 WantedBy=multi-user.target

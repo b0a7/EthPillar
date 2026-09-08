@@ -1,6 +1,6 @@
 import os
 import subprocess
-from typing import Optional
+from typing import List, Optional
 from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, install_system_binary, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
@@ -67,7 +67,8 @@ def generate_lighthouse_bn_service(eth_network: str, sync_url: str, jwtsecret_pa
 
 def generate_lighthouse_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
                                    fee_parameters: str = '', extra_parameters: str = '',
-                                   network_override: Optional[str] = None) -> str:
+                                   network_override: Optional[str] = None,
+                                   unit_after: Optional[List[str]] = None) -> str:
     """Generate Lighthouse validator client systemd service file content.
 
     Args:
@@ -77,6 +78,8 @@ def generate_lighthouse_vc_service(eth_network: str, graffiti: str, beacon_node_
         fee_parameters: Optional fee recipient parameters
         extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT)
         network_override: Optional network flag override
+        unit_after: Optional extra systemd ``After=``/``Wants=`` units
+            (e.g. ``["charon.service"]`` when running behind Obol Charon).
 
     Returns:
         Service file content as a string
@@ -111,7 +114,8 @@ def generate_lighthouse_vc_service(eth_network: str, graffiti: str, beacon_node_
         extra_env=None,
         working_dir=None,
         timeout_stop_sec=900,
-        limit_nofile=65536
+        limit_nofile=65536,
+        unit_after=unit_after,
     )
 
 
@@ -178,7 +182,8 @@ def install_lighthouse_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_
     return service_file_path
 
 def install_lighthouse_vc(lh_version: str, eth_network: str, cl_rest_port: str, graffiti: str, beacon_node_address: str,
-                         fee_parameters: str = '', extra_parameters: str = '') -> str:
+                         fee_parameters: str = '', extra_parameters: str = '',
+                         unit_after: Optional[List[str]] = None) -> str:
     """Generate and write Lighthouse validator client service file.
 
     Args:
@@ -189,13 +194,14 @@ def install_lighthouse_vc(lh_version: str, eth_network: str, cl_rest_port: str, 
         beacon_node_address: Beacon node address URL.
         fee_parameters: Optional fee recipient parameters.
         extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT).
+        unit_after: Optional extra systemd ``After=``/``Wants=`` units.
 
     Returns:
         The path to the created service file.
     """
     service_content = generate_lighthouse_vc_service(
         eth_network, graffiti, beacon_node_address,
-        fee_parameters, extra_parameters
+        fee_parameters, extra_parameters, unit_after=unit_after,
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')

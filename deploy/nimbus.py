@@ -2,7 +2,7 @@ import os
 import subprocess
 from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, BASE_DATA_DIR
 from client_requirements import validate_version_for_network
-from typing import Tuple, Optional
+from typing import List, Tuple, Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
 def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
@@ -69,7 +69,8 @@ def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
     )
 
 def generate_nimbus_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
-                               fee_parameters: str = '', extra_parameters: str = '') -> str:
+                               fee_parameters: str = '', extra_parameters: str = '',
+                               unit_after: Optional[List[str]] = None) -> str:
     """Generate Nimbus validator client systemd service file content.
 
     Args:
@@ -78,6 +79,8 @@ def generate_nimbus_vc_service(eth_network: str, graffiti: str, beacon_node_addr
         beacon_node_address: Beacon node address
         fee_parameters: Optional fee recipient parameters
         extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT)
+        unit_after: Optional extra systemd ``After=``/``Wants=`` units
+            (e.g. ``["charon.service"]`` when running behind Obol Charon).
 
     Returns:
         Service file content as a string
@@ -106,7 +109,8 @@ def generate_nimbus_vc_service(eth_network: str, graffiti: str, beacon_node_addr
         extra_env=None,
         working_dir=None,
         timeout_stop_sec=900,
-        limit_nofile=65536
+        limit_nofile=65536,
+        unit_after=unit_after,
     )
 
 
@@ -201,7 +205,8 @@ def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
     return service_file_path
 
 def install_nimbus_vc(nimbus_version: str, eth_network: str, cl_rest_port: str, graffiti: str, bn_addr_flag: str,
-                     fee_parameters: str = '', extra_parameters: str = '') -> str:
+                     fee_parameters: str = '', extra_parameters: str = '',
+                     unit_after: Optional[List[str]] = None) -> str:
     """Generate and write Nimbus validator client service file.
 
     Args:
@@ -212,13 +217,14 @@ def install_nimbus_vc(nimbus_version: str, eth_network: str, cl_rest_port: str, 
         bn_addr_flag: Beacon node address flag.
         fee_parameters: Optional fee recipient parameters.
         extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT).
+        unit_after: Optional extra systemd ``After=``/``Wants=`` units.
 
     Returns:
         The path to the created service file.
     """
     service_content = generate_nimbus_vc_service(
         eth_network, graffiti, bn_addr_flag,
-        fee_parameters, extra_parameters
+        fee_parameters, extra_parameters, unit_after=unit_after,
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')

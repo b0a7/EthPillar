@@ -1,6 +1,6 @@
 from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, install_system_directory, ensure_java_available, ensure_jemalloc, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
-from typing import Optional
+from typing import List, Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
 def _teku_download_from_release(data: dict) -> tuple[str, str]:
@@ -82,7 +82,8 @@ def generate_teku_bn_service(eth_network: str, sync_url: str, jwtsecret_path: st
     )
 
 def generate_teku_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
-                             fee_parameters: str = '', extra_parameters: str = '') -> str:
+                             fee_parameters: str = '', extra_parameters: str = '',
+                             unit_after: Optional[List[str]] = None) -> str:
     """Generate Teku validator client systemd service file content.
 
     Args:
@@ -91,6 +92,8 @@ def generate_teku_vc_service(eth_network: str, graffiti: str, beacon_node_addres
         beacon_node_address: Beacon node address
         fee_parameters: Optional fee recipient parameters
         extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT)
+        unit_after: Optional extra systemd ``After=``/``Wants=`` units
+            (e.g. ``["charon.service"]`` when running behind Obol Charon).
 
     Returns:
         Service file content as a string
@@ -119,7 +122,8 @@ def generate_teku_vc_service(eth_network: str, graffiti: str, beacon_node_addres
         extra_env=None,
         working_dir=None,
         timeout_stop_sec=900,
-        limit_nofile=65536
+        limit_nofile=65536,
+        unit_after=unit_after,
     )
 
 
@@ -208,7 +212,8 @@ def install_teku_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path: 
     return service_file_path
 
 def install_teku_vc(teku_version: str, eth_network: str, cl_rest_port: str, graffiti: str, bn_addr_flag: str,
-                   fee_parameters: str = '', extra_parameters: str = '') -> str:
+                   fee_parameters: str = '', extra_parameters: str = '',
+                   unit_after: Optional[List[str]] = None) -> str:
     """Generate and write Teku validator client service file.
 
     Args:
@@ -219,13 +224,14 @@ def install_teku_vc(teku_version: str, eth_network: str, cl_rest_port: str, graf
         bn_addr_flag: Beacon node address flag.
         fee_parameters: Optional fee recipient parameters.
         extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT).
+        unit_after: Optional extra systemd ``After=``/``Wants=`` units.
 
     Returns:
         The path to the created service file.
     """
     service_content = generate_teku_vc_service(
         eth_network, graffiti, bn_addr_flag,
-        fee_parameters, extra_parameters
+        fee_parameters, extra_parameters, unit_after=unit_after,
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')

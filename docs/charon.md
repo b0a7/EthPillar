@@ -91,6 +91,18 @@ On a full EthPillar stack these are applied automatically:
 
 For **VC-only + Charon**, configure the remote BN yourself (or add the Charon feature flag locally if the upstream BN is Nimbus).
 
+### Startup ordering
+
+Charon’s systemd unit includes an `ExecStartPre` curl loop that waits until
+`--beacon-node-endpoints` answers `/eth/v1/node/version` (with
+`TimeoutStartSec=infinity`), so Charon does not start before its beacon node
+REST API is reachable. That covers a local BN that is still coming up after
+boot as well as a BN on another host. This is a workaround for
+[ObolNetwork/charon#4689](https://github.com/ObolNetwork/charon/issues/4689)
+(Charon can hang indefinitely if the BN is not ready at startup). The validator
+unit gets `After=`/`Wants=charon.service` so the VC does not race Charon’s
+`:3600` API on the same host.
+
 ---
 
 ## Monitoring

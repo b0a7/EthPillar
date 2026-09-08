@@ -144,6 +144,85 @@ def test_generate_default_charon_matches_installed_flags():
     assert semantic_equal(generated, installed)
 
 
+def test_generate_default_charon_adds_bn_wait_vs_legacy_unit():
+    """Legacy charon.service without ExecStartPre differs so compare can adopt it."""
+    import deploy.charon as charon_mod
+
+    legacy = charon_mod.generate_charon_service("mainnet", "http://192.168.1.5:5052")
+    legacy = "\n".join(
+        line
+        for line in legacy.splitlines()
+        if not line.startswith("ExecStartPre=") and not line.startswith("TimeoutStartSec=")
+    )
+    ctx = {
+        "network": "mainnet",
+        "el_client": "",
+        "cl_client": "",
+        "vc_client": "Lodestar",
+        "fee_recipient": "0xabc",
+        "graffiti": "test",
+        "jwtsecret": "/secrets/jwtsecret",
+        "sync_url": "",
+        "el_p2p": "30303",
+        "el_p2p_2": "30304",
+        "el_rpc": "8545",
+        "el_peers": "50",
+        "cl_p2p": "9000",
+        "cl_p2p_2": "9001",
+        "cl_rest": "5052",
+        "cl_peers": "100",
+        "mev_min_bid": "0.006",
+        "mev_enabled": False,
+        "bn_endpoint": "http://127.0.0.1:3600",
+        "is_integrated_grandine": False,
+        "contents": {"charon": legacy},
+    }
+    generated = generate_default_unit("charon", ctx)
+    assert not semantic_equal(generated, legacy)
+    assert "ExecStartPre=/bin/bash -c" in generated
+    assert "http://192.168.1.5:5052/eth/v1/node/version" in generated
+    assert "TimeoutStartSec=infinity" in generated
+    assert "ObolNetwork/charon/issues/4689" in charon_mod.build_beacon_wait_exec_start_pre.__doc__
+
+
+def test_generate_default_validator_after_charon_when_charon_installed():
+    """VC default includes After=charon.service when charon is in compare context."""
+    ctx = {
+        "network": "mainnet",
+        "el_client": "",
+        "cl_client": "",
+        "vc_client": "Lighthouse",
+        "fee_recipient": "0xabc",
+        "graffiti": "test",
+        "jwtsecret": "/secrets/jwtsecret",
+        "sync_url": "",
+        "el_p2p": "30303",
+        "el_p2p_2": "30304",
+        "el_rpc": "8545",
+        "el_peers": "50",
+        "cl_p2p": "9000",
+        "cl_p2p_2": "9001",
+        "cl_rest": "5052",
+        "cl_peers": "100",
+        "mev_min_bid": "0.006",
+        "mev_enabled": False,
+        "bn_endpoint": "http://127.0.0.1:3600",
+        "is_integrated_grandine": False,
+        "contents": {
+            "charon": "[Service]\nExecStart=/usr/local/bin/charon run\n",
+            "validator": (
+                "[Unit]\nAfter=network-online.target\n"
+                "[Service]\nExecStart=/usr/local/bin/lighthouse vc "
+                "--beacon-nodes=http://127.0.0.1:3600\n"
+            ),
+        },
+    }
+    generated = generate_default_unit("validator", ctx)
+    assert "After=network-online.target charon.service" in generated
+    assert "Wants=network-online.target charon.service" in generated
+    assert "--distributed" in generated
+
+
 def test_resolve_context_bn_endpoint_falls_back_to_charon_api(monkeypatch, tmp_path):
     """VC-only + Charon: default BN endpoint is Charon :3600, not CL REST."""
     from manage.config_compare import _resolve_context
