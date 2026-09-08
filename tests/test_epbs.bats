@@ -14,9 +14,15 @@ setup() {
   grep -q '^runEpbsCli()' functions.sh
   grep -q '^runEpbsMigrationStep()' functions.sh
   grep -q '^submenuEPBS()' functions.sh
+  grep -q '^submenuEPBSImport()' functions.sh
   grep -q '^epbsTuiSupported()' functions.sh
+  grep -q '^epbsImportMenuSupported()' functions.sh
+  grep -q '^charonEpbsSupported()' functions.sh
+  grep -q '^runEpbsExport()' functions.sh
   grep -q 'Before Gloas Fork' functions.sh
   grep -q 'After Gloas Fork' functions.sh
+  grep -q 'ethpillar.epbs-migration' functions.sh
+  grep -q 'remote-vc-prepared' functions.sh
 }
 
 @test "README links ePBS migration guide" {
@@ -24,7 +30,14 @@ setup() {
   test -f docs/ePBS-migration.md
   grep -q 'prepare' docs/ePBS-migration.md
   grep -q 'complete' docs/ePBS-migration.md
+  grep -q 'export' docs/ePBS-migration.md
+  grep -q 'import' docs/ePBS-migration.md
   grep -q 'enable --now mevboost' docs/ePBS-migration.md
+  grep -q 'Split hosts' docs/ePBS-migration.md
+  grep -q 'Solo node' docs/ePBS-migration.md
+  grep -q 'Obol Charon DV' docs/ePBS-migration.md
+  grep -q 'Import refused' manage/epbs.py
+  grep -q 'charon_epbs_supported' manage/epbs.py
 }
 
 @test "integration matrix has Prysm and Lodestar ePBS migration cases" {
