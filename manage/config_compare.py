@@ -491,7 +491,9 @@ def prepare_workdir(workdir: Path) -> Tuple[List[str], Dict[str, str]]:
         (installed_dir / f"{key}.service").write_text(installed_canon, encoding="utf-8")
         default_path = default_dir / f"{key}.service"
         default_path.write_text(default_canon, encoding="utf-8")
-        default_path.chmod(default_path.stat().st_mode & ~0o222)  # read-only default
+        # Keep default writable: tmeld saves the focused pane, and a
+        # PermissionError on Ctrl+S (right pane) crashes the UI. Apply only
+        # reads installed/; accidental saves to default/ are discarded.
         pre_hashes[key] = _sha256(installed_canon)
         differing.append(key)
 
@@ -543,8 +545,9 @@ def launch_tmeld(workdir: Path) -> int:
     # Folder compare gives a WinMerge-like multi-file UI with tabs on Enter.
     cmd = [tmeld, str(installed_dir), str(default_dir), "--show-line-numbers"]
     print(f"Launching: {' '.join(cmd)}")
-    print("Left = installed (editable) | Right = EthPillar default (read-only)")
-    print("Save left pane (Ctrl+S) to keep merges. Esc / Ctrl+Q to quit.")
+    print("Left = installed (what gets applied) | Right = EthPillar default (reference)")
+    print("Stay on LEFT: Alt+Left copies a chunk from right→left, then Ctrl+S.")
+    print("Esc / Ctrl+Q to quit. (Saving the right pane is ignored on apply.)")
     return subprocess.call(cmd)
 
 

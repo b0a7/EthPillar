@@ -103,6 +103,49 @@ def test_prepare_workdir_no_diff_when_identical(tmp_path, monkeypatch):
         assert canonicalize_unit((work / "installed" / "consensus.service").read_text(encoding="utf-8"))
 
 
+def test_prepare_default_files_remain_writable(tmp_path, monkeypatch):
+    """Right-pane defaults must stay writable — tmeld crashes on PermissionError."""
+    installed = lighthouse.generate_lighthouse_bn_service(
+        "mainnet",
+        "https://example.invalid",
+        "/secrets/jwtsecret",
+        "5052",
+        "9000",
+        "9001",
+        "100",
+        mev_parameters="--builder http://127.0.0.1:18550",
+    )
+    # Force a semantic diff so default/ is populated.
+    installed = installed.replace(
+        "--builder http://127.0.0.1:18550",
+        "--builder http://127.0.0.1:18550 --stale-custom-flag",
+    )
+    fake_etc = tmp_path / "etc"
+    fake_etc.mkdir()
+    cons = fake_etc / "consensus.service"
+    cons.write_text(installed, encoding="utf-8")
+
+    monkeypatch.setattr(
+        "manage.config_compare.installed_service_paths",
+        lambda: {"consensus": str(cons)},
+    )
+    monkeypatch.setattr(
+        "manage.config_compare.read_text_file",
+        lambda path: Path(path).read_text(encoding="utf-8"),
+    )
+    monkeypatch.setenv("FEE_RECIPIENT_ADDRESS", "0xabc")
+    monkeypatch.setenv("JWTSECRET_PATH", "/secrets/jwtsecret")
+    monkeypatch.setenv("GRAFFITI", "test")
+    monkeypatch.setenv("MEV_MIN_BID", "0.006")
+
+    work = tmp_path / "work"
+    differing, _meta = prepare_workdir(work)
+    assert "consensus" in differing
+    default = work / "default" / "consensus.service"
+    assert default.is_file()
+    assert default.stat().st_mode & 0o200, "default must be writable for tmeld Ctrl+S"
+
+
 def test_exit_no_diff_constant():
     assert EXIT_NO_DIFF == 2
 
