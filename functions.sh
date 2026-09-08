@@ -2802,8 +2802,8 @@ editSystemdUnitAndMaybeRestart() {
 
 
 # Compare installed systemd units to what EthPillar would generate today.
-# Opens tmeld (Meld-in-terminal): left=installed (editable), right=default.
-# On exit, offers backup (.bak), apply, and restart — same shape as Edit configuration.
+# Opens tmeld (Meld-in-terminal): left=installed (applied), right=default (reference).
+# Merge with Alt+Left (right→left) then Ctrl+S on LEFT. On exit: .bak / apply / restart.
 compareSystemdDefaults() {
     local workdir py rc changed svc restart_list
     ensure_python_deps
@@ -2842,17 +2842,19 @@ compareSystemdDefaults() {
     whiptail --title "Compare systemd configs" --msgbox \
 "Opening tmeld (side-by-side compare/merge).
 
-Left  = installed unit (editable)
-Right = EthPillar default (read-only)
+Left  = installed unit (this is what gets applied)
+Right = EthPillar default (reference only)
 
-Tips:
+Workflow — stay on the LEFT pane:
  • Enter a file from the folder view to open a tab
- • Alt+Left / Alt+Right copy chunks between panes
- • Ctrl+S saves the left pane
- • Esc / Ctrl+Q quits
+ • Alt+Down / Alt+Up  jump between differences
+ • Alt+Left           copy this chunk from RIGHT → LEFT
+ • Ctrl+S             save LEFT (required to keep merges)
+ • Esc / Ctrl+Q       quit
 
-After you quit, EthPillar will offer to apply any
-saved left-pane changes (with optional .bak backup)." 20 72
+Saving the right pane does nothing for EthPillar.
+After you quit, you can apply saved left-pane changes
+(with optional .bak backup)." 22 72
 
     set +e
     PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare launch --workdir "$workdir"
