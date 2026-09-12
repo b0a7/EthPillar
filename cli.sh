@@ -23,10 +23,18 @@ cli_is_client_installed() {
     [[ -f "$(cli_service_path "$target")" ]]
 }
 
+# Canonical start/restart order. Charon must precede validator so the VC can
+# reach the intermediate (see startConsensusStackAfterUpdate / #57).
+CLI_CLIENT_START_ORDER=(execution consensus mevboost charon validator)
+# Stop order: reverse dependency (validator before charon).
+CLI_CLIENT_STOP_ORDER=(validator charon mevboost consensus execution)
+
 # Print space-separated client targets installed on this host (no ethpillar).
+# Default listing follows start order.
 cli_installed_client_targets() {
     local t targets=()
-    for t in execution consensus validator mevboost charon; do
+    local -n _order="${1:-CLI_CLIENT_START_ORDER}"
+    for t in "${_order[@]}"; do
         if cli_is_client_installed "$t"; then
             targets+=("$t")
         fi
@@ -48,7 +56,7 @@ cli_upgradable_targets() {
 # Print targets not installed (for help). Always excludes ethpillar.
 cli_missing_client_targets() {
     local t missing=()
-    for t in execution consensus validator mevboost charon; do
+    for t in "${CLI_CLIENT_START_ORDER[@]}"; do
         if ! cli_is_client_installed "$t"; then
             missing+=("$t")
         fi
@@ -64,6 +72,7 @@ cli_missing_client_targets() {
 cli_resolve_targets() {
     local mode="$1"
     local arg="${2:-all}"
+    local order_name="${3:-CLI_CLIENT_START_ORDER}"
     local t allowed installed
 
     arg="${arg,,}"
@@ -72,7 +81,7 @@ cli_resolve_targets() {
         installed=$(cli_upgradable_targets)
     else
         allowed="all execution consensus validator mevboost charon"
-        installed=$(cli_installed_client_targets)
+        installed=$(cli_installed_client_targets "$order_name")
     fi
 
     if [[ "$arg" == "all" ]]; then
@@ -213,9 +222,15 @@ cli_cmd_status() {
 cli_cmd_service_action() {
     local action="$1"
     local target_arg="${2:-all}"
-    local t targets rc=0
+    local t targets rc=0 order_name="CLI_CLIENT_START_ORDER"
 
-    if ! targets=$(cli_resolve_targets clients "$target_arg"); then
+    # Stop tears down dependents first (validator → charon); start/restart
+    # bring Charon up before the VC so :3600 is available.
+    if [[ "$action" == "stop" ]]; then
+        order_name="CLI_CLIENT_STOP_ORDER"
+    fi
+
+    if ! targets=$(cli_resolve_targets clients "$target_arg" "$order_name"); then
         return 1
     fi
 
@@ -350,7 +365,7 @@ cli_check_ethpillar_update() {
         echo "ethpillar: could not fetch origin/main"
         return 1
     }
-    latest=$(git -C "$BASE_DIR" show origin/main:ethpillar.sh 2>/dev/null | grep '^EP_VERSION=' | cut -d'"' -f2)
+    latest=$(getEthPillarRemoteVersion)
     if [[ -z "$latest" ]]; then
         echo "ethpillar: could not read remote EP_VERSION"
         return 1
@@ -390,33 +405,16 @@ cli_cmd_check_updates() {
     return 0
 }
 
-# Non-interactive EthPillar self-update (mirrors System Administration → Update EthPillar).
+# Non-interactive EthPillar self-update (shared core: upgradeEthPillar).
 cli_upgrade_ethpillar() {
     local current latest
     current="${EP_VERSION}"
-    cd "$BASE_DIR" || return 1
-
     echo "Updating EthPillar..."
-    git fetch origin main || return 1
-    latest=$(git show origin/main:ethpillar.sh 2>/dev/null | grep '^EP_VERSION=' | cut -d'"' -f2)
-    echo "Current: $current  Remote: ${latest:-unknown}"
-
-    [[ -f .env.overrides ]] && cp .env.overrides /tmp/env.overrides.backup
-
-    git checkout main || return 1
-    git pull --ff-only || return 1
-    git reset --hard || return 1
-    # Match TUI: drop untracked build artifacts; restore overrides below.
-    git clean -xdf || return 1
-
-    ensure_python_deps || return 1
-
-    [[ -f /tmp/env.overrides.backup ]] && mv /tmp/env.overrides.backup .env.overrides
-
-    # Re-read version from updated script if still on disk
-    if [[ -f "$BASE_DIR/ethpillar.sh" ]]; then
-        latest=$(grep '^EP_VERSION=' "$BASE_DIR/ethpillar.sh" | cut -d'"' -f2)
-    fi
+    # Best-effort remote version for the log line (upgradeEthPillar fetches again).
+    git -C "$BASE_DIR" fetch origin main --quiet 2>/dev/null || true
+    echo "Current: $current  Remote: $(getEthPillarRemoteVersion || echo unknown)"
+    upgradeEthPillar || return 1
+    latest=$(grep '^EP_VERSION=' "$BASE_DIR/ethpillar.sh" 2>/dev/null | cut -d'"' -f2)
     echo "EthPillar updated to ${latest:-unknown}."
     return 0
 }

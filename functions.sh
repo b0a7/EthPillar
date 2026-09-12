@@ -509,6 +509,28 @@ ensure_python_deps() {
     export PATH="${venv_dir}/bin:${PATH}"
 }
 
+# Print EP_VERSION from origin/main:ethpillar.sh (requires a prior git fetch).
+getEthPillarRemoteVersion() {
+    git -C "${BASE_DIR}" show origin/main:ethpillar.sh 2>/dev/null \
+        | grep '^EP_VERSION=' | cut -d'"' -f2
+}
+
+# Apply EthPillar self-update: fetch origin/main, hard-reset, clean untracked,
+# refresh Python deps. Preserves .env.overrides across the clean.
+# Shared by System Administration → Update EthPillar and `ethpillar upgrade ethpillar`.
+upgradeEthPillar() {
+    cd "${BASE_DIR}" || return 1
+    git fetch origin main || return 1
+    [[ -f .env.overrides ]] && cp .env.overrides /tmp/env.overrides.backup
+    git checkout main || return 1
+    git pull --ff-only || return 1
+    git reset --hard || return 1
+    git clean -xdf || return 1
+    ensure_python_deps || return 1
+    [[ -f /tmp/env.overrides.backup ]] && mv /tmp/env.overrides.backup .env.overrides
+    return 0
+}
+
 # Ensure a Java runtime is available for JVM-based clients (Teku, Besu)
 updateJRE(){
   # Delegate Java installation to the Python helper in deploy.common. This

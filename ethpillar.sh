@@ -885,14 +885,15 @@ while true; do
       ⬆️)
         # Get current version
         local current_version=$EP_VERSION
-        
+
         # Fetch latest version from remote
         cd "$BASE_DIR" || true
         git fetch origin main
-        
+
         # Get latest version from remote
-        latest_version=$(git show origin/main:ethpillar.sh | grep '^EP_VERSION=' | cut -d'"' -f2)
-        
+        local latest_version
+        latest_version=$(getEthPillarRemoteVersion)
+
         # Format msgs
         if [[ "$current_version" == "$latest_version" ]]; then
           local MSG1="You are already on the latest version ($current_version).\n\nWould you like to pull the latest changes anyway?"
@@ -904,21 +905,7 @@ while true; do
 
         # Prompt to update
         if whiptail --title "EthPillar Update" --yesno "$MSG1" 10 78; then
-            # Backup .env.overrides if it exists
-            [[ -f .env.overrides ]] && cp .env.overrides /tmp/env.overrides.backup
-            
-            # Update to latest
-            git checkout main
-            git pull --ff-only
-            git reset --hard
-            git clean -xdf
-
-            # Re-install any new or updated Python dependencies
-            ensure_python_deps
-            
-            # Restore .env.overrides if it was backed up
-            [[ -f /tmp/env.overrides.backup ]] && mv /tmp/env.overrides.backup .env.overrides
-            
+            upgradeEthPillar
             whiptail --title "Updated EthPillar" --msgbox "$MSG2" 10 78
         fi
         ;;

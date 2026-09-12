@@ -231,6 +231,30 @@ set_unit_state() {
     grep -q "systemctl restart mevboost" "$COMMAND_LOG"
 }
 
+@test "start all: charon before validator; stop all: validator before charon" {
+    write_service "$VALIDATOR_SERVICE_FILE"
+    write_service "$CHARON_SERVICE_FILE"
+    set_unit_state validator active
+    set_unit_state charon active
+
+    run ./ethpillar.sh start all
+    [ "$status" -eq 0 ]
+    start_charon_line=$(grep -n "systemctl start charon" "$COMMAND_LOG" | head -1 | cut -d: -f1)
+    start_validator_line=$(grep -n "systemctl start validator" "$COMMAND_LOG" | head -1 | cut -d: -f1)
+    [ -n "$start_charon_line" ]
+    [ -n "$start_validator_line" ]
+    [ "$start_charon_line" -lt "$start_validator_line" ]
+
+    : > "$COMMAND_LOG"
+    run ./ethpillar.sh stop all
+    [ "$status" -eq 0 ]
+    stop_validator_line=$(grep -n "systemctl stop validator" "$COMMAND_LOG" | head -1 | cut -d: -f1)
+    stop_charon_line=$(grep -n "systemctl stop charon" "$COMMAND_LOG" | head -1 | cut -d: -f1)
+    [ -n "$stop_validator_line" ]
+    [ -n "$stop_charon_line" ]
+    [ "$stop_validator_line" -lt "$stop_charon_line" ]
+}
+
 @test "start: rejects unknown or not-installed target" {
     write_service "$EXEC_SERVICE_FILE"
 
