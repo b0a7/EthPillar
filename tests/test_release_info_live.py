@@ -46,6 +46,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from functools import lru_cache
 from unittest.mock import patch
 
@@ -179,23 +180,88 @@ def _download_check_headers() -> dict:
     return {"User-Agent": "ethpillar-live-release-test/1.0"}
 
 
-def _assert_url_reachable(url: str, client: str) -> None:
-    """Confirm *url* exists using HEAD, falling back to a 1-byte ranged GET."""
+_URL_REACHABILITY_ATTEMPTS = 4
+_URL_REACHABILITY_BACKOFF_SECONDS = (1, 2, 4)
+_URL_SUCCESS_STATUSES = frozenset({200, 206})
+_URL_HARD_FAIL_STATUSES = frozenset({401, 403, 404})
+
+
+def _is_transient_http_status(status: int) -> bool:
+    """True for retryable CDN/rate-limit responses (HTTP 429 or 5xx)."""
+    return status == 429 or status >= 500
+
+
+def _probe_download_url(session: requests.Session, url: str) -> int:
+    """HEAD *url*, then a 1-byte ranged GET if HEAD was not 200/206.
+
+    Returns the status used to decide reachability. HEAD-only success skips GET
+    (same as the original probe). Azure blob HEAD may return 403 even for a
+    valid object, so 401/403/404 on HEAD still fall through to GET.
+    """
     headers = _download_check_headers()
-    response = requests.head(
+    response = session.head(
         url, allow_redirects=True, timeout=45, headers=headers
     )
-    if response.status_code not in (200, 206):
-        response = requests.get(
-            url,
-            headers={**headers, "Range": "bytes=0-0"},
-            stream=True,
-            allow_redirects=True,
-            timeout=45,
+    if response.status_code in _URL_SUCCESS_STATUSES:
+        return response.status_code
+    response = session.get(
+        url,
+        headers={**headers, "Range": "bytes=0-0"},
+        stream=True,
+        allow_redirects=True,
+        timeout=45,
+    )
+    response.close()
+    return response.status_code
+
+
+def _assert_url_reachable(url: str, client: str) -> None:
+    """Confirm *url* exists using HEAD, falling back to a 1-byte ranged GET.
+
+    Transient CDN/network failures (HTTP 5xx, 429, timeouts, connection errors)
+    are retried with short exponential backoff. Persistent 5xx/429 after
+    retries skip so Nightly does not stay red on asset blips. HTTP 401/403/404
+    fail immediately (bad URL or auth). Other unexpected codes fail without
+    retry.
+    """
+    last_status: int | None = None
+    last_error: BaseException | None = None
+    attempts = _URL_REACHABILITY_ATTEMPTS
+
+    with requests.Session() as session:
+        for attempt in range(attempts):
+            try:
+                status = _probe_download_url(session, url)
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_error = exc
+                last_status = None
+            else:
+                if status in _URL_SUCCESS_STATUSES:
+                    return
+                if status in _URL_HARD_FAIL_STATUSES or not _is_transient_http_status(
+                    status
+                ):
+                    assert status in _URL_SUCCESS_STATUSES, (
+                        f"{client}: URL not reachable ({status}): {url}"
+                    )
+                last_status = status
+                last_error = None
+
+            if attempt < attempts - 1:
+                time.sleep(_URL_REACHABILITY_BACKOFF_SECONDS[attempt])
+
+    if last_status is not None and _is_transient_http_status(last_status):
+        pytest.skip(
+            f"{client}: transient CDN/asset HTTP {last_status} after "
+            f"{attempts} probes of {url}"
         )
-        response.close()
-    assert response.status_code in (200, 206), (
-        f"{client}: URL not reachable ({response.status_code}): {url}"
+    if last_error is not None:
+        pytest.skip(
+            f"{client}: transient CDN/network error after {attempts} probes "
+            f"of {url}: {type(last_error).__name__}: {last_error}"
+        )
+    assert last_status in _URL_SUCCESS_STATUSES, (
+        f"{client}: URL not reachable ({last_status}): {url}"
     )
 
 
