@@ -37,7 +37,6 @@ def generate_reth_service(eth_network: str, el_p2p_port: str, el_p2p_port_2: str
         "--metrics 127.0.0.1:6060",
         f"--port {el_p2p_port}",
         f"--discovery.port {el_p2p_port}",
-        "--enable-discv5-discovery",
         f"--discovery.v5.port {el_p2p_port_2}",
         f"--max-outbound-peers {el_max_peer_count}",
         f"--max-inbound-peers {el_max_peer_count}",
