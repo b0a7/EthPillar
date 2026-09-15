@@ -383,6 +383,8 @@ class TestNethermindService:
         )
         assert "Description=Nethermind Execution Layer Client service for MAINNET" in result
         assert "--config mainnet" in result
+        assert f"--data-dir=\"{BASE_DATA_DIR}/nethermind\"" in result
+        assert "--datadir" not in result
         assert f"--Network.DiscoveryPort {EL_P2P_PORT}" in result
         assert f"--Network.P2PPort {EL_P2P_PORT}" in result
         assert f"--Network.MaxActivePeers {EL_MAX_PEER_COUNT}" in result
@@ -433,6 +435,7 @@ class TestRethService:
         assert f"--port {EL_P2P_PORT}" in result
         assert f"--discovery.port {EL_P2P_PORT}" in result
         assert f"--discovery.v5.port {EL_P2P_PORT_2}" in result
+        assert "--enable-discv5-discovery" not in result
         assert f"--max-outbound-peers {reth_max_peers}" in result
         assert f"--max-inbound-peers {reth_max_peers}" in result
         assert "Environment=RUST_LOG=info" in result
@@ -698,7 +701,9 @@ class TestNimbusService:
         assert f"--quic-port={CL_P2P_PORT_2}" in result
         assert f"--rest-port={CL_REST_PORT}" in result
         assert "--payload-builder=true" in result
-        assert "--in-process-validators=false" in result
+        assert "--el=http://127.0.0.1:8551" in result
+        assert "--web3-url" not in result
+        assert "--in-process-validators=false" not in result
         assert "--non-interactive" in result
         assert "--status-bar=false" in result
 

@@ -42,14 +42,13 @@ def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
         f"--max-peers={cl_max_peer_count}",
         f"--rest-port={cl_rest_port}",
         "--enr-auto-update=true",
-        "--web3-url=http://127.0.0.1:8551",
+        "--el=http://127.0.0.1:8551",
         "--rest",
         "--metrics",
         "--metrics-port=8008",
         f"--jwt-secret={jwtsecret_path}",
         "--non-interactive",
         "--status-bar=false",
-        "--in-process-validators=false"
     ]
     if fee_parameters:
         _args.append(fee_parameters.strip())

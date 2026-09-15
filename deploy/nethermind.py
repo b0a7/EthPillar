@@ -29,7 +29,7 @@ def generate_nethermind_service(eth_network: str, el_p2p_port: str, el_rpc_port:
     _args = [
         f"{INSTALL_DIR}/nethermind/nethermind",
         _network,
-        f"--datadir=\"{BASE_DATA_DIR}/nethermind\"",
+        f"--data-dir=\"{BASE_DATA_DIR}/nethermind\"",
         f"--Network.DiscoveryPort {el_p2p_port}",
         f"--Network.P2PPort {el_p2p_port}",
         f"--Network.MaxActivePeers {el_max_peer_count}",
