@@ -2471,11 +2471,11 @@ hasConsensusService(){
     [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]
 }
 
-# Low-disk guidance when consensus.service is absent. Do not recommend CL resync.
+# Low-disk guidance when consensus.service is absent. Do not recommend CL resync
+# or chain-growth storage upgrades (no local EL/CL data to grow into TB scale).
 lowDiskSpaceTipsNoConsensusResync(){
     local tips=" - Free disk space: Remove unused files, logs, and leftover client data to reclaim storage.
- - NCDU: Find large files and analyze disk usage from the EthPillar toolbox.
- - Upgrade Storage: Until portal clients are available, upgrading to 4TB NVME is the best option for the foreseeable future."
+ - NCDU: Find large files and analyze disk usage from the EthPillar toolbox."
     if isCharonEnabled; then
         tips+=$'\n'" - This node runs Obol Charon (distributed validator). There is no local consensus client to resync."
     elif [[ -f "${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}" ]]; then

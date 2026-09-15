@@ -97,7 +97,7 @@ EOF
   run lowDiskSpaceTipsNoConsensusResync
   [ "$status" -eq 0 ]
   [[ "$output" == *"NCDU"* ]]
-  [[ "$output" == *"Upgrade Storage"* ]]
+  [[ "$output" != *"Upgrade Storage"* ]]
   [[ "$output" == *"Obol Charon"* ]]
   [[ "$output" != *"resync consensus"* ]]
 }
@@ -109,6 +109,7 @@ EOF
   [[ "$output" == *"NCDU"* ]]
   [[ "$output" == *"validator-client-only"* ]]
   [[ "$output" != *"Obol Charon"* ]]
+  [[ "$output" != *"Upgrade Storage"* ]]
 }
 
 # ── checkDiskSpace ─────────────────────────────────────────────────────────────
@@ -171,7 +172,11 @@ EOF
     return 1
   fi
   grep -q "validator-client-only" "$COMMAND_LOG"
-  grep -q "Upgrade Storage" "$COMMAND_LOG"
+  grep -q "NCDU" "$COMMAND_LOG"
+  if grep -q "Upgrade Storage" "$COMMAND_LOG"; then
+    echo "unexpected chain-growth storage tip on VC-only: $(cat "$COMMAND_LOG")"
+    return 1
+  fi
 }
 
 @test "checkDiskSpace still offers consensus resync when Charon and consensus.service both exist" {
