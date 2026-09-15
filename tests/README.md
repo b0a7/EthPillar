@@ -90,6 +90,7 @@ Optional: set `$env:GITHUB_TOKEN` to avoid API rate limits when running the full
 - `tests/test_service_generators.py`: Golden-string tests for systemd units (generators live in each `deploy/{client}.py` module).
 - `tests/test_client_module_contracts.py`: Verifies each client module exports required functions per `deploy/protocols.py`.
 - `tests/test_validator_helpers.bats` / `tests/test_switch_client.bats`: Validator mode helpers and CC-switch coordination (including Charon upstream patch).
+- `tests/test_disk_space.bats`: Low-disk dialog skips consensus resync on Charon/VC-only nodes (mocks df/whiptail).
 - `tests/test_extract_and_install.py`: Unit tests for `extract_and_install` and deploy-module adoption.
 - `tests/test_update_extract.bats`: Static checks that update scripts use the unified extract CLI.
 - `tests/test_integration_user.bats`: Static checks for non-root integration test execution.

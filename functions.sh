@@ -2466,7 +2466,26 @@ checkRelayLatency(){
     read
 }
 
-# Checks disk space. Offers to run checkpoint sync. THRESHOLD and MOUNT_POINTS and ALERT_FILE set in env or .env.overrides file
+# True when a local consensus systemd unit is installed.
+hasConsensusService(){
+    [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]
+}
+
+# Low-disk guidance when consensus.service is absent. Do not recommend CL resync.
+lowDiskSpaceTipsNoConsensusResync(){
+    local tips=" - Free disk space: Remove unused files, logs, and leftover client data to reclaim storage.
+ - NCDU: Find large files and analyze disk usage from the EthPillar toolbox.
+ - Upgrade Storage: Until portal clients are available, upgrading to 4TB NVME is the best option for the foreseeable future."
+    if isCharonEnabled; then
+        tips+=$'\n'" - This node runs Obol Charon (distributed validator). There is no local consensus client to resync."
+    elif [[ -f "${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}" ]]; then
+        tips+=$'\n'" - This is a validator-client-only node. There is no local consensus client to resync."
+    fi
+    printf '%s' "$tips"
+}
+
+# Checks disk space. Offers checkpoint sync only when a local consensus client exists.
+# THRESHOLD, MOUNT_POINTS, and ALERT_FILE are set in env or .env.overrides.
 checkDiskSpace(){
     # Clear the alert file at the beginning
     > "$ALERT_FILE"
@@ -2486,11 +2505,15 @@ checkDiskSpace(){
     done
 
     if [[ $(grep --ignore-case -oE "WARNING" "$ALERT_FILE") ]]; then
-        if whiptail --title "Low Disk Space Detected" --yesno "$(cat "$ALERT_FILE")\n\nRecommend to resync consensus client. Proceed?" 10 78; then
-            runScript resync_consensus.sh
-            MSG_TIPS=" - Resync Execution Client: This can take a few hours, up to a few days. Command is found under execution client menu.
+        if hasConsensusService; then
+            if whiptail --title "Low Disk Space Detected" --yesno "$(cat "$ALERT_FILE")\n\nRecommend to resync consensus client. Proceed?" 10 78; then
+                runScript resync_consensus.sh
+                MSG_TIPS=" - Consensus resync complete. If disk is still low, resync the execution client from the execution client menu (this can take hours to days), run NCDU from the toolbox, or upgrade storage.
 \n - Upgrade Storage: Until portal clients are available, upgrading to 4TB NVME is the best option for the foreseeable future."
-            whiptail --title "Tips: Disk Space" --msgbox "$MSG_TIPS" 12 78
+                whiptail --title "Tips: Disk Space" --msgbox "$MSG_TIPS" 12 78
+            fi
+        else
+            whiptail --title "Low Disk Space Detected" --msgbox "$(cat "$ALERT_FILE")\n\n$(lowDiskSpaceTipsNoConsensusResync)" 16 78
         fi
     else
         # Notify completion
