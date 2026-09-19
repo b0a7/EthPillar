@@ -40,7 +40,6 @@ mainnet_sync_urls = [
     ("SIGMA PRIME", "https://mainnet.checkpoint.sigp.io"),
     ("ATTESTANT", "https://mainnet-checkpoint-sync.attestant.io"),
     ("Lodestar", "https://beaconstate-mainnet.chainsafe.io"),
-    ("BeaconState.info", "https://beaconstate.info"),
     ("PietjePuk", "https://checkpointz.pietjepuk.net"),
     ("invistools", "https://sync.invis.tools"),
     ("Nimbus", "http://testing.mainnet.beacon-api.nimbus.team"),
@@ -49,14 +48,12 @@ mainnet_sync_urls = [
 holesky_sync_urls = [
     ("Lodestar", "https://beaconstate-holesky.chainsafe.io"),
     ("Stakely", "https://holesky-checkpoint-sync.stakely.io"),
-    ("BEACONSTATE", "https://holesky.beaconstate.info"),
     ("EF DevOps", "https://checkpoint-sync.holesky.ethpandaops.io"),
 ]
 
 sepolia_sync_urls = [
     ("EF DevOps", "https://checkpoint-sync.sepolia.ethpandaops.io"),
     ("Lodestar", "https://beaconstate-sepolia.chainsafe.io"),
-    ("Beaconstate", "https://sepolia.beaconstate.info"),
 ]
 
 ephemery_sync_urls = [
