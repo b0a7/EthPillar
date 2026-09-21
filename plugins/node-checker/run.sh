@@ -13,11 +13,16 @@ ETHPILLAR_ROOT="$(cd "${SOURCE_DIR}/../.." && pwd)"
 source "${ETHPILLAR_ROOT}/functions.sh"
 
 # Node configuration
+# CL P2P 9000 and EL P2P 30303 (TCP+UDP) are the "expected 4" listen ports.
+# CL QUIC UDP (typically 9001; Teku also 9091) is tracked separately so that
+# count stays stable — see configure_cl_quic_udp_check_ports / check_cl_quic.
 p2p_ports=("9000" "30303")
 p2p_processes=("geth" "besu" "teku" "lighthouse" "prysm" "nimbus_beacon_node" "nimbus_validator" "lodestar" "erigon" "nethermind" "reth" "mev-boost" "charon")
 services=("consensus" "execution" "validator" "mevboost")
 tcp_check_ports="9000,30303"
 udp_check_ports="9000,30303"
+udp_check_ports_base="$udp_check_ports"
+ELCL_EXPECTED_LISTEN_COUNT=4
 charon_p2p_port=""
 
 if isCharonEnabled; then
@@ -85,11 +90,6 @@ PURPLE='\033[35m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then
-    print_check_result "WARN" "Some checks require root privileges"
-fi
-
 display_banner() {
 cat << 'EOF'
              ,----------------,              ,---------,
@@ -153,6 +153,153 @@ print_check_result() {
     esac
 
     echo -e "${color}${prefix} ${icon} ${message}${NC}"
+}
+
+node_checker_exec_service() {
+    echo "${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+}
+
+node_checker_consensus_service() {
+    echo "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+}
+
+# First word of Description= — same heuristic as getClient / check_consensus_version.
+node_checker_unit_client() {
+    local path="$1"
+    [[ -f "$path" ]] || return 0
+    grep "Description=" "$path" 2>/dev/null | awk -F'=' '{print $2}' | awk '{print $1}'
+}
+
+# Caplin is integrated into execution.service (EL Erigon-Caplin); no QUIC by default.
+is_caplin_node() {
+    local exec_svc el cl consensus_svc
+    exec_svc="$(node_checker_exec_service)"
+    el="$(node_checker_unit_client "$exec_svc")"
+    if [[ "$el" == "Erigon-Caplin" || "$el" == "Caplin" ]]; then
+        return 0
+    fi
+    if [[ -f "$exec_svc" ]] && grep -qiE 'caplin' "$exec_svc" 2>/dev/null; then
+        return 0
+    fi
+    consensus_svc="$(node_checker_consensus_service)"
+    cl="$(node_checker_unit_client "$consensus_svc")"
+    if [[ "$cl" == "Caplin" || "$cl" == "Erigon-Caplin" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+node_checker_cl_name() {
+    node_checker_unit_client "$(node_checker_consensus_service)"
+}
+
+# True when a local consensus.service exists and the CL is not Caplin.
+# Known QUIC CLs: Lighthouse, Teku, Nimbus, Lodestar, Grandine, Prysm.
+# Unknown CL with consensus.service: still expect 9001/udp.
+cl_expects_quic() {
+    is_caplin_node && return 1
+    local cl
+    cl="$(node_checker_cl_name)"
+    [[ -n "$cl" ]]
+}
+
+# Prints space-separated UDP ports. Empty when QUIC is not expected (Caplin / no CL).
+expected_cl_quic_udp_ports() {
+    cl_expects_quic || return 0
+    local cl quic_port ipv6_port
+    cl="$(node_checker_cl_name)"
+    quic_port="${CL_P2P_PORT_2:-9001}"
+    if [[ "$cl" == "Teku" ]]; then
+        ipv6_port="${TEKU_QUIC_IPV6_PORT:-$(( ${CL_P2P_PORT:-9000} + 91 ))}"
+        echo "${quic_port} ${ipv6_port}"
+    else
+        echo "${quic_port}"
+    fi
+}
+
+csv_has_item() {
+    local csv="$1" item="$2"
+    [[ ",${csv}," == *",${item},"* ]]
+}
+
+csv_append_unique() {
+    local csv="$1" item="$2"
+    if [[ -z "$item" ]]; then
+        echo "$csv"
+        return
+    fi
+    if csv_has_item "$csv" "$item"; then
+        echo "$csv"
+        return
+    fi
+    if [[ -z "$csv" ]]; then
+        echo "$item"
+    else
+        echo "${csv},${item}"
+    fi
+}
+
+# Append expected CL QUIC UDP ports to udp_check_ports (not TCP, not p2p_ports).
+# Resets from udp_check_ports_base so repeated calls stay idempotent.
+configure_cl_quic_udp_check_ports() {
+    local base port
+    base="${udp_check_ports_base:-9000,30303}"
+    udp_check_ports="$base"
+    for port in $(expected_cl_quic_udp_ports); do
+        udp_check_ports="$(csv_append_unique "$udp_check_ports" "$port")"
+    done
+}
+
+check_cl_quic_ufw_rules() {
+    local ufw_status port
+    if ! sudo ufw status 2>/dev/null | grep -q "Status: active"; then
+        return 0
+    fi
+    ufw_status="$(sudo ufw status 2>/dev/null)"
+    for port in $(expected_cl_quic_udp_ports); do
+        total_checks=$((total_checks + 1))
+        if echo "$ufw_status" | grep -qE "${port}/udp"; then
+            print_check_result "PASS" "UFW allows CL QUIC ${port}/udp"
+        else
+            print_check_result "FAIL" "UFW is active but missing allow rule for CL QUIC ${port}/udp"
+            failed_checks=$((failed_checks + 1))
+        fi
+    done
+}
+
+check_cl_quic_listening() {
+    local port pid process
+    for port in $(expected_cl_quic_udp_ports); do
+        total_checks=$((total_checks + 1))
+        if sudo ss -lntu | grep -qE "udp.*:${port}([^0-9]|$)"; then
+            print_check_result "PASS" "Detected UDP service on CL QUIC port ${port}"
+            if [ "$EUID" -eq 0 ]; then
+                pid=$(sudo ss -lntup "sport = :${port}" | awk -Fpid= '/users:/ {print $2}' | cut -d, -f1 | head -1)
+                if [ -n "$pid" ]; then
+                    process=$(ps -p "$pid" -o comm=)
+                    echo -e "${YELLOW}          Process: ${process} (PID ${pid})${NC}"
+                fi
+            fi
+        else
+            print_check_result "FAIL" "CL QUIC port ${port}/udp not listening"
+            failed_checks=$((failed_checks + 1))
+        fi
+    done
+}
+
+check_cl_quic() {
+    print_check_result "INFO" "CL QUIC: after Glamsterdam, libp2p MPlex/TCP P2P is deprecated — verify QUIC UDP (typically ${CL_P2P_PORT_2:-9001}/udp)"
+    if is_caplin_node; then
+        total_checks=$((total_checks + 1))
+        print_check_result "WARN" "Caplin has no QUIC by default; skipping ${CL_P2P_PORT_2:-9001}/udp requirement"
+        warning_checks=$((warning_checks + 1))
+        return 0
+    fi
+    if ! cl_expects_quic; then
+        return 0
+    fi
+    check_cl_quic_ufw_rules
+    check_cl_quic_listening
 }
 
 check_firewall() {
@@ -445,11 +592,12 @@ check_elcl_listening_ports() {
         done
     done
 
+    # QUIC UDP (9001/9091) is checked in check_cl_quic, not counted here.
     if [ $detected -gt 0 ]; then
-        if [ $detected -eq 4 ]; then
-            print_check_result "PASS" "Found all 4 expected ports (9000 tcp/udp, 30303 tcp/udp) for execution & consensus services"
+        if [ $detected -eq "$ELCL_EXPECTED_LISTEN_COUNT" ]; then
+            print_check_result "PASS" "Found all ${ELCL_EXPECTED_LISTEN_COUNT} expected ports (9000 tcp/udp, 30303 tcp/udp) for execution & consensus services"
         else
-            print_check_result "FAIL" "Found ${detected} ports, expected 4 ports (9000 tcp/udp, 30303 tcp/udp) for execution & consensus services"
+            print_check_result "FAIL" "Found ${detected} ports, expected ${ELCL_EXPECTED_LISTEN_COUNT} ports (9000 tcp/udp, 30303 tcp/udp) for execution & consensus services"
             ((failed_checks++))
         fi
     else
@@ -484,6 +632,7 @@ check_open_ports() {
     open_ports=0
     concat_ports=""
 
+    configure_cl_quic_udp_check_ports
     tcp_ports="$tcp_check_ports"
     udp_ports="$udp_check_ports"
 
@@ -812,71 +961,84 @@ print_system_information() {
     printf "${PURPLE}%-20s${NC} %s\n" "I/O Speed:" "$io"
 }
 
-start_time=$(date +%s)
-echo -e "\n${YELLOW}${BOLD}=== Starting Node Security Scanner and Health Checkup ===${NC}\n"
-display_banner
+node_checker_main() {
+    if [ "$EUID" -ne 0 ]; then
+        print_check_result "WARN" "Some checks require root privileges"
+    fi
 
-# Execute checks
-print_section_header "Security Checks"
+    local start_time end_time duration
+    start_time=$(date +%s)
+    echo -e "\n${YELLOW}${BOLD}=== Starting Node Security Scanner and Health Checkup ===${NC}\n"
+    display_banner
 
-# Network Security
-print_check_result "INFO" "Network Security:"
-check_firewall
-check_fail2ban
-echo
-# SSH Security
-print_check_result "INFO" "SSH Security:"
-check_ssh_key_presence
-check_ssh_keys
-check_ssh_port
-check_ssh_2fa
-echo
-# System Updates
-print_check_result "INFO" "System Updates:"
-check_updates
-check_unattended_upgrades
-check_reboot_required
+    # Execute checks
+    print_section_header "Security Checks"
 
-print_section_header "Node Health Checks"
-check_listening_ports
-check_open_ports
-echo
-check_elcl_listening_ports
-check_peer_count
-echo
-check_systemd_services
+    # Network Security
+    print_check_result "INFO" "Network Security:"
+    check_firewall
+    check_fail2ban
+    echo
+    # SSH Security
+    print_check_result "INFO" "SSH Security:"
+    check_ssh_key_presence
+    check_ssh_keys
+    check_ssh_port
+    check_ssh_2fa
+    echo
+    # System Updates
+    print_check_result "INFO" "System Updates:"
+    check_updates
+    check_unattended_upgrades
+    check_reboot_required
 
-print_section_header "Client Version Checks"
-check_execution_version
-check_consensus_version
-check_validator_version
-check_charon_version
-check_mevboost_version
+    print_section_header "Node Health Checks"
+    check_listening_ports
+    check_open_ports
+    echo
+    check_elcl_listening_ports
+    check_cl_quic
+    check_peer_count
+    echo
+    check_systemd_services
 
-print_section_header "Performance Checks"
-check_resources
-echo
-print_check_result "INFO" "History expiry / prune (suitable for a ~2TB drive):"
-check_history_expiry
-echo
-check_chrony
-echo
-print_check_result "INFO" "Tuning:"
-check_swappiness
-check_noatime
+    print_section_header "Client Version Checks"
+    check_execution_version
+    check_consensus_version
+    check_validator_version
+    check_charon_version
+    check_mevboost_version
 
-print_system_information
+    print_section_header "Performance Checks"
+    check_resources
+    echo
+    print_check_result "INFO" "History expiry / prune (suitable for a ~2TB drive):"
+    check_history_expiry
+    echo
+    check_chrony
+    echo
+    print_check_result "INFO" "Tuning:"
+    check_swappiness
+    check_noatime
 
-# Summary
-print_section_header "Summary"
-printf "${BLUE}${BOLD}%-20s${NC} %d\n" "Total checks:" "$total_checks"
-printf "${GREEN}%-20s${NC} %d\n" "Passed checks:" "$((total_checks - failed_checks - warning_checks))"
-printf "${YELLOW}%-20s${NC} %d\n" "Warning checks:" "$warning_checks"
-printf "${RED}%-20s${NC} %d\n" "Failed checks:" "$failed_checks"
+    print_system_information
 
-# Duration
-end_time=$(date +%s)
-duration=$((end_time - start_time))
-echo -e "\n${YELLOW}${BOLD}Duration: $duration seconds${NC}"
-echo -e "\n${GREEN}${BOLD}=== Node Checker Complete: Press enter to exit ===${NC}"
-read -r
+    # Summary
+    print_section_header "Summary"
+    printf "${BLUE}${BOLD}%-20s${NC} %d\n" "Total checks:" "$total_checks"
+    printf "${GREEN}%-20s${NC} %d\n" "Passed checks:" "$((total_checks - failed_checks - warning_checks))"
+    printf "${YELLOW}%-20s${NC} %d\n" "Warning checks:" "$warning_checks"
+    printf "${RED}%-20s${NC} %d\n" "Failed checks:" "$failed_checks"
+
+    # Duration
+    end_time=$(date +%s)
+    duration=$((end_time - start_time))
+    echo -e "\n${YELLOW}${BOLD}Duration: $duration seconds${NC}"
+    echo -e "\n${GREEN}${BOLD}=== Node Checker Complete: Press enter to exit ===${NC}"
+    read -r
+}
+
+# Allow sourcing for bats tests without auto-running the interactive scanner.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    node_checker_main
+fi
