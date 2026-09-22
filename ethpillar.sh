@@ -29,7 +29,7 @@ cd "$BASE_DIR" || exit 1
 # Load functions
 source ./functions.sh
 
-# Non-interactive CLI helpers (status / start|stop|restart / check-updates / upgrade)
+# Non-interactive CLI helpers (status / start|stop|restart / check-updates / upgrade / logs)
 # shellcheck disable=SC1091
 source ./cli.sh
 
@@ -1957,7 +1957,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     exit $?
   fi
 
-  # Non-interactive CLI (status, start/stop/restart, check-updates, upgrade, --help, --version)
+  # Non-interactive CLI (status, start/stop/restart, check-updates, upgrade, logs, --help, --version)
   if cli_dispatch "$@"; then
     exit "$CLI_EXIT_CODE"
   fi

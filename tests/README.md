@@ -95,6 +95,7 @@ Optional: set `$env:GITHUB_TOKEN` to avoid API rate limits when running the full
 - `tests/test_update_extract.bats`: Static checks that update scripts use the unified extract CLI.
 - `tests/test_integration_user.bats`: Static checks for non-root integration test execution.
 - `tests/test_install_node.bats`: Validation logic for the install wrapper.
+- `tests/test_ethpillar_cli.bats`: Non-interactive CLI (help, status, start/stop/restart, logs dispatch to `view_logs.sh`).
 - `tests/test_ethpillar_installnode.bats`: TUI routing and role selection logic.
 - `tests/run_unit_tests.sh`: Bootstraps Python deps via production `functions.sh`, then runs pytest in the project venv.
 - `tests/integration/run_test.sh`: Bootstraps Python deps via production `functions.sh`, then runs the test runner.

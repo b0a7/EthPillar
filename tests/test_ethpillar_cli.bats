@@ -2,7 +2,7 @@
 #
 # tests/test_ethpillar_cli.bats
 #
-# Tests for ethpillar non-interactive CLI (help, status, start/stop/restart, targets).
+# Tests for ethpillar non-interactive CLI (help, status, start/stop/restart, targets, logs).
 #
 
 setup() {
@@ -148,6 +148,7 @@ set_unit_state() {
     [[ "$output" == *"status"* ]]
     [[ "$output" == *"check-updates"* ]]
     [[ "$output" == *"upgrade"* ]]
+    [[ "$output" == *"logs"* ]]
     [[ "$output" == *"execution"* ]]
     [[ "$output" == *"consensus"* ]]
     [[ "$output" == *"ethpillar"* ]]
@@ -168,6 +169,53 @@ set_unit_state() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"Unknown command"* ]]
     [[ "$output" == *"--help"* ]]
+}
+
+@test "logs: help lists the command" {
+    run ./ethpillar.sh help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"logs"* ]]
+    [[ "$output" == *"View rolling consolidated logs"* ]]
+}
+
+@test "logs: dispatches to view_logs.sh without attaching tmux" {
+    # runScript invokes PATH bash -c "$BASE_DIR/view_logs.sh". Intercept that so
+    # CI never starts journald/tmux or leaves a hanging session.
+    cat <<EOF > "$MOCK_BIN_DIR/bash"
+#!/bin/bash
+echo "bash \$*" >> "$COMMAND_LOG"
+if [[ "\$1" == "-c" && "\$2" == *view_logs.sh* ]]; then
+    echo "VIEW_LOGS_INVOKED" >> "$COMMAND_LOG"
+    exit 0
+fi
+exec /bin/bash "\$@"
+EOF
+    chmod +x "$MOCK_BIN_DIR/bash"
+
+    run ./ethpillar.sh logs
+    [ "$status" -eq 0 ]
+    grep -q "VIEW_LOGS_INVOKED" "$COMMAND_LOG"
+    grep -q "view_logs.sh" "$COMMAND_LOG"
+    ! grep -q "tmux" "$COMMAND_LOG"
+}
+
+@test "logs: unexpected leftover arguments error cleanly" {
+    cat <<EOF > "$MOCK_BIN_DIR/bash"
+#!/bin/bash
+echo "bash \$*" >> "$COMMAND_LOG"
+if [[ "\$1" == "-c" && "\$2" == *view_logs.sh* ]]; then
+    echo "VIEW_LOGS_INVOKED" >> "$COMMAND_LOG"
+    exit 0
+fi
+exec /bin/bash "\$@"
+EOF
+    chmod +x "$MOCK_BIN_DIR/bash"
+
+    run ./ethpillar.sh logs leftover
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unexpected argument"* ]]
+    [[ "$output" == *"ethpillar logs"* ]]
+    ! grep -q "VIEW_LOGS_INVOKED" "$COMMAND_LOG"
 }
 
 @test "status: no clients installed exits 0" {
