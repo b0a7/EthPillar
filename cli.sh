@@ -132,7 +132,7 @@ Commands:
   start|stop|restart [target]     Control installed clients (default: all)
   check-updates [target]          Report available updates (default: all)
   upgrade [target]                Apply updates non-interactively (default: all)
-  logs                            View rolling consolidated logs (same as TUI)
+  logs                            View rolling consolidated logs (same as TUI Rolling Consolidated Logs)
   --version                       Print installed client and EthPillar versions
   --help | -h | help              Show this help
 
@@ -154,7 +154,7 @@ Exit codes:
   check-updates   0 = up to date; 2 = update(s) available; 1 = error
   upgrade         0 = success; 1 = error
   start|stop|restart  0 = success; 1 = error
-  logs            0 = normal exit from the log viewer; 1 = script missing or error
+  logs            0 = normal exit from the log viewer; 1 = unexpected arguments or error
 
 Examples:
   ethpillar status
@@ -474,13 +474,13 @@ cli_cmd_upgrade() {
 
 # ── Logs ─────────────────────────────────────────────────────────────────────
 
-# Reuse the TUI viewer (runScript view_logs.sh): tmux journalctl/ccze/btop layouts.
+# Same as TUI Logging & Monitoring → 🔍 View Rolling Consolidated Logs.
 cli_cmd_logs() {
     if [[ -n "${1:-}" ]]; then
         echo "Unexpected argument: $1 (try: ethpillar logs)" >&2
         return 1
     fi
-    runScript view_logs.sh
+    show_rolling_consolidated_logs
 }
 
 # ── Dispatcher ───────────────────────────────────────────────────────────────
