@@ -2,10 +2,16 @@
 # EthPillar Update / CLI Integration Test
 # Runs inside the Docker container after the node is deployed.
 # Exercises the non-interactive ethpillar CLI (upgrade, status, lifecycle).
+#
+# Upgrade-case deploy may have installed a resolvable RC via latest_override.py.
+# That override must already be cleared by run_inside_docker.py so this script's
+# `ethpillar upgrade` / update_*.sh --auto path always resolves official LATEST
+# (same as production). A safety clear is applied below in case the file remains.
 
 set -e
 
 cd /ethpillar
+python3 /ethpillar/tests/integration/latest_override.py clear
 source "${ETHPILLAR_ENV_FILE:-/ethpillar/env}"
 : "${EL_IP_ADDRESS:=127.0.0.1}"
 : "${EL_RPC_PORT:=8545}"
