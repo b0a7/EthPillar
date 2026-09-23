@@ -96,7 +96,11 @@ assert_matches_latest() {
     return 0
   fi
   if installed_matches_latest_tag "$installed" "$expected" "${TAG_COMMIT:-}"; then
-    echo "✅ ${label} matches ${expected_label} (${installed#v}) — update menu would show already on latest"
+    if [[ "$expected_label" == "forced RC" ]]; then
+      echo "✅ ${label} matches forced RC (${installed#v}) — deploy used RC; upgrade should move to official LATEST"
+    else
+      echo "✅ ${label} matches ${expected_label} (${installed#v}) — update menu would show already on latest"
+    fi
     return 0
   fi
   if known_upstream_version_mismatch "$release_client" "$installed" "$expected"; then

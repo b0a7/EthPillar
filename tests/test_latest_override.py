@@ -98,6 +98,25 @@ def test_prepare_writes_only_differing_rcs(tmp_path):
     assert remap_latest_tag("ethereum/go-ethereum", "LATEST", path=path) == "LATEST"
 
 
+def test_prepare_clears_leftover_override_before_discovery(tmp_path):
+    path = str(tmp_path / "override.json")
+    write_override({"lighthouse": "v7.1.0-rc.0"}, path=path)
+
+    def find_rc(client: str, _repo):
+        assert not Path(path).exists(), "leftover override must be cleared before find_rc"
+        return {
+            "client": client,
+            "rc_tag": "v7.1.0-rc.0",
+            "latest": "v7.0.1",
+            "status": "ok",
+            "reason": "prerelease resolvable via release_info",
+        }
+
+    result = prepare_rc_overrides(["lighthouse"], path=path, find_rc_fn=find_rc)
+    assert result["clients"]["lighthouse"] == "v7.1.0-rc.0"
+    assert Path(path).exists()
+
+
 def test_prepare_clears_file_when_no_rc(tmp_path):
     path = str(tmp_path / "override.json")
     write_override({"lighthouse": "v7.1.0-rc.0"}, path=path)
