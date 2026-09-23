@@ -164,7 +164,8 @@ def test_is_sane_previous_stable_window():
     assert is_sane_previous_stable("25.7.0", "25.9.3")
     assert not is_sane_previous_stable("1.45.0", "1.48.0")
     assert not is_sane_previous_stable("v0.6.6", "v25.9.2")
-    assert not is_sane_previous_stable("v7.1.0", "v8.0.1")
+    assert is_sane_previous_stable("v7.1.0", "v8.0.1")
+    assert is_sane_previous_stable("1.39.3", "2.0.0")
     assert not is_sane_previous_stable("v8.0.1", "v8.0.1")
     assert not is_sane_previous_stable("v8.0.2", "v8.0.1")
 

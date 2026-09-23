@@ -137,11 +137,14 @@ def is_sane_previous_stable(
         latest_parts = parse_version(latest)
     except (TypeError, ValueError):
         return False
-    if cand_parts[0] != latest_parts[0]:
-        return False
-    if latest_parts[1] - cand_parts[1] > max_minor_delta:
-        return False
-    return True
+    major_delta = latest_parts[0] - cand_parts[0]
+    if major_delta == 0:
+        return latest_parts[1] - cand_parts[1] <= max_minor_delta
+    # One major behind is a real previous series (Nethermind 1.39.3 vs 2.0.0),
+    # not ancient junk like Nimbus v0.6.6 vs v25.9.2.
+    if major_delta == 1:
+        return True
+    return False
 
 
 def base_semver(version: str) -> str:
