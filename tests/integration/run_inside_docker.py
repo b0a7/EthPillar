@@ -30,6 +30,13 @@ CAPLIN_POLL_ATTEMPTS = 72      # 360s — HOODI checkpoint + header sync before 
 
 # Prefer local warmed cache (see warm_checkpoint_cache.py); fall back to ethpandaops.
 from checkpoint_cache_common import checkpoint_sync_url_for_network  # noqa: E402
+from latest_override import (  # noqa: E402
+    ENV_VAR as LATEST_OVERRIDE_ENV,
+    clear_override,
+    normalize_deploy_clients,
+    override_path,
+    prepare_rc_overrides,
+)
 from latest_snapshot import ENV_VAR as LATEST_SNAPSHOT_ENV, SNAPSHOT_PATH, write_snapshot  # noqa: E402
 from port_bindings import (  # noqa: E402
     client_from_service,
@@ -298,6 +305,7 @@ def integration_subprocess_env() -> Dict[str, str]:
     env["ENABLE_EP_CACHE"] = "1"
     env["ETHPILLAR_ENV_FILE"] = INTEGRATION_ENV_FILE
     env[LATEST_SNAPSHOT_ENV] = SNAPSHOT_PATH
+    env[LATEST_OVERRIDE_ENV] = override_path()
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONPATH"] = "/ethpillar/tests/integration:" + env.get("PYTHONPATH", "")
     return env
@@ -357,7 +365,18 @@ def run_install(args: Any, fee_address: str):
             print(f"  Checkpoint sync via upstream: {checkpoint_url}")
 
     try:
+        # Snapshot official LATEST first (override file is not written yet).
         write_snapshot(SNAPSHOT_PATH)
+        if getattr(args, "test_updates", False):
+            clients = normalize_deploy_clients(
+                args.ec,
+                args.cc,
+                args.vc,
+                mev=bool(args.mev),
+                charon=bool(getattr(args, "charon", False)),
+            )
+            prepare_rc_overrides(clients)
+            os.environ[LATEST_OVERRIDE_ENV] = override_path()
         subprocess.run(cmd, capture_output=False, check=True, env=integration_subprocess_env())
     except subprocess.CalledProcessError as e:
         print(f"❌ Script failed with return code {e.returncode}")
@@ -1073,6 +1092,21 @@ if __name__ == "__main__":
         sys.stdout.flush()
         subprocess_env = integration_subprocess_env()
         if args.test_updates:
+            # Override is deploy-only. Clear it so upgrade / --auto sees official LATEST.
+            had_override = os.path.exists(override_path())
+            clear_override()
+            if had_override:
+                print(
+                    "[Upgrade RC] Cleared LATEST→RC override; "
+                    "ethpillar upgrade / --auto will resolve official LATEST",
+                    flush=True,
+                )
+            else:
+                print(
+                    "[Upgrade RC] No RC override was active; "
+                    "upgrade uses official LATEST (LATEST→LATEST is fine)",
+                    flush=True,
+                )
             print("\n=========================================", flush=True)
             print(" Running Updates Integration Test...", flush=True)
             print("=========================================", flush=True)

@@ -57,8 +57,9 @@ The `Dockerfile.test` uses `ubuntu:24.04` and sets systemd as the `CMD`. The tes
 - `run_docker_tests.sh`: (Linux/WSL) Ensures host `rich` is installed, then invokes `run_docker_tests.py`.
 - `run_test.sh`: Bootstrap wrapper — drops root to `epstaker` (passwordless sudo), sources `functions.sh`, then execs the test runner.
 - `run_inside_docker.py`: Executes inside each container to run the deployment and verify artifacts via `systemctl`. Does not install Python deps itself.
-- `check_client_versions.sh`: After deploy (and after update tests), verifies installed versions parse via `getExecutionCurrentVersion` / `getClVcCurrentVersion` and match `release_info … LATEST` (same comparison as the update menu’s “already on latest” path).
-- `sitecustomize.py`: Caches release **binaries** only (revalidated with `HEAD` before reuse). GitHub API / release metadata always hits the network.
+- `check_client_versions.sh`: After deploy (and after update tests), verifies installed versions parse via `getExecutionCurrentVersion` / `getClVcCurrentVersion` and match `release_info … LATEST` (same comparison as the update menu’s “already on latest” path). Upgrade-case deploy (`--test-updates`) may force an RC: post-deploy logs say `forced RC` for those clients; after upgrade the override is cleared and the check is official LATEST again.
+- `latest_override.py` / `find_client_rc.py`: Test-only LATEST→RC remap used only during Upgrade-case **deploy**. Look for `Upgrade-case RC deploy override` in Integration logs (RC vs “no resolvable RC — deploy LATEST”).
+- `sitecustomize.py`: Caches release **binaries** only (revalidated with `HEAD` before reuse). GitHub API / release metadata always hits the network. Also installs the Upgrade-case LATEST→RC hook (no-op unless the override file exists).
 - `cache/`: Persistent cache for validated release binaries.
 
 ## Running Tests

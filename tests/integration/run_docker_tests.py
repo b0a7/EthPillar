@@ -69,6 +69,8 @@ custom_tests = [
     ("Geth-Lighthouse-Charon-Lodestar-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lodestar --network SEPOLIA --mev --charon --config 'Custom Setup'"),
 ]
 
+# Upgrade lane: deploy may force a resolvable RC (see latest_override.py), then
+# `ethpillar upgrade` / --auto moves to official LATEST. No RC → LATEST→LATEST.
 upgrade_tests = [
     ("Upgrade-Reth-Lighthouse", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-updates"),
     ("Upgrade-Besu-Teku", f"{RUN_TEST} deploy/deploy-node.py --ec Besu --cc Teku --network SEPOLIA --config 'Full Node Only' --test-updates"),

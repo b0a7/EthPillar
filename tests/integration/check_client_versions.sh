@@ -4,6 +4,9 @@
 # "You are already on the latest version".
 # Integration tests snapshot LATEST before deploy (latest_snapshot.py) and
 # compare against that install-time snapshot so a mid-test release cannot fail verify.
+# Upgrade-case deploy may force an RC via latest_override.py; when that file is
+# present, expect the forced RC tag instead of LATEST (override is cleared before
+# ethpillar upgrade, so post-upgrade checks still use official LATEST).
 set -euo pipefail
 
 cd /ethpillar
@@ -19,6 +22,23 @@ installed_matches_latest_tag() {
   version_matches_latest "$1" "$2" "${INSTALLED_COMMIT:-}" "${3:-}"
 }
 
+OVERRIDE_DEFAULT="/tmp/ethpillar-integration-latest-override.json"
+
+get_forced_rc_tag() {
+  local client="$1"
+  local override="${ETHPILLAR_INTEGRATION_LATEST_OVERRIDE:-$OVERRIDE_DEFAULT}"
+  local key="${client,,}"
+  local tag
+  if [[ -n "$override" && -f "$override" ]]; then
+    tag=$(jq -r --arg k "$key" '.clients[$k] // empty' "$override")
+    if [[ -n "$tag" && "$tag" != "null" ]]; then
+      echo "$tag"
+      return 0
+    fi
+  fi
+  return 1
+}
+
 get_latest_release_tag() {
   local client="$1"
   local data tag
@@ -32,6 +52,7 @@ get_latest_release_tag() {
 }
 
 # Integration tests snapshot LATEST before deploy so a release mid-test cannot fail verify.
+# Upgrade-case RC override (when present) wins so post-deploy does not require official LATEST.
 get_expected_release_tag() {
   local client="$1"
   local snapshot="${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}"
@@ -39,6 +60,11 @@ get_expected_release_tag() {
   local tag
 
   TAG_COMMIT=""
+  if tag=$(get_forced_rc_tag "$client"); then
+    TAG_COMMIT=$(PYTHONPATH="/ethpillar" python3 -m deploy.common release_info "$client" "$tag" 2>/dev/null | jq -r '.commit // empty' || true)
+    echo "$tag"
+    return 0
+  fi
   if [[ -n "$snapshot" && -f "$snapshot" ]]; then
     tag=$(jq -r --arg k "$key" '.[$k] // empty' "$snapshot")
     if [[ -n "$tag" && "$tag" != "null" ]]; then
@@ -58,7 +84,9 @@ assert_matches_latest() {
   local expected
   local expected_label="LATEST"
 
-  if [[ -n "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}" && -f "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT}" ]]; then
+  if get_forced_rc_tag "$release_client" >/dev/null; then
+    expected_label="forced RC"
+  elif [[ -n "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}" && -f "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT}" ]]; then
     expected_label="install-time LATEST"
   fi
 
