@@ -306,7 +306,7 @@ EOF
   run grep -n 'Toolbox → History expiry' plugins/node-checker/run.sh
   [ "$status" -ne 0 ]
   grep -q 'Execution Client → Suggest pruning parameters' plugins/node-checker/run.sh
-  grep -q 'Execution Client → **Suggest pruning parameters**' docs/history-expiry-suggestions.md
+  grep -q 'Suggest pruning parameters' docs/history-expiry-suggestions.md
 }
 
 @test "further savings exist for Geth Besu Reth and not Nethermind Erigon" {

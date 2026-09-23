@@ -524,6 +524,8 @@ history_expiry_replace_execstart() {
   local printed=0
   local line
 
+  # printf (not <<<) so a trailing newline on the unit is not turned into
+  # an extra blank line on the right pane.
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ $in_exec -eq 0 ]]; then
       if [[ "$line" == ExecStart=* ]]; then
@@ -542,7 +544,7 @@ history_expiry_replace_execstart() {
     if [[ "$line" != *\\ ]]; then
       in_exec=0
     fi
-  done <<< "$unit_text"
+  done < <(printf '%s' "$unit_text")
 }
 
 history_expiry_execstart_is_multiline() {
