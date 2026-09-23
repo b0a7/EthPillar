@@ -206,6 +206,10 @@ def test_test_updates_script_two_phase_and_install_gate():
     assert "check-updates" in code
     assert "Soft-skipping real-upgrade assert" in text
     assert "ethpillar-integration-upgrade-seeds.json" in text
+    assert "ETHPILLAR_CHECK_ROLES" in text
+    check = Path("tests/integration/check_client_versions.sh").read_text(encoding="utf-8")
+    assert "ETHPILLAR_CHECK_ROLES" in check
+    assert "should_check_role" in check
 
 
 def test_install_geth_release_hook_remaps_latest(tmp_path):

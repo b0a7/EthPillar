@@ -55,6 +55,24 @@ service_client() {
     echo "${name,,}"
 }
 
+roles_for_upgrade_target() {
+    local target="$1"
+    case "$target" in
+        execution) echo "el" ;;
+        consensus)
+            if unit_installed validator; then
+                echo "cl,vc"
+            else
+                echo "cl"
+            fi
+            ;;
+        validator) echo "vc" ;;
+        mevboost) echo "mevboost" ;;
+        charon) echo "charon" ;;
+        *) echo "" ;;
+    esac
+}
+
 client_was_seeded() {
     local client="${1,,}"
     [[ -n "$client" && -f "$SEEDS_FILE" ]] || return 1
@@ -197,7 +215,9 @@ exercise_upgrade_target() {
         verify_binaries_and_health "${services[@]}"
         echo "Verifying ${target} landed on official LATEST..."
         python3 /ethpillar/tests/integration/latest_snapshot.py clear
-        bash /ethpillar/tests/integration/check_client_versions.sh
+        # Only the roles just upgraded — a sibling may still be on its seed.
+        ETHPILLAR_CHECK_ROLES="$(roles_for_upgrade_target "$target")" \
+          bash /ethpillar/tests/integration/check_client_versions.sh
 
         capture_pids "${services[@]}"
         run_upgrade "$target" "$log2"
@@ -305,6 +325,10 @@ if unit_installed execution || unit_installed consensus; then
     sleep 2
     assert_status_active
 fi
+
+echo "Verifying full stack is on official LATEST after upgrade phases..."
+python3 /ethpillar/tests/integration/latest_snapshot.py clear
+bash /ethpillar/tests/integration/check_client_versions.sh
 
 echo "========================================="
 echo " All ethpillar CLI update/lifecycle tests passed!"

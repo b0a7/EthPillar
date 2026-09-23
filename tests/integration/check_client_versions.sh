@@ -207,12 +207,29 @@ check_charon_version() {
   assert_matches_latest "Charon" "charon" "$version"
 }
 
-echo "🔢 Verifying installed client versions (parse + LATEST match)..."
-check_el_version
-check_cl_version
-check_vc_version
-check_mevboost_version
-check_charon_version
+# Optional role filter so Upgrade two-phase can assert only the client that
+# just moved to LATEST (a still-seeded sibling must not fail the check).
+# Comma-separated: el,cl,vc,mevboost,charon. Empty / unset = all present roles.
+should_check_role() {
+  local role="$1"
+  local filter="${ETHPILLAR_CHECK_ROLES:-}"
+  local item
+  if [[ -z "$filter" ]]; then
+    return 0
+  fi
+  IFS=',' read -ra _roles <<< "$filter"
+  for item in "${_roles[@]}"; do
+    [[ "${item,,}" == "$role" ]] && return 0
+  done
+  return 1
+}
+
+echo "🔢 Verifying installed client versions (parse + LATEST match)${ETHPILLAR_CHECK_ROLES:+ [roles: ${ETHPILLAR_CHECK_ROLES}]}..."
+should_check_role el && check_el_version
+should_check_role cl && check_cl_version
+should_check_role vc && check_vc_version
+should_check_role mevboost && check_mevboost_version
+should_check_role charon && check_charon_version
 
 if [[ "$fail" -ne 0 ]]; then
   exit 1
