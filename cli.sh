@@ -320,10 +320,19 @@ cli_load_client_versions() {
             }
             ;;
         mevboost)
-            local raw
-            raw=$(mev-boost --version 2>&1 || true)
-            VERSION=$(echo "$raw" | sed 's/.*v\?\([0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?\).*/\1/')
-            [[ -z "$VERSION" || "$VERSION" == "$raw" ]] && VERSION="unknown"
+            local raw mev_bin
+            # Prefer the unit ExecStart path (same as other clients) so a PATH miss
+            # cannot skip/compare the wrong binary.
+            mev_bin=$(get_systemd_exec_path "$(cli_service_path mevboost)" "/usr/local/bin/mev-boost")
+            raw=$("$mev_bin" --version 2>&1 || true)
+            # Prefer a v-prefixed semver so "mev-boost version v1.8.0" does not
+            # collapse to 8.0 (greedy optional-v sed).
+            VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$raw" | head -1 || true)
+            VERSION="${VERSION#v}"
+            if [[ -z "$VERSION" ]]; then
+                VERSION=$(grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$raw" | head -1 || true)
+            fi
+            [[ -z "$VERSION" ]] && VERSION="unknown"
             INSTALLED_COMMIT=""
             cli_fetch_latest_release "mevboost" || {
                 echo "mevboost: could not resolve LATEST"
