@@ -539,6 +539,22 @@ set_unit_state() {
     ! grep -q "update_consensus.sh" "$COMMAND_LOG"
 }
 
+@test "upgrade consensus: skips Lodestar when Version line embeds EthPillar branch SHA" {
+    export MOCK_CL_LATEST=v1.48.0
+    export MOCK_CL_COMMIT=c7dc2b0b3b715635fb9b616bf178137ad64f7bba
+    write_lodestar_bin "$MOCK_BIN_DIR/lodestar" \
+      "* Version: v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2"
+    write_service "$CONSENSUS_SERVICE_FILE" "Lodestar Consensus Client" "$MOCK_BIN_DIR/lodestar"
+
+    run ./ethpillar.sh upgrade consensus
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"consensus: already up to date (1.48.0) — skipping"* ]]
+    ! grep -q "14901a2" <<< "$output"
+    [ ! -s "$UPDATE_LOG" ]
+    ! grep -q "update_consensus.sh" "$COMMAND_LOG"
+}
+
 @test "upgrade consensus: calls update script when Lodestar is behind" {
     export MOCK_CL_LATEST=v1.49.0
     export MOCK_CL_COMMIT=aabbccddeeff0011

@@ -274,6 +274,30 @@ EOF
   [ "$INSTALLED_COMMIT" = "a4b29cf" ]
 }
 
+@test "getClVcCurrentVersion ignores EthPillar branch SHA on Lodestar Version line" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'echo "* Version: v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.48.0" ]
+  [ -z "$INSTALLED_COMMIT" ]
+  TAG=v1.48.0
+  TAG_COMMIT=c7dc2b0b3b715635fb9b616bf178137ad64f7bba
+  version_matches_latest
+}
+
+@test "parse_lodestar_installed_commit rejects last-hex branch metadata" {
+  run parse_lodestar_installed_commit "* Version: v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2" "v1.48.0"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run parse_lodestar_installed_commit "* Version: v1.48.0/c7dc2b0" "v1.48.0"
+  [ "$output" = "c7dc2b0" ]
+  run parse_lodestar_installed_commit "* Version: v1.8.0/stable/a4b29cf" "v1.8.0"
+  [ "$output" = "a4b29cf" ]
+}
+
 @test "getClVcCurrentVersion preserves lodestar prerelease when present" {
   local stub="$TEST_BIN_DIR/lodestar"
   write_stub_binary "$stub" 'echo "* Version: v1.45.0-rc.0/668ea9d"'

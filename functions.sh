@@ -623,6 +623,28 @@ sys.exit(0 if ensure_jemalloc() else 1)
 PY
 }
 
+# Official Lodestar Version suffix is immediately after the semver:
+#   v1.48.0/c7dc2b0  or  v1.8.0/stable/a4b29cf
+# A last-/hex scan treats git branch metadata as a commit
+# (v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2 → 14901a2)
+# and then version_matches_latest false-negatives against the GitHub tag peel.
+# Branch paths leave INSTALLED_COMMIT empty so matching falls back to semver.
+parse_lodestar_installed_commit() {
+  local version_line="${1:-}"
+  local version="${2:-}"
+  local suffix=""
+  [[ -n "$version" ]] || return 0
+  suffix="${version_line#*"${version}"}"
+  if [[ "$suffix" =~ ^/([a-fA-F0-9]{7,40})([^a-fA-F0-9]|$) ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$suffix" =~ ^/(stable|unstable|dev|nightly|alpha|beta|rc)/([a-fA-F0-9]{7,40})([^a-fA-F0-9]|$) ]]; then
+    echo "${BASH_REMATCH[2]}"
+    return 0
+  fi
+}
+
 # Gets installed CL or VC version from binary.
 # Args: client (optional, defaults to CLIENT from getClient), role cl|vc (optional, defaults to cl).
 # Use role=cl for consensus/beacon (consensus.service); role=vc for validator (validator.service).
@@ -656,16 +678,15 @@ getClVcCurrentVersion(){
         LODESTAR_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lodestar")
         raw_version=$("$LODESTAR_BIN" --version 2>&1 || true)
         # Official: "* Version: v1.48.0/c7dc2b0" or "v1.8.0/stable/a4b29cf".
-        # Only the Version line — a full-blob /hex scan (or the first vX.Y.Z
-        # line) picks unpack/tmp paths like
-        # /tmp/lodestar-v1.48.0-linux-amd64/deadbeef and then
-        # version_matches_latest treats the same tag as behind.
+        # Only the Version line. Commit must sit immediately after the semver
+        # (or after a single channel token). Do not take the last /hex on the
+        # line — branch metadata like /cursor/.../14901a2 is not TAG_COMMIT.
         version_line=$(grep -iE 'Version:[[:space:]]*v?[0-9]+\.[0-9]+\.[0-9]+' <<< "$raw_version" | head -1 || true)
         if [[ -z "$version_line" ]]; then
           version_line=$(grep -iE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "$raw_version" | head -1 || true)
         fi
         VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$version_line" | head -1 || true)
-        INSTALLED_COMMIT=$(grep -oE '/[a-fA-F0-9]{7,40}' <<< "$version_line" | tail -1 | tr -d '/' || true)
+        INSTALLED_COMMIT=$(parse_lodestar_installed_commit "$version_line" "$VERSION")
         ;;
       Teku)
         TEKU_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/teku/bin/teku")
