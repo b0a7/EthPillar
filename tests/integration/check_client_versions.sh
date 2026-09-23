@@ -4,9 +4,11 @@
 # "You are already on the latest version".
 # Integration tests snapshot LATEST before deploy (latest_snapshot.py) and
 # compare against that install-time snapshot so a mid-test release cannot fail verify.
-# Upgrade-case deploy may force an RC via latest_override.py; when that file is
-# present, expect the forced RC tag instead of LATEST (override is cleared before
-# ethpillar upgrade, so post-upgrade checks still use official LATEST).
+# Upgrade-case deploy may force a seed (RC or previous stable) via
+# latest_override.py; when that file is present, expect the forced seed tag
+# instead of LATEST (override is cleared before ethpillar upgrade, so
+# post-upgrade checks still use official LATEST). Forced-seed matching
+# tolerates a missing prerelease suffix on the binary (base semver ± commit).
 set -euo pipefail
 
 cd /ethpillar
@@ -20,6 +22,19 @@ fail=0
 # Same comparison as update_*.sh promptYesNo (semver + optional commit prefix).
 installed_matches_latest_tag() {
   version_matches_latest "$1" "$2" "${INSTALLED_COMMIT:-}" "${3:-}"
+}
+
+# Forced-seed compare: base version ± commit; tolerate missing -rc.N on --version.
+installed_matches_forced_seed() {
+  local installed="$1"
+  local expected="$2"
+  local tag_commit="${3:-}"
+  PYTHONPATH="/ethpillar/tests/integration:/ethpillar" python3 -c '
+from find_client_rc import matches_forced_seed
+import sys
+ok = matches_forced_seed(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+sys.exit(0 if ok else 1)
+' "$installed" "$expected" "${INSTALLED_COMMIT:-}" "$tag_commit"
 }
 
 OVERRIDE_DEFAULT="/tmp/ethpillar-integration-latest-override.json"
@@ -52,7 +67,7 @@ get_latest_release_tag() {
 }
 
 # Integration tests snapshot LATEST before deploy so a release mid-test cannot fail verify.
-# Upgrade-case RC override (when present) wins so post-deploy does not require official LATEST.
+# Upgrade-case seed override (when present) wins so post-deploy does not require official LATEST.
 get_expected_release_tag() {
   local client="$1"
   local snapshot="${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}"
@@ -85,7 +100,7 @@ assert_matches_latest() {
   local expected_label="LATEST"
 
   if get_forced_rc_tag "$release_client" >/dev/null; then
-    expected_label="forced RC"
+    expected_label="forced seed"
   elif [[ -n "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}" && -f "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT}" ]]; then
     expected_label="install-time LATEST"
   fi
@@ -95,12 +110,12 @@ assert_matches_latest() {
     fail=1
     return 0
   fi
+  if [[ "$expected_label" == "forced seed" ]] && installed_matches_forced_seed "$installed" "$expected" "${TAG_COMMIT:-}"; then
+    echo "✅ ${label} matches forced seed (${installed#v} vs ${expected#v}) — deploy used seed; upgrade should move to official LATEST"
+    return 0
+  fi
   if installed_matches_latest_tag "$installed" "$expected" "${TAG_COMMIT:-}"; then
-    if [[ "$expected_label" == "forced RC" ]]; then
-      echo "✅ ${label} matches forced RC (${installed#v}) — deploy used RC; upgrade should move to official LATEST"
-    else
-      echo "✅ ${label} matches ${expected_label} (${installed#v}) — update menu would show already on latest"
-    fi
+    echo "✅ ${label} matches ${expected_label} (${installed#v}) — update menu would show already on latest"
     return 0
   fi
   if known_upstream_version_mismatch "$release_client" "$installed" "$expected"; then

@@ -5,9 +5,10 @@ Loaded automatically when ``tests/integration`` is on ``PYTHONPATH``.
 * Download cache: when ``ENABLE_EP_CACHE=1``, patches ``requests.get`` so
   release tarballs/binaries may be served from disk after a live ``HEAD`` check.
   GitHub API and other metadata requests are never cached.
-* Upgrade-case RC remap: wraps ``deploy.common.get_github_release`` so deploy-time
-  ``LATEST`` can resolve to a forced RC tag. No-op unless the override file
-  written by ``latest_override.py`` is present.
+* Upgrade-case seed remap: wraps ``deploy.common.get_github_release`` and
+  ``deploy.geth.get_release_info`` so deploy-time ``LATEST`` can resolve to a
+  forced seed tag (RC newer than LATEST, else previous stable). No-op unless
+  the override file written by ``latest_override.py`` is present.
 """
 import os
 import re

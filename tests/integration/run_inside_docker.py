@@ -1097,14 +1097,14 @@ if __name__ == "__main__":
             clear_override()
             if had_override:
                 print(
-                    "[Upgrade RC] Cleared LATEST→RC override; "
+                    "[Upgrade seed] Cleared LATEST→seed override; "
                     "ethpillar upgrade / --auto will resolve official LATEST",
                     flush=True,
                 )
             else:
                 print(
-                    "[Upgrade RC] No RC override was active; "
-                    "upgrade uses official LATEST (LATEST→LATEST is fine)",
+                    "[Upgrade seed] No seed override was active; "
+                    "upgrade uses official LATEST (real-upgrade assert will soft-skip)",
                     flush=True,
                 )
             print("\n=========================================", flush=True)

@@ -45,7 +45,7 @@ def test_write_clear_and_remap_lifecycle(tmp_path):
 
     clear_override(path)
     assert remap_latest_tag("sigp/lighthouse", "LATEST", path=path) == "LATEST"
-    assert load_override(path) == {"clients": {}, "repos": {}}
+    assert load_override(path) == {"clients": {}, "repos": {}, "kinds": {}}
 
 
 def test_normalize_deploy_clients_skips_caplin_and_empties():
@@ -135,20 +135,23 @@ def test_prepare_clears_file_when_no_rc(tmp_path):
     assert not Path(path).exists()
 
 
-def test_prepare_reuses_find_client_rc(tmp_path):
+def test_prepare_reuses_find_upgrade_seed(tmp_path):
     path = str(tmp_path / "override.json")
-    with patch("find_client_rc.find_rc") as find_rc:
-        find_rc.return_value = {
+    with patch("find_client_rc.find_upgrade_seed") as find_seed:
+        find_seed.return_value = {
             "client": "teku",
             "rc_tag": "25.9.0-rc1",
+            "seed_tag": "25.9.0-rc1",
+            "seed_kind": "rc",
             "latest": "25.8.0",
             "status": "ok",
             "reason": "prerelease resolvable via release_info",
         }
         result = prepare_rc_overrides(["teku"], path=path)
-    find_rc.assert_called_once()
-    assert find_rc.call_args[0][0] == "teku"
+    find_seed.assert_called_once()
+    assert find_seed.call_args[0][0] == "teku"
     assert result["clients"]["teku"] == "25.9.0-rc1"
+    assert result["kinds"]["teku"] == "rc"
 
 
 def test_install_github_release_hook_remaps_latest(tmp_path):
@@ -180,10 +183,53 @@ def test_sitecustomize_installs_override_hook():
     text = Path("tests/integration/sitecustomize.py").read_text(encoding="utf-8")
     assert "install_github_release_hook" in text
     assert "latest_override" in text
+    assert "geth.get_release_info" in text
 
 
 def test_check_client_versions_script_reads_clients_map():
     text = Path("tests/integration/check_client_versions.sh").read_text(encoding="utf-8")
     assert "ETHPILLAR_INTEGRATION_LATEST_OVERRIDE" in text
     assert ".clients[$k]" in text
-    assert "forced RC" in text
+    assert "forced seed" in text
+    assert "matches_forced_seed" in text
+
+
+def test_test_updates_script_two_phase_and_install_gate():
+    text = Path("tests/integration/test_updates.sh").read_text(encoding="utf-8")
+    code = "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "list-unit-files" not in code
+    assert "unit_installed" in code
+    assert "/etc/systemd/system/" in code
+    assert "already up to date" in code
+    assert "check-updates" in code
+    assert "Soft-skipping real-upgrade assert" in text
+    assert "ethpillar-integration-upgrade-seeds.json" in text
+
+
+def test_install_geth_release_hook_remaps_latest(tmp_path):
+    path = str(tmp_path / "override.json")
+    write_override({"geth": "v1.16.3"}, path=path)
+    import deploy.geth as geth
+
+    original = geth.get_release_info
+    captured: dict[str, object] = {}
+
+    def inner(version_tag: str, arch_amd64: bool) -> dict:
+        captured["tag"] = version_tag
+        captured["arch"] = arch_amd64
+        return {"version": version_tag}
+
+    try:
+        geth.get_release_info = inner
+        with patch.dict("os.environ", {"ETHPILLAR_INTEGRATION_LATEST_OVERRIDE": path}):
+            assert install_github_release_hook()
+            result = geth.get_release_info("LATEST", True)
+            assert captured["tag"] == "v1.16.3"
+            assert result["version"] == "v1.16.3"
+            result_exact = geth.get_release_info("v1.16.4", False)
+            assert captured["tag"] == "v1.16.4"
+            assert result_exact["version"] == "v1.16.4"
+    finally:
+        geth.get_release_info = original

@@ -21,6 +21,7 @@ RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
     ca-certificates \
     systemd systemd-sysv \
+    dbus \
     sudo \
     python3 \
     bats \
