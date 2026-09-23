@@ -266,11 +266,12 @@ cli_fetch_latest_release() {
     return 0
 }
 
-# Check one client target; prints a status line.
-# Returns 0 if up to date, 2 if update available, 1 on error.
-cli_check_client_update() {
+# Load installed + LATEST version fields for one client target.
+# Sets VERSION, INSTALLED_COMMIT, TAG, TAG_COMMIT (same fields as check-updates).
+# Returns 0 when fields are resolved, 1 on error.
+cli_load_client_versions() {
     local target="$1"
-    local release_client installed_label latest_label
+    local release_client
 
     VERSION=""
     INSTALLED_COMMIT=""
@@ -344,6 +345,15 @@ cli_check_client_update() {
             return 1
             ;;
     esac
+}
+
+# Check one client target; prints a status line.
+# Returns 0 if up to date, 2 if update available, 1 on error.
+cli_check_client_update() {
+    local target="$1"
+    local installed_label latest_label
+
+    cli_load_client_versions "$target" || return 1
 
     installed_label="${VERSION#v}"
     latest_label="${TAG#v}"
@@ -410,45 +420,61 @@ cli_cmd_check_updates() {
 }
 
 # Non-interactive EthPillar self-update (shared core: upgradeEthPillar).
+# Skip when local EP_VERSION already matches origin/main (same compare as check-updates).
 cli_upgrade_ethpillar() {
     local current latest
     current="${EP_VERSION}"
-    echo "Updating EthPillar..."
-    # Best-effort remote version for the log line (upgradeEthPillar fetches again).
+    # Best-effort remote version; only skip when it is known and matches.
     git -C "$BASE_DIR" fetch origin main --quiet 2>/dev/null || true
-    echo "Current: $current  Remote: $(getEthPillarRemoteVersion || echo unknown)"
+    latest=$(getEthPillarRemoteVersion || true)
+    if [[ -n "$latest" && "$current" == "$latest" ]]; then
+        echo "ethpillar: already up to date ($current) — skipping"
+        return 0
+    fi
+    echo "Updating EthPillar..."
+    echo "Current: $current  Remote: ${latest:-unknown}"
     upgradeEthPillar || return 1
     latest=$(grep '^EP_VERSION=' "$BASE_DIR/ethpillar.sh" 2>/dev/null | cut -d'"' -f2)
     echo "EthPillar updated to ${latest:-unknown}."
     return 0
 }
 
+# Path to update_<target>.sh (ETHPILLAR_UPDATE_SCRIPT_DIR overrides for tests).
+cli_auto_update_script() {
+    local target="$1"
+    echo "${ETHPILLAR_UPDATE_SCRIPT_DIR:-$BASE_DIR}/update_${target}.sh"
+}
+
+# Upgrade one target. Clients already on LATEST are skipped so --auto does not
+# stop/replace a running binary with the same version. update_*.sh --auto is
+# unchanged (forced reinstall when invoked directly). Comparison is the same
+# as check-updates / TUI promptYesNo (version_matches_latest).
 cli_upgrade_one() {
     local target="$1"
+    local installed_label
+
     case "$target" in
-        execution)
-            bash "$BASE_DIR/update_execution.sh" --auto
-            ;;
-        consensus)
-            bash "$BASE_DIR/update_consensus.sh" --auto
-            ;;
-        validator)
-            bash "$BASE_DIR/update_validator.sh" --auto
-            ;;
-        mevboost)
-            bash "$BASE_DIR/update_mevboost.sh" --auto
-            ;;
-        charon)
-            bash "$BASE_DIR/update_charon.sh" --auto
-            ;;
         ethpillar)
             cli_upgrade_ethpillar
+            return
+            ;;
+        execution|consensus|validator|mevboost|charon)
             ;;
         *)
             echo "Unsupported upgrade target: $target" >&2
             return 1
             ;;
     esac
+
+    cli_load_client_versions "$target" || return 1
+    installed_label="${VERSION#v}"
+    [[ -n "${INSTALLED_COMMIT:-}" ]] && installed_label="${installed_label} (${INSTALLED_COMMIT:0:7})"
+    if version_matches_latest; then
+        echo "${target}: already up to date (${installed_label}) — skipping"
+        return 0
+    fi
+
+    bash "$(cli_auto_update_script "$target")" --auto
 }
 
 cli_cmd_upgrade() {
