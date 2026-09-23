@@ -8,11 +8,13 @@ setup() {
   export CONSENSUS_SERVICE_FILE=$(mktemp)
   export VALIDATOR_SERVICE_FILE=$(mktemp)
   export CHARON_SERVICE_FILE=$(mktemp)
+  export MEVBOOST_SERVICE_FILE=$(mktemp)
 }
 
 teardown() {
   rm -rf "$TEST_BIN_DIR"
-  rm -f "$EXEC_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
+  rm -f "$EXEC_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE" \
+      "$CHARON_SERVICE_FILE" "$MEVBOOST_SERVICE_FILE"
 }
 
 write_stub_binary() {
@@ -356,6 +358,36 @@ EOF
   getCharonCurrentVersion
   [ "$VERSION" = "v1.10.3" ]
   [ "$INSTALLED_COMMIT" = "e60c838" ]
+}
+
+# ── parse_mevboost_version / getMevboostCurrentVersion ───────────────────────
+
+@test "parse_mevboost_version keeps 1.8.0 and does not collapse to 8.0" {
+  run parse_mevboost_version 'mev-boost version v1.8.0'
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.8.0" ]
+}
+
+@test "parse_mevboost_version reads bare x.y.z when no v prefix" {
+  run parse_mevboost_version 'mev-boost 1.11'
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.11" ]
+}
+
+@test "getMevboostCurrentVersion reads mev-boost from service stub" {
+  local stub="$TEST_BIN_DIR/mev-boost"
+  write_stub_binary "$stub" 'echo "mev-boost version v1.8.0"'
+  cat <<EOF > "$MEVBOOST_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getMevboostCurrentVersion
+  [ "$VERSION" = "1.8.0" ]
+}
+
+@test "format_version_label includes short commit when present" {
+  run format_version_label "v1.45.0" "668ea9dea24189d9"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.45.0 (668ea9d)" ]
 }
 
 # ── version_matches_latest ───────────────────────────────────────────────────

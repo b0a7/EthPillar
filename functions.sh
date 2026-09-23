@@ -190,6 +190,38 @@ getCharonCurrentVersion() {
   fi
 }
 
+# Parse ``mev-boost --version`` stdout (e.g. ``mev-boost version v1.8.0``).
+# Prefer a v-prefixed semver so greedy optional-v sed cannot collapse v1.8.0 to 8.0.
+parse_mevboost_version() {
+  local output="$1"
+  local ver
+  ver=$(grep -oiE 'v[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$output" | head -1 || true)
+  ver="${ver#v}"
+  if [[ -z "$ver" ]]; then
+    ver=$(grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$output" | head -1 || true)
+  fi
+  echo "$ver"
+}
+
+# Sets VERSION from the installed mev-boost binary (unit ExecStart).
+getMevboostCurrentVersion() {
+  local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+  local bin output
+  VERSION=""
+  INSTALLED_COMMIT=""
+  bin=$(get_systemd_exec_path "$mev_svc" "/usr/local/bin/mev-boost")
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    VERSION="Unable to query mev-boost version from binary."
+    return 1
+  fi
+  output=$("$bin" --version 2>&1 || true)
+  VERSION=$(parse_mevboost_version "$output")
+  if [[ -z "$VERSION" ]]; then
+    VERSION="Unable to query mev-boost version from binary."
+    return 1
+  fi
+}
+
 # Sets VERSION (and INSTALLED_COMMIT when known) from the installed execution client binary.
 getExecutionCurrentVersion() {
   local el="${1:-$EL}"
@@ -515,6 +547,39 @@ getEthPillarRemoteVersion() {
         | grep '^EP_VERSION=' | cut -d'"' -f2
 }
 
+# Quiet-fetch origin/main and print remote EP_VERSION. Returns 1 on fetch/show failure.
+fetch_ethpillar_remote_version() {
+    git -C "${BASE_DIR}" fetch origin main --quiet || return 1
+    local latest
+    latest=$(getEthPillarRemoteVersion) || return 1
+    [[ -n "$latest" ]] || return 1
+    echo "$latest"
+}
+
+# Query deploy.common release_info LATEST. Sets TAG, TAG_COMMIT, RELEASE_DATA.
+# Usage: fetch_latest_release <client> [--strip-v]
+# Returns 1 if the request fails or version is missing (does not exit).
+fetch_latest_release() {
+    local client="$1"
+    local strip_v=0
+    local data
+    [[ "${2:-}" == "--strip-v" ]] && strip_v=1
+    TAG=""
+    TAG_COMMIT=""
+    RELEASE_DATA=""
+    data=$(PYTHONPATH="${BASE_DIR}" "${ETHPILLAR_PYTHON:-python3}" -m deploy.common release_info "$client" "LATEST") || return 1
+    RELEASE_DATA="$data"
+    TAG=$(echo "$data" | jq -r .version)
+    TAG_COMMIT=$(echo "$data" | jq -r '.commit // empty')
+    if [[ -z "$TAG" || "$TAG" == "null" ]]; then
+        return 1
+    fi
+    if [[ "$strip_v" -eq 1 ]]; then
+        TAG="${TAG#v}"
+    fi
+    return 0
+}
+
 # Apply EthPillar self-update: fetch origin/main, hard-reset, clean untracked,
 # refresh Python deps. Preserves .env.overrides across the clean.
 # Shared by System Administration → Update EthPillar and `ethpillar upgrade ethpillar`.
@@ -652,6 +717,104 @@ version_matches_latest() {
     [[ "$tag_lc" == "$inst_lc"* || "$inst_lc" == "$tag_lc"* ]] || return 1
   fi
   return 0
+}
+
+# Print "1.45.0" or "1.45.0 (668ea9d)" from a version and optional commit.
+format_version_label() {
+  local ver="${1#v}"
+  local commit="${2:-}"
+  if [[ -n "$commit" ]]; then
+    echo "${ver} (${commit:0:7})"
+  else
+    echo "$ver"
+  fi
+}
+
+# Load installed + LATEST fields for one stack target (execution/consensus/
+# validator/mevboost/charon). Sets VERSION, INSTALLED_COMMIT, TAG, TAG_COMMIT
+# via the same TUI helpers promptYesNo uses (get*CurrentVersion + release_info).
+# Returns 0 when fields are resolved, 1 on error.
+load_client_versions() {
+    local target="$1"
+    local release_client
+
+    VERSION=""
+    INSTALLED_COMMIT=""
+    TAG=""
+    TAG_COMMIT=""
+
+    case "$target" in
+        execution)
+            getClient
+            if [[ -z "${EL:-}" ]]; then
+                echo "execution: not installed"
+                return 1
+            fi
+            release_client="$EL"
+            [[ "$release_client" == "Erigon-Caplin" ]] && release_client="Erigon"
+            getExecutionCurrentVersion "$release_client" || true
+            fetch_latest_release "$release_client" || {
+                echo "execution ($EL): could not resolve LATEST"
+                return 1
+            }
+            ;;
+        consensus)
+            getClient
+            if [[ -z "${CL:-}" ]]; then
+                echo "consensus: not installed"
+                return 1
+            fi
+            release_client="${CL,,}"
+            getClVcCurrentVersion "$CL" cl || true
+            fetch_latest_release "$release_client" || {
+                echo "consensus ($CL): could not resolve LATEST"
+                return 1
+            }
+            ;;
+        validator)
+            getClient
+            if [[ -z "${VC:-}" ]]; then
+                echo "validator: not installed"
+                return 1
+            fi
+            release_client="${VC,,}"
+            getClVcCurrentVersion "$VC" vc || true
+            fetch_latest_release "$release_client" || {
+                echo "validator ($VC): could not resolve LATEST"
+                return 1
+            }
+            ;;
+        mevboost)
+            getMevboostCurrentVersion || true
+            [[ -z "$VERSION" ]] && VERSION="unknown"
+            fetch_latest_release "mevboost" --strip-v || {
+                echo "mevboost: could not resolve LATEST"
+                return 1
+            }
+            ;;
+        charon)
+            getCharonCurrentVersion || true
+            [[ -z "$VERSION" ]] && VERSION="unknown"
+            fetch_latest_release "charon" --strip-v || {
+                echo "charon: could not resolve LATEST"
+                return 1
+            }
+            ;;
+        *)
+            echo "Unsupported check target: $target" >&2
+            return 1
+            ;;
+    esac
+}
+
+# 0 if installed matches LATEST, 2 if behind, 1 on error.
+# Same comparison as TUI promptYesNo (version_matches_latest).
+client_version_status() {
+    load_client_versions "$1" || return 1
+    if version_matches_latest; then
+        return 0
+    fi
+    return 2
 }
 
 # Read clients from systemd config files

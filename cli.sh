@@ -251,148 +251,33 @@ cli_cmd_service_action() {
 
 # ── Updates ──────────────────────────────────────────────────────────────────
 
-# Fetch LATEST tag/commit via deploy.common release_info into TAG / TAG_COMMIT.
-cli_fetch_latest_release() {
-    local client="$1"
-    local data
-    TAG=""
-    TAG_COMMIT=""
-    data=$(PYTHONPATH="${BASE_DIR}" "${ETHPILLAR_PYTHON:-python3}" -m deploy.common release_info "$client" "LATEST") || return 1
-    TAG=$(echo "$data" | jq -r .version)
-    TAG_COMMIT=$(echo "$data" | jq -r '.commit // empty')
-    if [[ -z "$TAG" || "$TAG" == "null" ]]; then
-        return 1
-    fi
-    return 0
-}
-
-# Load installed + LATEST version fields for one client target.
-# Sets VERSION, INSTALLED_COMMIT, TAG, TAG_COMMIT (same fields as check-updates).
-# Returns 0 when fields are resolved, 1 on error.
-cli_load_client_versions() {
-    local target="$1"
-    local release_client
-
-    VERSION=""
-    INSTALLED_COMMIT=""
-    TAG=""
-    TAG_COMMIT=""
-
-    case "$target" in
-        execution)
-            getClient
-            if [[ -z "${EL:-}" ]]; then
-                echo "execution: not installed"
-                return 1
-            fi
-            release_client="$EL"
-            [[ "$release_client" == "Erigon-Caplin" ]] && release_client="Erigon"
-            getExecutionCurrentVersion "$release_client" || true
-            cli_fetch_latest_release "$release_client" || {
-                echo "execution ($EL): could not resolve LATEST"
-                return 1
-            }
-            ;;
-        consensus)
-            getClient
-            if [[ -z "${CL:-}" ]]; then
-                echo "consensus: not installed"
-                return 1
-            fi
-            release_client="${CL,,}"
-            getClVcCurrentVersion "$CL" cl || true
-            cli_fetch_latest_release "$release_client" || {
-                echo "consensus ($CL): could not resolve LATEST"
-                return 1
-            }
-            ;;
-        validator)
-            getClient
-            if [[ -z "${VC:-}" ]]; then
-                echo "validator: not installed"
-                return 1
-            fi
-            release_client="${VC,,}"
-            getClVcCurrentVersion "$VC" vc || true
-            cli_fetch_latest_release "$release_client" || {
-                echo "validator ($VC): could not resolve LATEST"
-                return 1
-            }
-            ;;
-        mevboost)
-            local raw mev_bin
-            # Prefer the unit ExecStart path (same as other clients) so a PATH miss
-            # cannot skip/compare the wrong binary.
-            mev_bin=$(get_systemd_exec_path "$(cli_service_path mevboost)" "/usr/local/bin/mev-boost")
-            raw=$("$mev_bin" --version 2>&1 || true)
-            # Prefer a v-prefixed semver so "mev-boost version v1.8.0" does not
-            # collapse to 8.0 (greedy optional-v sed).
-            VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$raw" | head -1 || true)
-            VERSION="${VERSION#v}"
-            if [[ -z "$VERSION" ]]; then
-                VERSION=$(grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$raw" | head -1 || true)
-            fi
-            [[ -z "$VERSION" ]] && VERSION="unknown"
-            INSTALLED_COMMIT=""
-            cli_fetch_latest_release "mevboost" || {
-                echo "mevboost: could not resolve LATEST"
-                return 1
-            }
-            TAG="${TAG#v}"
-            ;;
-        charon)
-            getCharonCurrentVersion || true
-            [[ -z "$VERSION" ]] && VERSION="unknown"
-            cli_fetch_latest_release "charon" || {
-                echo "charon: could not resolve LATEST"
-                return 1
-            }
-            TAG="${TAG#v}"
-            ;;
-        *)
-            echo "Unsupported check target: $target" >&2
-            return 1
-            ;;
-    esac
-}
-
 # Check one client target; prints a status line.
 # Returns 0 if up to date, 2 if update available, 1 on error.
 cli_check_client_update() {
     local target="$1"
-    local installed_label latest_label
+    local rc
 
-    cli_load_client_versions "$target" || return 1
-
-    installed_label="${VERSION#v}"
-    latest_label="${TAG#v}"
-    [[ -n "${INSTALLED_COMMIT:-}" ]] && installed_label="${installed_label} (${INSTALLED_COMMIT:0:7})"
-    [[ -n "${TAG_COMMIT:-}" ]] && latest_label="${latest_label} (${TAG_COMMIT:0:7})"
-
-    if version_matches_latest; then
-        echo "${target}: up to date (${installed_label})"
-        return 0
-    fi
-    echo "${target}: update available (${installed_label} → ${latest_label})"
-    return 2
+    client_version_status "$target"
+    rc=$?
+    case "$rc" in
+        0)
+            echo "${target}: up to date ($(format_version_label "$VERSION" "${INSTALLED_COMMIT:-}"))"
+            ;;
+        2)
+            echo "${target}: update available ($(format_version_label "$VERSION" "${INSTALLED_COMMIT:-}") → $(format_version_label "$TAG" "${TAG_COMMIT:-}"))"
+            ;;
+    esac
+    return "$rc"
 }
 
 # Compare local EP_VERSION to origin/main ethpillar.sh.
 cli_check_ethpillar_update() {
     local current latest
     current="${EP_VERSION}"
-    (
-        cd "$BASE_DIR" || exit 1
-        git fetch origin main --quiet
-    ) || {
+    latest=$(fetch_ethpillar_remote_version) || {
         echo "ethpillar: could not fetch origin/main"
         return 1
     }
-    latest=$(getEthPillarRemoteVersion)
-    if [[ -z "$latest" ]]; then
-        echo "ethpillar: could not read remote EP_VERSION"
-        return 1
-    fi
     if [[ "$current" == "$latest" ]]; then
         echo "ethpillar: up to date ($current)"
         return 0
@@ -434,8 +319,7 @@ cli_upgrade_ethpillar() {
     local current latest
     current="${EP_VERSION}"
     # Best-effort remote version; only skip when it is known and matches.
-    git -C "$BASE_DIR" fetch origin main --quiet 2>/dev/null || true
-    latest=$(getEthPillarRemoteVersion || true)
+    latest=$(fetch_ethpillar_remote_version || true)
     if [[ -n "$latest" && "$current" == "$latest" ]]; then
         echo "ethpillar: already up to date ($current) — skipping"
         return 0
@@ -456,11 +340,11 @@ cli_auto_update_script() {
 
 # Upgrade one target. Clients already on LATEST are skipped so --auto does not
 # stop/replace a running binary with the same version. update_*.sh --auto is
-# unchanged (forced reinstall when invoked directly). Comparison is the same
-# as check-updates / TUI promptYesNo (version_matches_latest).
+# unchanged (forced reinstall when invoked directly). Comparison is
+# client_version_status → version_matches_latest (same as check-updates / TUI).
 cli_upgrade_one() {
     local target="$1"
-    local installed_label
+    local rc
 
     case "$target" in
         ethpillar)
@@ -475,13 +359,13 @@ cli_upgrade_one() {
             ;;
     esac
 
-    cli_load_client_versions "$target" || return 1
-    installed_label="${VERSION#v}"
-    [[ -n "${INSTALLED_COMMIT:-}" ]] && installed_label="${installed_label} (${INSTALLED_COMMIT:0:7})"
-    if version_matches_latest; then
-        echo "${target}: already up to date (${installed_label}) — skipping"
+    client_version_status "$target"
+    rc=$?
+    if [[ "$rc" -eq 0 ]]; then
+        echo "${target}: already up to date ($(format_version_label "$VERSION" "${INSTALLED_COMMIT:-}")) — skipping"
         return 0
     fi
+    [[ "$rc" -eq 2 ]] || return 1
 
     bash "$(cli_auto_update_script "$target")" --auto
 }
