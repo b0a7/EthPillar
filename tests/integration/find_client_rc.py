@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Find a usable prerelease/RC tag for each EthPillar client.
+"""Find a usable prerelease/RC or previous-stable tag for each EthPillar client.
+
+``find_rc`` only accepts prereleases that are **semver-newer than official
+LATEST**. Older prereleases (Lighthouse ``v8.0.0-rc.2`` when LATEST is
+``v8.0.0+``, Teku ``22.9.1-RC1``, Nimbus ``v0.6.6``, same-series RCs like
+``1.48.0-rc.0`` vs ``1.48.0``) are ignored so Upgrade-matrix deploy does not
+install junk/ancient binaries.
+
+``find_upgrade_seed`` prefers that newer RC when one exists, otherwise a
+**previous resolvable stable** that is strictly older than LATEST, client-shaped,
+and within a small semver window (same major, at most two minors behind) so
+ancient tags are not used as upgrade bait.
+
+Nethermind is restricted to client version tags (``1.35.0-rc``), not other
+NethermindEth artifacts such as ``bootnode-2.0.0``.
 
 Prints JSON lines: {"client": "...", "rc_tag": "...", "latest": "...", "status": "ok|skip", "reason": "..."}
 """
@@ -15,6 +29,7 @@ import requests
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _REPO)
 
+from client_requirements import compare_versions, parse_version
 from deploy.common import _github_api_headers, get_client_release_info
 
 # client -> GitHub repo (None = Geth / special)
@@ -35,8 +50,149 @@ CLIENT_REPOS: dict[str, str | None] = {
     "charon": "ObolNetwork/charon",
 }
 
-_SKIP_TAG = re.compile(r"(?i)(nightly|zisk|devnet|altair|snapshot)")
+# Non-client / non-release artifacts that still appear in GitHub releases.
+_SKIP_TAG = re.compile(
+    r"(?i)(nightly|zisk|devnet|altair|snapshot|bootnode|genesis|fuzz|unreleased|"
+    r"launcher|installer|windows-package)"
+)
+# Must look like a client semver (optional v, optional pre suffix). Rejects bootnode-2.0.0.
+_CLIENT_VERSION_TAG = re.compile(
+    r"(?i)^v?\d+\.\d+(\.\d+)?(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.-]+)?$"
+)
 _RC_TAG = re.compile(r"(?i)(^|[-.])(rc|alpha|beta)([.-]|\d|$)")
+# Nethermind execution-client tags only (not bootnode / other org artifacts).
+_NETHERMIND_CLIENT_TAG = re.compile(
+    r"(?i)^v?\d+\.\d+(\.\d+)?(-(rc|alpha|beta)[0-9A-Za-z.]*)?$"
+)
+_NETHERMIND_BLOCK = re.compile(r"(?i)(bootnode|launcher|installer|docs|dotnet)")
+_GETH_DOWNLOAD_VERSION = re.compile(
+    r"geth-linux-(?:amd64|arm64)-([0-9.]+)-[a-f0-9]+\.tar\.gz"
+)
+# Previous-stable window: same major, at most this many minors behind LATEST.
+_MAX_PREVIOUS_MINOR_DELTA = 2
+
+
+def is_junk_tag(tag: str) -> bool:
+    """Return True when *tag* is a known non-client or ephemeral artifact."""
+    return bool(_SKIP_TAG.search(tag or ""))
+
+
+def looks_like_client_version_tag(tag: str) -> bool:
+    """Return True when *tag* looks like ``v1.2.3`` / ``25.9.0-rc.1``."""
+    return bool(_CLIENT_VERSION_TAG.match((tag or "").strip()))
+
+
+def is_nethermind_client_tag(tag: str) -> bool:
+    """Return True for Nethermind execution-client tags, not bootnode/other projects."""
+    text = (tag or "").strip()
+    if not text or _NETHERMIND_BLOCK.search(text) or is_junk_tag(text):
+        return False
+    return bool(_NETHERMIND_CLIENT_TAG.match(text))
+
+
+def is_newer_than_latest(candidate: str, latest: str) -> bool:
+    """Return True when *candidate* is semver-newer than official *latest*.
+
+    Same major.minor.patch with a prerelease suffix is **older** than the
+    stable (``1.48.0-rc.0`` < ``1.48.0``).
+    """
+    if not candidate or not latest:
+        return False
+    if candidate == latest:
+        return False
+    try:
+        return compare_versions(candidate, latest) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def is_strictly_older_than_latest(candidate: str, latest: str) -> bool:
+    """Return True when *candidate* is semver-older than official *latest*."""
+    if not candidate or not latest:
+        return False
+    if candidate == latest:
+        return False
+    try:
+        return compare_versions(candidate, latest) < 0
+    except (TypeError, ValueError):
+        return False
+
+
+def is_sane_previous_stable(
+    candidate: str,
+    latest: str,
+    max_minor_delta: int = _MAX_PREVIOUS_MINOR_DELTA,
+) -> bool:
+    """Return True when *candidate* is a close previous stable, not ancient junk.
+
+    Requires a strictly older tag, the same major as *latest*, and a minor
+    distance of at most *max_minor_delta* (default 2). That rejects Nimbus
+    ``v0.6.6`` vs ``v25.9.2`` and Lodestar ``1.0.0`` vs ``1.48.0`` while still
+    allowing one skipped minor (Teku ``25.7.0`` vs ``25.9.3``).
+    """
+    if not is_strictly_older_than_latest(candidate, latest):
+        return False
+    try:
+        cand_parts = parse_version(candidate)
+        latest_parts = parse_version(latest)
+    except (TypeError, ValueError):
+        return False
+    major_delta = latest_parts[0] - cand_parts[0]
+    if major_delta == 0:
+        return latest_parts[1] - cand_parts[1] <= max_minor_delta
+    # One major behind is a real previous series (Nethermind 1.39.3 vs 2.0.0),
+    # not ancient junk like Nimbus v0.6.6 vs v25.9.2.
+    if major_delta == 1:
+        return True
+    return False
+
+
+def base_semver(version: str) -> str:
+    """Return ``major.minor.patch`` from *version*, dropping pre/build suffixes."""
+    text = (version or "").strip()
+    if text.lower().startswith("v") and len(text) > 1 and text[1].isdigit():
+        text = text[1:]
+    text = text.split("-", 1)[0]
+    text = text.split("+", 1)[0]
+    return text
+
+
+def commits_compatible(installed: str = "", expected: str = "") -> bool:
+    """Return True when commits are missing or one is a prefix of the other.
+
+    Forced-seed matching does not require this: RC binaries often print a
+    ``HEAD-<hash>`` that is not the GitHub tag peel. Kept for callers that
+    want an optional extra signal.
+    """
+    inst = (installed or "").strip().lower()
+    tag = (expected or "").strip().lower()
+    if not inst or not tag:
+        return True
+    return tag.startswith(inst) or inst.startswith(tag)
+
+
+def matches_forced_seed(
+    installed: str,
+    expected: str,
+    inst_commit: str = "",
+    tag_commit: str = "",
+) -> bool:
+    """Return True when *installed* matches a forced deploy seed/RC tag.
+
+    General rule (not client-specific): compare **base semver only**.
+    Prerelease suffixes (``-rc.1``, ``-alpha``, ``-HEAD-…``) and commit/hash
+    suffixes are optional. This is the Integration 35809007081 Ethrex case
+    (``28.0.0 (bf0647f)`` vs tag ``v28.0.0-rc.1``) and the same class of
+    Lodestar/other RC binaries that omit ``-rc.N`` from ``--version``.
+
+    *inst_commit* / *tag_commit* are accepted for API compatibility and are
+    **not** required to match. Official LATEST compares still use
+    ``version_matches_latest`` (exact tag + optional commit).
+    """
+    del inst_commit, tag_commit  # optional; do not fail forced-seed on hash
+    if not installed or not expected:
+        return False
+    return base_semver(installed) == base_semver(expected)
 
 
 def _releases(repo: str) -> list[dict]:
@@ -56,15 +212,32 @@ def _releases(repo: str) -> list[dict]:
     return out
 
 
-def _is_rc_candidate(rel: dict) -> bool:
+def is_rc_candidate(rel: dict, client: str = "") -> bool:
+    """Return True when *rel* is a non-draft prerelease/RC of the named client."""
     if rel.get("draft"):
         return False
     tag = rel.get("tag_name") or ""
-    if _SKIP_TAG.search(tag):
+    if is_junk_tag(tag) or not looks_like_client_version_tag(tag):
+        return False
+    if client == "nethermind" and not is_nethermind_client_tag(tag):
         return False
     if rel.get("prerelease") or _RC_TAG.search(tag):
         return True
     return False
+
+
+def is_stable_candidate(rel: dict, client: str = "") -> bool:
+    """Return True when *rel* is a non-draft, non-prerelease client stable."""
+    if rel.get("draft") or rel.get("prerelease"):
+        return False
+    tag = rel.get("tag_name") or ""
+    if is_junk_tag(tag) or not looks_like_client_version_tag(tag):
+        return False
+    if _RC_TAG.search(tag):
+        return False
+    if client == "nethermind" and not is_nethermind_client_tag(tag):
+        return False
+    return True
 
 
 def _release_info_ok(client: str, tag: str) -> bool:
@@ -73,6 +246,73 @@ def _release_info_ok(client: str, tag: str) -> bool:
         return bool(info.get("version") and info.get("download_urls"))
     except Exception:
         return False
+
+
+def _skip_row(client: str, latest_tag: str | None, reason: str) -> dict:
+    """Build a skip-status discovery row."""
+    return {
+        "client": client,
+        "rc_tag": None,
+        "seed_tag": None,
+        "seed_kind": None,
+        "latest": latest_tag,
+        "status": "skip",
+        "reason": reason,
+    }
+
+
+def parse_geth_download_versions(html: str) -> list[str]:
+    """Return unique ``vX.Y.Z`` tags parsed from geth.ethereum.org HTML."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for ver in _GETH_DOWNLOAD_VERSION.findall(html or ""):
+        tag = f"v{ver}"
+        if tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+    return out
+
+
+def _geth_download_html() -> str:
+    """Fetch the Geth downloads page (stables only)."""
+    res = requests.get("https://geth.ethereum.org/downloads", timeout=30)
+    res.raise_for_status()
+    return res.text
+
+
+def _pick_best_previous_stable(
+    client: str,
+    latest_tag: str,
+    tags: list[str],
+) -> tuple[str | None, list[str]]:
+    """Return (best sane older stable, ignored tags) from *tags*."""
+    ignored: list[str] = []
+    best_tag: str | None = None
+    for tag in tags:
+        if tag == latest_tag:
+            continue
+        if not is_sane_previous_stable(tag, latest_tag):
+            ignored.append(tag)
+            continue
+        if not _release_info_ok(client, tag):
+            continue
+        if best_tag is None or is_newer_than_latest(tag, best_tag):
+            best_tag = tag
+    return best_tag, ignored
+
+
+def _previous_stable_reason(ignored: list[str]) -> str:
+    """Explain why no previous stable was selected."""
+    reason = (
+        "no resolvable previous stable strictly older than LATEST "
+        "within the same major / two-minor window"
+    )
+    if ignored:
+        preview = ", ".join(ignored[:6])
+        extra = f" (+{len(ignored) - 6} more)" if len(ignored) > 6 else ""
+        reason = f"{reason} (ignored ancient/out-of-window: {preview}{extra})"
+    return reason
 
 
 def find_rc(client: str, repo: str | None) -> dict:
@@ -98,43 +338,127 @@ def find_rc(client: str, repo: str | None) -> dict:
             "reason": "no GitHub repo mapping",
         }
 
+    ignored_older: list[str] = []
+    best_tag: str | None = None
     for rel in _releases(repo):
-        if not _is_rc_candidate(rel):
+        if not is_rc_candidate(rel, client):
             continue
         tag = rel["tag_name"]
         if tag == latest_tag:
             continue
-        if _release_info_ok(client, tag):
-            return {
-                "client": client,
-                "rc_tag": tag,
-                "latest": latest_tag,
-                "status": "ok",
-                "reason": "prerelease resolvable via release_info",
-            }
+        if not is_newer_than_latest(tag, latest_tag):
+            ignored_older.append(tag)
+            continue
+        if not _release_info_ok(client, tag):
+            continue
+        if best_tag is None or is_newer_than_latest(tag, best_tag):
+            best_tag = tag
 
+    if best_tag:
+        return {
+            "client": client,
+            "rc_tag": best_tag,
+            "latest": latest_tag,
+            "status": "ok",
+            "reason": "prerelease newer than LATEST and resolvable via release_info",
+        }
+
+    reason = "no resolvable RC/prerelease newer than LATEST with assets in recent releases"
+    if ignored_older:
+        preview = ", ".join(ignored_older[:6])
+        extra = f" (+{len(ignored_older) - 6} more)" if len(ignored_older) > 6 else ""
+        reason = f"{reason} (ignored older: {preview}{extra})"
     return {
         "client": client,
         "rc_tag": None,
         "latest": latest_tag,
         "status": "skip",
-        "reason": "no resolvable RC/prerelease with assets in recent releases",
+        "reason": reason,
     }
+
+
+def _find_previous_stable(client: str, repo: str | None, latest_tag: str) -> dict:
+    """Find the newest sane previous stable for *client*."""
+    if client == "geth":
+        tags = parse_geth_download_versions(_geth_download_html())
+        best_tag, ignored = _pick_best_previous_stable(client, latest_tag, tags)
+    elif not repo:
+        return _skip_row(client, latest_tag, "no GitHub repo mapping")
+    else:
+        tags = [
+            rel["tag_name"]
+            for rel in _releases(repo)
+            if is_stable_candidate(rel, client)
+        ]
+        best_tag, ignored = _pick_best_previous_stable(client, latest_tag, tags)
+
+    if best_tag:
+        return {
+            "client": client,
+            "rc_tag": None,
+            "seed_tag": best_tag,
+            "seed_kind": "stable",
+            "latest": latest_tag,
+            "status": "ok",
+            "reason": "previous stable older than LATEST and resolvable via release_info",
+        }
+    return _skip_row(client, latest_tag, _previous_stable_reason(ignored))
+
+
+def find_upgrade_seed(client: str, repo: str | None) -> dict:
+    """Find a deploy seed: newer RC if possible, else a sane previous stable.
+
+    Soft-skips (``status=skip``) when neither exists so Upgrade-matrix deploy
+    stays on official LATEST instead of grabbing ancient junk.
+    """
+    rc_row = find_rc(client, repo)
+    latest_tag = rc_row.get("latest")
+    if rc_row.get("status") == "ok" and rc_row.get("rc_tag"):
+        return {
+            **rc_row,
+            "seed_tag": rc_row["rc_tag"],
+            "seed_kind": "rc",
+        }
+
+    if not latest_tag:
+        return {
+            **rc_row,
+            "seed_tag": None,
+            "seed_kind": None,
+        }
+
+    stable_row = _find_previous_stable(client, repo, str(latest_tag))
+    if stable_row.get("status") == "ok":
+        return stable_row
+
+    rc_reason = rc_row.get("reason") or "no newer RC"
+    stable_reason = stable_row.get("reason") or "no sane previous stable"
+    return _skip_row(
+        client,
+        str(latest_tag),
+        f"{rc_reason}; {stable_reason}",
+    )
 
 
 def main() -> int:
     clients = sys.argv[1:] or list(CLIENT_REPOS)
+    use_seed = False
+    if clients and clients[0] == "--seed":
+        use_seed = True
+        clients = clients[1:] or list(CLIENT_REPOS)
+    finder = find_upgrade_seed if use_seed else find_rc
     for client in clients:
         client = client.lower()
         if client not in CLIENT_REPOS:
             print(json.dumps({"client": client, "status": "skip", "reason": "unknown client"}))
             continue
         try:
-            row = find_rc(client, CLIENT_REPOS[client])
+            row = finder(client, CLIENT_REPOS[client])
         except Exception as exc:  # noqa: BLE001 — surface per-client and continue
             row = {
                 "client": client,
                 "rc_tag": None,
+                "seed_tag": None,
                 "latest": None,
                 "status": "skip",
                 "reason": f"error: {exc}",

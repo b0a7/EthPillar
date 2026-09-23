@@ -1,14 +1,27 @@
-"""Python startup hook: transparent binary download cache for integration tests.
+"""Python startup hook for integration tests.
 
-Loaded via ``PYTHONPATH`` when ``ENABLE_EP_CACHE=1``. Patches ``requests.get`` so
-release tarballs/binaries may be served from disk after a live ``HEAD`` check.
-GitHub API and other metadata requests are never cached.
+Loaded automatically when ``tests/integration`` is on ``PYTHONPATH``.
+
+* Download cache: when ``ENABLE_EP_CACHE=1``, patches ``requests.get`` so
+  release tarballs/binaries may be served from disk after a live ``HEAD`` check.
+  GitHub API and other metadata requests are never cached.
+* Upgrade-case seed remap: wraps ``deploy.common.get_github_release`` and
+  ``deploy.geth.get_release_info`` so deploy-time ``LATEST`` can resolve to a
+  forced seed tag (RC newer than LATEST, else previous stable). No-op unless
+  the override file written by ``latest_override.py`` is present.
 """
 import os
 import re
 import sys
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
+
+try:
+    from latest_override import install_github_release_hook
+
+    install_github_release_hook()
+except Exception:
+    pass
 
 if os.environ.get("ENABLE_EP_CACHE") == "1":
     try:

@@ -8,11 +8,13 @@ setup() {
   export CONSENSUS_SERVICE_FILE=$(mktemp)
   export VALIDATOR_SERVICE_FILE=$(mktemp)
   export CHARON_SERVICE_FILE=$(mktemp)
+  export MEVBOOST_SERVICE_FILE=$(mktemp)
 }
 
 teardown() {
   rm -rf "$TEST_BIN_DIR"
-  rm -f "$EXEC_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
+  rm -f "$EXEC_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE" "$VALIDATOR_SERVICE_FILE" \
+      "$CHARON_SERVICE_FILE" "$MEVBOOST_SERVICE_FILE"
 }
 
 write_stub_binary() {
@@ -239,6 +241,94 @@ EOF
   [ "$INSTALLED_COMMIT" = "668ea9d" ]
 }
 
+@test "getClVcCurrentVersion reads official lodestar v1.48.0/c7dc2b0" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'echo "* Version: v1.48.0/c7dc2b0"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.48.0" ]
+  [ "$INSTALLED_COMMIT" = "c7dc2b0" ]
+}
+
+@test "getClVcCurrentVersion ignores extra /hex outside the Lodestar Version line" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'printf "%s\n" "Unpacking Lodestar binary from /tmp/lodestar-v1.48.0-linux-amd64/deadbeef/lodestar" "* Version: v1.48.0/c7dc2b0" "* by ChainSafe Systems, 2018-2026"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.48.0" ]
+  [ "$INSTALLED_COMMIT" = "c7dc2b0" ]
+}
+
+@test "getClVcCurrentVersion reads lodestar v1.8.0/stable/a4b29cf" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'echo "* Version: v1.8.0/stable/a4b29cf"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.8.0" ]
+  [ "$INSTALLED_COMMIT" = "a4b29cf" ]
+}
+
+@test "get_lodestar_version_output invokes binary with cwd=/tmp" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  cat > "$stub" <<'EOF'
+#!/bin/bash
+printf 'cwd=%s\n' "$(pwd)"
+EOF
+  chmod +x "$stub"
+  run get_lodestar_version_output "$stub"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "cwd=/tmp" ]]
+}
+
+@test "getClVcCurrentVersion uses /tmp cwd so baked Lodestar commit wins over repo git" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  cat > "$stub" <<'EOF'
+#!/bin/bash
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "* Version: v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2"
+else
+  echo "* Version: v1.48.0/c7dc2b0"
+fi
+EOF
+  chmod +x "$stub"
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.48.0" ]
+  [ "$INSTALLED_COMMIT" = "c7dc2b0" ]
+}
+
+@test "getClVcCurrentVersion ignores EthPillar branch SHA on Lodestar Version line" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'echo "* Version: v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.48.0" ]
+  [ -z "$INSTALLED_COMMIT" ]
+  TAG=v1.48.0
+  TAG_COMMIT=c7dc2b0b3b715635fb9b616bf178137ad64f7bba
+  version_matches_latest
+}
+
+@test "parse_lodestar_installed_commit rejects last-hex branch metadata" {
+  run parse_lodestar_installed_commit "* Version: v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2" "v1.48.0"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run parse_lodestar_installed_commit "* Version: v1.48.0/c7dc2b0" "v1.48.0"
+  [ "$output" = "c7dc2b0" ]
+  run parse_lodestar_installed_commit "* Version: v1.8.0/stable/a4b29cf" "v1.8.0"
+  [ "$output" = "a4b29cf" ]
+}
+
 @test "getClVcCurrentVersion preserves lodestar prerelease when present" {
   local stub="$TEST_BIN_DIR/lodestar"
   write_stub_binary "$stub" 'echo "* Version: v1.45.0-rc.0/668ea9d"'
@@ -358,6 +448,36 @@ EOF
   [ "$INSTALLED_COMMIT" = "e60c838" ]
 }
 
+# ── parse_mevboost_version / getMevboostCurrentVersion ───────────────────────
+
+@test "parse_mevboost_version keeps 1.8.0 and does not collapse to 8.0" {
+  run parse_mevboost_version 'mev-boost version v1.8.0'
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.8.0" ]
+}
+
+@test "parse_mevboost_version reads bare x.y.z when no v prefix" {
+  run parse_mevboost_version 'mev-boost 1.11'
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.11" ]
+}
+
+@test "getMevboostCurrentVersion reads mev-boost from service stub" {
+  local stub="$TEST_BIN_DIR/mev-boost"
+  write_stub_binary "$stub" 'echo "mev-boost version v1.8.0"'
+  cat <<EOF > "$MEVBOOST_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getMevboostCurrentVersion
+  [ "$VERSION" = "1.8.0" ]
+}
+
+@test "format_version_label includes short commit when present" {
+  run format_version_label "v1.45.0" "668ea9dea24189d9"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1.45.0 (668ea9d)" ]
+}
+
 # ── version_matches_latest ───────────────────────────────────────────────────
 
 @test "version_matches_latest matches equal semver without commits" {
@@ -375,6 +495,10 @@ EOF
 @test "version_matches_latest matches commit prefix either way" {
   version_matches_latest "v1.45.0" "v1.45.0" "668ea9d" "668ea9dea24189d9be99940acd923e8920e75bf6"
   version_matches_latest "1.45.0" "v1.45.0" "668ea9dea24189d9be99940acd923e8920e75bf6" "668ea9d"
+}
+
+@test "version_matches_latest matches official lodestar short commit vs tag peel" {
+  version_matches_latest "v1.48.0" "v1.48.0" "c7dc2b0" "c7dc2b0b3b715635fb9b616bf178137ad64f7bba"
 }
 
 @test "version_matches_latest mismatches same semver different commits" {

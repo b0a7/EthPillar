@@ -50,10 +50,7 @@ function promptViewLogs(){
 }
 
 function getLatestVersion(){
-	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "charon" "LATEST")
-	TAG=$(echo "$RELEASE_DATA" | jq -r .version | sed 's/^v//')
-	TAG_COMMIT=$(echo "$RELEASE_DATA" | jq -r '.commit // empty')
-	[[ -z $TAG ]] || [[ $TAG == "null"  ]] && echo "ERROR: Couldn't find the latest version tag" && exit 1
+	fetch_latest_release "charon" --strip-v || { echo "ERROR: Couldn't find the latest version tag"; exit 1; }
 	CHANGES_URL="https://github.com/ObolNetwork/charon/releases"
 }
 

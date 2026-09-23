@@ -69,6 +69,9 @@ custom_tests = [
     ("Geth-Lighthouse-Charon-Lodestar-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lodestar --network SEPOLIA --mev --charon --config 'Custom Setup'"),
 ]
 
+# Upgrade lane: deploy seeds RC-if-newer-than-LATEST else previous stable
+# (see latest_override.py / find_upgrade_seed). First ethpillar upgrade must
+# move to official LATEST; second must skip. No sane seed → soft-skip.
 upgrade_tests = [
     ("Upgrade-Reth-Lighthouse", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-updates"),
     ("Upgrade-Besu-Teku", f"{RUN_TEST} deploy/deploy-node.py --ec Besu --cc Teku --network SEPOLIA --config 'Full Node Only' --test-updates"),

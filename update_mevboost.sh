@@ -24,17 +24,8 @@ _platform=$(get_platform)
 _arch=$(get_arch)
 
 function getCurrentVersion(){
-    INSTALLED=$(mev-boost --version 2>&1)  # capture stderr too, just in case
-    if [[ -n $INSTALLED ]] ; then
-        # shellcheck disable=SC2001
-		# Extract major.minor or major.minor.patch, optional leading 'v', ignore suffix/commit info
-		# Patch part is optional to handle versions like 1.11 (no patch)
-		VERSION=$(echo "$INSTALLED" | sed 's/.*v\?\([0-9]\+\.[0-9]\+\(\.[0-9]\+\)\?\).*/\1/')
-        # Fallback if sed fails or no match
-        if [[ -z $VERSION || $VERSION == "$INSTALLED" ]]; then
-            VERSION="unknown"
-        fi
-    else
+    getMevboostCurrentVersion || true
+    if [[ -z "$VERSION" ]]; then
         VERSION="Client not installed."
     fi
 }
@@ -65,11 +56,7 @@ function promptViewLogs(){
 }
 
 function getLatestVersion(){
-	RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "mevboost" "LATEST")
-	TAG=$(echo "$RELEASE_DATA" | jq -r .version | sed 's/^v//')
-	TAG_COMMIT=$(echo "$RELEASE_DATA" | jq -r '.commit // empty')
-	# Exit in case of null tag
-	[[ -z $TAG ]] || [[ $TAG == "null"  ]] && echo "ERROR: Couldn't find the latest version tag" && exit 1
+	fetch_latest_release "mevboost" --strip-v || { echo "ERROR: Couldn't find the latest version tag"; exit 1; }
 	CHANGES_URL="https://github.com/flashbots/mev-boost/releases"
 }
 

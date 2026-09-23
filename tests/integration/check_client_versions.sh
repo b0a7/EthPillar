@@ -4,6 +4,11 @@
 # "You are already on the latest version".
 # Integration tests snapshot LATEST before deploy (latest_snapshot.py) and
 # compare against that install-time snapshot so a mid-test release cannot fail verify.
+# Upgrade-case deploy may force a seed (RC or previous stable) via
+# latest_override.py; when that file is present, expect the forced seed tag
+# instead of LATEST (override is cleared before ethpillar upgrade, so
+# post-upgrade checks still use official LATEST). Forced-seed matching
+# tolerates a missing prerelease suffix on the binary (base semver ± commit).
 set -euo pipefail
 
 cd /ethpillar
@@ -19,6 +24,37 @@ installed_matches_latest_tag() {
   version_matches_latest "$1" "$2" "${INSTALLED_COMMIT:-}" "${3:-}"
 }
 
+# Forced-seed compare: base semver only (28.0.0 ↔ 28.0.0-rc.1). Commits optional.
+# General — not Ethrex-only. Integration 35809007081 failed exact tag match.
+installed_matches_forced_seed() {
+  local installed="$1"
+  local expected="$2"
+  local tag_commit="${3:-}"
+  PYTHONPATH="/ethpillar/tests/integration:/ethpillar" python3 -c '
+from find_client_rc import matches_forced_seed
+import sys
+ok = matches_forced_seed(sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4])
+sys.exit(0 if ok else 1)
+' "$installed" "$expected" "${INSTALLED_COMMIT:-}" "$tag_commit"
+}
+
+OVERRIDE_DEFAULT="/tmp/ethpillar-integration-latest-override.json"
+
+get_forced_rc_tag() {
+  local client="$1"
+  local override="${ETHPILLAR_INTEGRATION_LATEST_OVERRIDE:-$OVERRIDE_DEFAULT}"
+  local key="${client,,}"
+  local tag
+  if [[ -n "$override" && -f "$override" ]]; then
+    tag=$(jq -r --arg k "$key" '.clients[$k] // empty' "$override")
+    if [[ -n "$tag" && "$tag" != "null" ]]; then
+      echo "$tag"
+      return 0
+    fi
+  fi
+  return 1
+}
+
 get_latest_release_tag() {
   local client="$1"
   local data tag
@@ -32,6 +68,7 @@ get_latest_release_tag() {
 }
 
 # Integration tests snapshot LATEST before deploy so a release mid-test cannot fail verify.
+# Upgrade-case seed override (when present) wins so post-deploy does not require official LATEST.
 get_expected_release_tag() {
   local client="$1"
   local snapshot="${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}"
@@ -39,6 +76,11 @@ get_expected_release_tag() {
   local tag
 
   TAG_COMMIT=""
+  if tag=$(get_forced_rc_tag "$client"); then
+    TAG_COMMIT=$(PYTHONPATH="/ethpillar" python3 -m deploy.common release_info "$client" "$tag" 2>/dev/null | jq -r '.commit // empty' || true)
+    echo "$tag"
+    return 0
+  fi
   if [[ -n "$snapshot" && -f "$snapshot" ]]; then
     tag=$(jq -r --arg k "$key" '.[$k] // empty' "$snapshot")
     if [[ -n "$tag" && "$tag" != "null" ]]; then
@@ -58,13 +100,19 @@ assert_matches_latest() {
   local expected
   local expected_label="LATEST"
 
-  if [[ -n "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}" && -f "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT}" ]]; then
+  if get_forced_rc_tag "$release_client" >/dev/null; then
+    expected_label="forced seed"
+  elif [[ -n "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}" && -f "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT}" ]]; then
     expected_label="install-time LATEST"
   fi
 
   if ! expected=$(get_expected_release_tag "$release_client"); then
     echo "❌ ${label}: could not resolve ${expected_label} release tag"
     fail=1
+    return 0
+  fi
+  if [[ "$expected_label" == "forced seed" ]] && installed_matches_forced_seed "$installed" "$expected" "${TAG_COMMIT:-}"; then
+    echo "✅ ${label} matches forced seed (${installed#v} vs ${expected#v}) — deploy used seed; upgrade should move to official LATEST"
     return 0
   fi
   if installed_matches_latest_tag "$installed" "$expected" "${TAG_COMMIT:-}"; then
@@ -160,12 +208,29 @@ check_charon_version() {
   assert_matches_latest "Charon" "charon" "$version"
 }
 
-echo "🔢 Verifying installed client versions (parse + LATEST match)..."
-check_el_version
-check_cl_version
-check_vc_version
-check_mevboost_version
-check_charon_version
+# Optional role filter so Upgrade two-phase can assert only the client that
+# just moved to LATEST (a still-seeded sibling must not fail the check).
+# Comma-separated: el,cl,vc,mevboost,charon. Empty / unset = all present roles.
+should_check_role() {
+  local role="$1"
+  local filter="${ETHPILLAR_CHECK_ROLES:-}"
+  local item
+  if [[ -z "$filter" ]]; then
+    return 0
+  fi
+  IFS=',' read -ra _roles <<< "$filter"
+  for item in "${_roles[@]}"; do
+    [[ "${item,,}" == "$role" ]] && return 0
+  done
+  return 1
+}
+
+echo "🔢 Verifying installed client versions (parse + LATEST match)${ETHPILLAR_CHECK_ROLES:+ [roles: ${ETHPILLAR_CHECK_ROLES}]}..."
+should_check_role el && check_el_version
+should_check_role cl && check_cl_version
+should_check_role vc && check_vc_version
+should_check_role mevboost && check_mevboost_version
+should_check_role charon && check_charon_version
 
 if [[ "$fail" -ne 0 ]]; then
   exit 1
