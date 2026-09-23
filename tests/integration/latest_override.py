@@ -185,6 +185,10 @@ def prepare_rc_overrides(
     """
     from find_client_rc import CLIENT_REPOS, find_rc
 
+    # Discover against official LATEST; a leftover override would remap LATEST→RC
+    # and make find_rc skip the candidate as "same as latest".
+    clear_override(path)
+
     finder = find_rc_fn or find_rc
     rows: list[dict[str, Any]] = []
     client_map: dict[str, str] = {}
