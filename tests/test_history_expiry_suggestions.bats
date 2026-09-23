@@ -47,7 +47,7 @@ setup() {
   [ "$output" = "missing" ]
   run history_expiry_suggested_flags "Geth"
   [[ "$output" == *"--history.chain=postmerge"* ]]
-  run history_expiry_rationale "Geth"
+  run history_expiry_apply_extra "Geth"
   [[ "$output" == *"prune-history"* ]]
 }
 
@@ -74,7 +74,11 @@ setup() {
   run history_expiry_status "Nethermind" "$execstart"
   [ "$output" = "missing" ]
   run history_expiry_suggested_flags "Nethermind"
-  [[ "$output" == *"--History.Pruning=Rolling"* ]]
+  [[ "$output" == *"--History.Pruning=Rolling --History.RetentionEpochs=33024"* ]]
+  run history_expiry_notes "Nethermind" "missing"
+  [[ "$output" == *"Flat"* ]]
+  [[ "$output" == *"Patricia"* ]]
+  [[ "$output" != *"82125"* ]]
 }
 
 @test "Nethermind History.Pruning=Rolling is recommended" {
@@ -167,10 +171,13 @@ EOF
   run history_expiry_evaluate_unit_text "$unit" ""
   [ "$status" -eq 0 ]
   [[ "$output" == $'missing\n'* ]]
-  [[ "$output" == *"Detected EL: Geth"* ]]
+  [[ "$output" == *"Detected: Geth"* ]]
+  [[ "$output" == *"missing recommended expiry flags"* ]]
   [[ "$output" == *"--history.chain=postmerge"* ]]
-  [[ "$output" == *"Suggestions only"* ]]
-  [[ "$output" == *"systemd units are not modified"* ]]
+  [[ "$output" == *"Recommended flags:"* ]]
+  [[ "$output" == *"How to apply:"* ]]
+  [[ "$output" == *"Execution Client → Edit configuration"* ]]
+  [[ "$output" != *"ExecStart (collapsed)"* ]]
 }
 
 @test "evaluate_unit_text labels Caplin archive as INFO opt-in" {
@@ -186,7 +193,7 @@ EOF
   run history_expiry_evaluate_unit_text "$unit" ""
   [ "$status" -eq 0 ]
   [[ "$output" == $'caplin_archive\n'* ]]
-  [[ "$output" == *"Not a failure"* ]]
+  [[ "$output" == *"not a failure"* ]]
   [[ "$output" == *"--prune.mode=minimal"* ]]
 }
 
@@ -200,8 +207,10 @@ EOF
   [[ "$output" == *"Erigon"* ]]
   [[ "$output" == *"Ethrex"* ]]
   [[ "$output" == *"--history.chain=postmerge"* ]]
-  [[ "$output" == *"--History.Pruning=Rolling"* ]]
-  [[ "$output" == *"SUGGESTIONS only"* ]]
+  [[ "$output" == *"--History.Pruning=Rolling --History.RetentionEpochs=33024"* ]]
+  [[ "$output" == *"Suggestions only"* ]]
+  [[ "$output" == *"Recommended flags:"* ]]
+  [[ "$output" != *"82125"* ]]
 }
 
 @test "CLI --unit uses a mock execution.service path" {
@@ -215,7 +224,71 @@ ExecStart=/usr/local/bin/reth node --full --chain mainnet
 EOF
   run bash ./helpers/history_expiry_suggestions.sh --unit "$unit" --no-pause
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Detected EL: Reth"* ]]
-  [[ "$output" == *"already match"* ]]
+  [[ "$output" == *"Detected: Reth"* ]]
+  [[ "$output" == *"OK — recommended flags present"* ]]
+  [[ "$output" != *"ExecStart (collapsed)"* ]]
   rm -f "$unit"
+}
+
+@test "CLI --verbose includes collapsed ExecStart" {
+  local unit
+  unit=$(mktemp)
+  cat > "$unit" <<'EOF'
+[Unit]
+Description=Nethermind Execution Layer Client service for MAINNET
+[Service]
+ExecStart=/usr/local/bin/nethermind/nethermind --Pruning.Mode=Hybrid
+EOF
+  run bash ./helpers/history_expiry_suggestions.sh --unit "$unit" --verbose --no-pause
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ExecStart (collapsed)"* ]]
+  [[ "$output" == *"--Pruning.Mode=Hybrid"* ]]
+  rm -f "$unit"
+}
+
+@test "evaluate_unit_text Nethermind missing flags is scan-friendly" {
+  local unit
+  unit=$(cat <<'EOF'
+[Unit]
+Description=Nethermind Execution Layer Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/nethermind/nethermind \
+    --Pruning.Mode=Hybrid \
+    --Pruning.FullPruningTrigger=VolumeFreeSpace \
+    --Pruning.FullPruningThresholdMb=300000
+EOF
+)
+  run history_expiry_evaluate_unit_text "$unit" ""
+  [ "$status" -eq 0 ]
+  [[ "$output" == $'missing\n'* ]]
+  [[ "$output" == *"Detected: Nethermind — missing recommended expiry flags"* ]]
+  [[ "$output" == *"Recommended flags:"* ]]
+  [[ "$output" == *"--History.Pruning=Rolling --History.RetentionEpochs=33024"* ]]
+  [[ "$output" == *"How to apply:"* ]]
+  [[ "$output" == *"Execution Client → Edit configuration"* ]]
+  [[ "$output" == *"Notes:"* ]]
+  [[ "$output" == *"Flat"* ]]
+  [[ "$output" != *"ExecStart (collapsed)"* ]]
+  [[ "$output" != *"82125"* ]]
+}
+
+@test "history expiry is under Execution Client, not Toolbox" {
+  awk '
+    /^submenuExecution\(\)/ { in_el=1; in_tools=0 }
+    /^submenuTools\(\)/ { in_tools=1; in_el=0 }
+    /^}/ { if (in_el || in_tools) { in_el=0; in_tools=0 } }
+    in_el && /history_expiry_suggestions/ { el=1 }
+    in_tools && /history_expiry_suggestions/ { tools=1 }
+    END { exit (el && !tools) ? 0 : 1 }
+  ' ethpillar.sh
+}
+
+@test "docs and node-checker do not point History expiry at Toolbox" {
+  run grep -n -i 'toolbox' docs/history-expiry-suggestions.md
+  [ "$status" -ne 0 ]
+  run grep -n 'Toolbox → History expiry' plugins/node-checker/run.sh
+  [ "$status" -ne 0 ]
+  grep -q 'Execution Client → History expiry' plugins/node-checker/run.sh
+  grep -q 'Execution Client → History expiry' docs/history-expiry-suggestions.md
 }

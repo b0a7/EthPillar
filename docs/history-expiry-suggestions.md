@@ -2,29 +2,32 @@
 
 Print-only helper for home stakers who are nervous about disk growth on ~2TB
 NVMe. EthPillar does **not** rewrite systemd units. Use
-`helpers/history_expiry_suggestions.sh` (Toolbox) or Node Checker.
+`helpers/history_expiry_suggestions.sh` (Execution Client → History expiry)
+or Node Checker.
 
 Suggestions target **staking / full nodes**, not intentional archive, Caplin
 archive, or operators who need local `eth_getLogs` / receipts (Rocket Pool,
-SSV, StakeWise, indexers). Rolling windows shorter than ~1 year can break
+SSV, StakeWise, indexers). A short rolling window (~5 months) can break
 those protocols unless they use an external RPC.
 
-Research snapshot: **2026** upstream docs + [eth-docker](https://github.com/ethstaker/eth-docker)
-`EL_NODE_TYPE` entrypoints (Yorick / eth-docker prune-history discussion).
-Commands change; prefer each client’s current docs before applying.
+Research snapshot: **2026-09-23** upstream docs + [eth-docker](https://github.com/ethstaker/eth-docker)
+`EL_NODE_TYPE` entrypoints (including merged [#2763](https://github.com/ethstaker/eth-docker/pull/2763)
+rolling 33024 epochs and [#2819](https://github.com/ethstaker/eth-docker/pull/2819)
+Nethermind 2.0 FlatDB default). Commands change; prefer each client’s current
+docs before applying.
 
 ## EthPillar defaults today (main)
 
 | Client | EthPillar default | History expiry? |
 |--------|-------------------|-----------------|
 | Geth | `--state.scheme=path`, no `--history.chain` (Geth default `all`) | No block-history expiry |
-| Nethermind | Hybrid pruning + `FullPruningTrigger=VolumeFreeSpace` / `ThresholdMb=300000` | State prune only |
+| Nethermind | Hybrid pruning + `FullPruningTrigger=VolumeFreeSpace` / `ThresholdMb=300000` | State prune only (Patricia). No `History.Pruning` |
 | Besu | `--sync-mode=SNAP` + `BONSAI` | SNAP skips pre-merge bodies on Mainnet checkpoint |
 | Reth | `--full` | Full-node prune profile (incl. pre-merge bodies) |
 | Erigon / Caplin | `--prune.mode=minimal` | ~100k-block window |
 | Ethrex | `--syncmode snap` | No history-expiry CLI yet |
 
-## Per-client options (2026)
+## Per-client options (2026-09)
 
 ### Geth
 - **Full history:** default `--history.chain=all`.
@@ -33,21 +36,28 @@ Commands change; prefer each client’s current docs before applying.
 - **Pre-Prague:** `--history.chain=postprague` (newer binaries; eth-docker
   `pre-prague-expiry`).
 - **Rolling:** `--history.chain=recent --history.blocks=N` (N > 100000) landed
-  as work-in-progress in 2026; still treat as experimental.
+  as work-in-progress in 2026; still treat as settling.
 - **Archive:** `--gcmode=archive` (hash scheme) or `--history.state=0` (path).
 - **2TB staking suggestion:** `--history.chain=postmerge` (drops ~300–500 GB).
 
-### Nethermind
+### Nethermind (2.0 is LATEST, released ~2026-09-22)
 - **State prune:** `Pruning.Mode=Hybrid` with `VolumeFreeSpace` /
   `StateDbSize` / `Manual`. EthPillar already sets Hybrid + 300 GB free-space
-  trigger. This is **not** block-history expiry.
+  trigger. This is **not** block-history expiry. Those full-prune knobs apply
+  to **Patricia** DBs; on Flat they are accepted but do not prune.
 - **History prune:** `History.Pruning=Disabled` (default),
   `UseAncientBarriers` (pre-merge on Mainnet/Sepolia), or `Rolling` (moving
-  window, min `History.RetentionEpochs=82125` ~1 year on mainnet).
+  window). eth-docker rolling expiry uses
+  `--History.Pruning=Rolling --History.RetentionEpochs=33024` (~5 months).
+- **2.0 Flat vs Patricia:** FlatDB is the default for a **fresh** (or
+  resynced) database. An existing **Patricia** DB keeps Patricia on upgrade.
+  Patricia → Flat needs a resync / migration; EthPillar does not rewrite
+  units. Patricia drop is TBD upstream.
 - **Full history:** `--Sync.AncientBodiesBarrier=0 --Sync.AncientReceiptsBarrier=0`.
-- **2TB staking suggestion:** keep Hybrid, add `--History.Pruning=Rolling` (or
-  `UseAncientBarriers` if you need a safer pre-merge-only cut). Rolling was
-  still experimental in eth-docker notes (Jan 2026).
+- **2TB staking suggestion:** keep Hybrid, add
+  `--History.Pruning=Rolling --History.RetentionEpochs=33024`.
+  Use `UseAncientBarriers` instead if Rocket Pool / SSV / StakeWise need
+  local logs.
 
 ### Besu
 - **SNAP + Bonsai:** default full-node path; Mainnet checkpoint SNAP does not
@@ -96,12 +106,12 @@ CL is usually not the 2TB growth driver. Staking defaults:
 
 ## How to use
 
-- Toolbox → **History expiry suggestions** (detected EL, or `--all`).
+- Execution Client → **History expiry** (detected EL, or `--all`).
 - Security & Node Checks → **Node Checker** (WARN if flags missing or disk
   ≥90%; INFO for archive/Caplin; never FAIL).
 - Apply later via Execution Client → Edit configuration.
 
-## Sources (2026)
+## Sources (2026-09-23)
 
 - [Geth command-line options](https://geth.ethereum.org/docs/fundamentals/command-line-options)
 - [Nethermind history pruning](https://docs.nethermind.io/fundamentals/history-pruning/)
@@ -111,3 +121,7 @@ CL is usually not the 2TB growth driver. Staking defaults:
 - [Partial history expiry (EF, 2025-07-08)](https://blog.ethereum.org/2025/07/08/partial-history-exp)
 - eth-docker `EL_NODE_TYPE` (`pre-merge-expiry`, `rolling-expiry`, …) and
   client `docker-entrypoint.sh` files
+- eth-docker [#2763](https://github.com/ethstaker/eth-docker/pull/2763)
+  (`--History.Pruning=Rolling --History.RetentionEpochs=33024`)
+- eth-docker [#2819](https://github.com/ethstaker/eth-docker/pull/2819)
+  (Nethermind 2.0 FlatDB default; Patricia existing DBs keep their layout)

@@ -213,6 +213,19 @@ history_expiry_status() {
   echo "missing"
 }
 
+history_expiry_status_plain() {
+  # Operator-facing status words (not the machine token).
+  case "${1:-}" in
+    recommended) echo "OK — recommended flags present" ;;
+    missing) echo "missing recommended expiry flags" ;;
+    archive) echo "archive / full-history (suggestions are opt-in)" ;;
+    caplin_archive) echo "Caplin archive flags present (not a failure)" ;;
+    unsupported) echo "no history-expiry CLI yet" ;;
+    no_el) echo "no execution client detected" ;;
+    *) echo "could not classify" ;;
+  esac
+}
+
 history_expiry_suggested_flags() {
   local client="${1:-}"
   case "$client" in
@@ -220,7 +233,7 @@ history_expiry_suggested_flags() {
       echo "--history.chain=postmerge"
       ;;
     Nethermind)
-      echo "--History.Pruning=Rolling"
+      echo "--History.Pruning=Rolling --History.RetentionEpochs=33024"
       ;;
     Besu)
       echo "--sync-mode=SNAP --data-storage-format=BONSAI"
@@ -232,7 +245,7 @@ history_expiry_suggested_flags() {
       echo "--prune.mode=minimal"
       ;;
     Ethrex)
-      echo "(none — Ethrex has no history-expiry CLI yet; keep --syncmode snap)"
+      echo "(none — keep --syncmode snap)"
       ;;
     *)
       echo "(unknown client)"
@@ -240,27 +253,33 @@ history_expiry_suggested_flags() {
   esac
 }
 
-history_expiry_optional_rolling_flags() {
+history_expiry_suggested_why() {
+  local client="${1:-}"
+  case "$client" in
+    Geth) echo "Drops pre-merge PoW history (~300-500 GB) on a ~2TB staking disk." ;;
+    Nethermind) echo "Rolling history window (~5 months / 33024 epochs). Hybrid is state prune only." ;;
+    Besu) echo "SNAP + BONSAI already skips pre-merge bodies on Mainnet checkpoint sync." ;;
+    Reth) echo "Staking full-node profile: pre-merge body prune, ~10k-block state/receipt window." ;;
+    Erigon|Erigon-Caplin) echo "Leanest built-in mode (~100k blocks / ~14 days). Usual 2TB staking choice." ;;
+    Ethrex) echo "Ethrex has no history-expiry CLI yet." ;;
+    *) echo "No suggestion table for this client." ;;
+  esac
+}
+
+history_expiry_optional_flags() {
+  # Flags only. Empty when there is no tighter-than-recommended option.
   local client="${1:-}"
   case "$client" in
     Geth)
-      echo "--history.chain=postprague   # if binary supports it; still not rolling"
-      echo "# rolling (may still be experimental): --history.chain=recent --history.blocks=N  (N > 100000)"
-      ;;
-    Nethermind)
-      echo "--History.Pruning=UseAncientBarriers   # pre-merge expiry; safer than rolling"
-      echo "# rolling window is ~1 year (min --History.RetentionEpochs=82125 on mainnet)"
+      echo "--history.chain=postprague"
+      echo "--history.chain=recent --history.blocks=<N>"
       ;;
     Besu)
-      echo "--Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768   # ~5 months; experimental"
+      echo "--Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768"
       ;;
     Reth)
-      echo "--prune.bodies.distance 1056768 --prune.receipts.distance 1056768   # ~5 months rolling"
-      echo "--minimal   # aggressive; not for protocols that need local receipts/logs"
-      ;;
-    Erigon|Erigon-Caplin)
-      echo "--prune.mode=full --persist.receipts=false --prune.distance=1056768 --prune.distance.blocks=1056768   # ~5 months"
-      echo "# --prune.mode=minimal already keeps ~100k blocks (~14 days); most aggressive built-in"
+      echo "--prune.bodies.distance 1056768 --prune.receipts.distance 1056768"
+      echo "--minimal"
       ;;
     *)
       echo ""
@@ -268,68 +287,61 @@ history_expiry_optional_rolling_flags() {
   esac
 }
 
-history_expiry_rationale() {
+history_expiry_optional_why() {
   local client="${1:-}"
   case "$client" in
+    Geth) echo "postprague on newer binaries; recent is rolling (N > 100000) and still settling." ;;
+    Besu) echo "~5 months rolling. Experimental; skip if you need local receipts/logs." ;;
+    Reth) echo "~5 months rolling, or aggressive --minimal. Both drop receipts some protocols need." ;;
+    *) echo "" ;;
+  esac
+}
+
+history_expiry_apply_extra() {
+  # Extra apply line only when an offline prune/resync step is required.
+  local client="${1:-}"
+  case "$client" in
+    Geth) echo "Offline first: geth prune-history --datadir <datadir> --history.chain postmerge" ;;
+    Besu) echo "Existing full-history DB: besu --data-path=<path> storage prune-pre-merge-blocks" ;;
+    *) echo "" ;;
+  esac
+}
+
+history_expiry_notes() {
+  # One bullet per line, no leading dash.
+  local client="${1:-}"
+  local status="${2:-}"
+  case "$client" in
     Geth)
-      cat <<'EOF'
-Geth defaults to --history.chain=all (full bodies/receipts). For a ~2TB staking
-full node, --history.chain=postmerge drops pre-merge PoW history (~300-500 GB).
-Stop Geth first, then run: geth prune-history --datadir <datadir> --history.chain postmerge
-Restart with the same --history.chain flag. Path-based state (--state.scheme=path)
-is separate from block-history expiry. --gcmode=archive / --history.state=0 is
-intentional archive — skip these suggestions.
-EOF
+      echo "Rocket Pool / SSV / StakeWise: short windows can break local eth_getLogs; use an external RPC."
+      echo "Pruning is destructive."
+      echo "--state.scheme=path is state layout, not block-history expiry."
       ;;
     Nethermind)
-      cat <<'EOF'
-EthPillar already sets Hybrid pruning + FullPruningTrigger=VolumeFreeSpace
-(ThresholdMb=300000). That prunes *state*, not block history. For ~2TB staking,
-add --History.Pruning=Rolling (~1 year, min 82125 epochs on mainnet) or
---History.Pruning=UseAncientBarriers for pre-merge expiry. Rolling was still
-marked experimental in Nethermind/eth-docker notes (early 2026). Protocols
-that scrape local eth_getLogs (Rocket Pool / SSV / StakeWise) should keep
-pre-merge expiry rather than a short rolling window, or use an external RPC.
-EOF
+      echo "Rocket Pool / SSV / StakeWise: a ~5 month window can break local eth_getLogs; use an external RPC or --History.Pruning=UseAncientBarriers."
+      echo "Pruning is destructive."
+      echo "Nethermind 2.0: fresh DBs use Flat (default); existing Patricia DBs keep Patricia. Hybrid full-prune knobs apply to Patricia only. Patricia → Flat needs a resync; units are not rewritten."
       ;;
     Besu)
-      cat <<'EOF'
-EthPillar SNAP + BONSAI already skips downloading pre-merge bodies/receipts on
-Mainnet (checkpoint genesis). That is the staking-oriented ~2TB starting point
-(~1.14 TB observed for Besu 26.5.0 snap). Existing full-history DBs can prune
-offline: besu --data-path=<path> storage prune-pre-merge-blocks. Online
---history-expiry-prune is deprecated in Besu 26.1.0. Optional rolling
-(--Xchain-pruning-*) is experimental. Forest/FULL archive is intentional.
-EOF
+      echo "Rocket Pool / SSV / StakeWise: rolling prune can break local eth_getLogs; use an external RPC."
+      echo "Pruning is destructive. Online --history-expiry-prune is deprecated in Besu 26.1.0."
       ;;
     Reth)
-      cat <<'EOF'
-EthPillar --full is the staking full-node profile: ~10,064-block state window,
-pre-merge body pruning, receipts retained for that window. Reth with no prune
-flags is archive. Optional rolling (~5 months, 1,056,768 blocks) or --minimal
-saves more disk but drops receipts/logs that some staking protocols need.
-Pruning is destructive.
-EOF
+      echo "Rocket Pool / SSV / StakeWise: rolling/--minimal drop receipts; keep --full or use an external RPC."
+      echo "Pruning is destructive. Reth with no prune profile is archive."
       ;;
     Erigon|Erigon-Caplin)
-      cat <<'EOF'
-EthPillar --prune.mode=minimal already keeps ~100k blocks (~14 days) — the
-leanest built-in mode and the usual 2TB staking choice. --prune.mode=full now
-follows a ~262k-block window (EIP-8252) unless you pin --prune.distance.blocks.
-Caplin --caplin.states-archive / --caplin.blocks-archive / blob-archive flags
-mean the consensus side may intentionally keep more history; do not treat
-those as a failure. --prune.mode=archive is intentional EL archive.
-EOF
+      echo "Rocket Pool / SSV / StakeWise: minimal already keeps ~14 days of history; use an external RPC if you need longer local logs."
+      echo "Pruning is destructive."
+      if [[ "$status" == "caplin_archive" ]]; then
+        echo "Caplin *-archive flags keep extra consensus history on purpose. Not a failure."
+      fi
       ;;
     Ethrex)
-      cat <<'EOF'
-Ethrex has no history-expiry / prune flags comparable to other ELs (eth-docker
-prune-history is a no-op). EthPillar's --syncmode snap is the staking default.
-Monitor disk; there is nothing to add for rolling expiry yet.
-EOF
+      echo "Nothing to add for rolling expiry yet. Monitor disk."
       ;;
     *)
-      echo "No suggestion table for this client."
+      echo "Suggestions only — systemd units are not modified."
       ;;
   esac
 }
@@ -338,74 +350,102 @@ history_expiry_cl_note() {
   local cl="${1:-}"
   case "$cl" in
     Lighthouse)
-      echo "CL: Lighthouse already prunes blobs/payloads by default. Avoid --prune-blobs=false and --supernode on ~2TB staking disks."
+      echo "Lighthouse already prunes blobs/payloads by default. Avoid --prune-blobs=false and --supernode on ~2TB staking disks."
       ;;
     Teku)
-      echo "CL: Teku --data-storage-mode=minimal (default) is the staking setting; archive reconstructs historic states."
+      echo "Teku --data-storage-mode=minimal (default) is the staking setting; archive reconstructs historic states."
       ;;
     Prysm)
-      echo "CL: Prysm --beacon-db-pruning is opt-in for operators who do not need historic beacon data."
+      echo "Prysm --beacon-db-pruning is opt-in for operators who do not need historic beacon data."
       ;;
     Nimbus)
-      echo "CL: Nimbus staking nodes should keep the pruned/default storage profile, not archive."
+      echo "Nimbus staking nodes should keep the pruned/default storage profile, not archive."
       ;;
     Lodestar)
-      echo "CL: Lodestar staking nodes should keep the pruned/default profile; archive is for historic queries."
+      echo "Lodestar staking nodes should keep the pruned/default profile; archive is for historic queries."
       ;;
     Grandine)
-      echo "CL: Grandine aggressive-pruned is optional; default pruned is enough for staking."
+      echo "Grandine aggressive-pruned is optional; default pruned is enough for staking."
       ;;
     *)
-      echo "CL: Beacon archive / supernode / no-blob-prune flags are optional extras, not required to validate."
+      echo "Beacon archive / supernode / no-blob-prune flags are optional extras, not required to validate."
       ;;
   esac
 }
 
-history_expiry_banner() {
-  cat <<'EOF'
-################################################################################
-History expiry suggestions for ~2TB home staking / full nodes
-################################################################################
-These are SUGGESTIONS only — they are not applied automatically.
-Not for intentional archive, Caplin archive, or operators who need full
-eth_getLogs / receipt history locally (Rocket Pool, SSV, StakeWise, indexers).
-To apply later: Execution Client → Edit configuration. Review upstream docs
-first. Pruning is destructive and may require an offline prune or a resync.
-EOF
+history_expiry_print_title() {
+  echo "History expiry suggestions (~2TB staking)"
+  echo "Suggestions only — not applied."
 }
 
-history_expiry_print_disclaimer() {
-  cat <<'EOF'
+history_expiry_print_recommended_block() {
+  local client="${1:-}"
+  echo "Recommended flags:"
+  history_expiry_suggested_flags "$client"
+  echo "Why: $(history_expiry_suggested_why "$client")"
+}
 
-Disclaimer: suggestions target staking/full nodes on ~2TB NVMe. Archive,
-Caplin archive, and full-history RPC nodes should ignore them. Rolling windows
-shorter than ~1 year can break local receipt/log queries.
-Suggestions only — systemd units are not modified.
-EOF
+history_expiry_print_apply() {
+  local client="${1:-}"
+  local extra
+  echo "How to apply:"
+  echo "Execution Client → Edit configuration"
+  extra=$(history_expiry_apply_extra "$client")
+  if [[ -n "$extra" ]]; then
+    echo "$extra"
+  fi
+}
+
+history_expiry_print_optional() {
+  local client="${1:-}"
+  local flags why
+  flags=$(history_expiry_optional_flags "$client")
+  [[ -n "$flags" ]] || return 0
+  echo "Optional further savings:"
+  printf '%s\n' "$flags"
+  why=$(history_expiry_optional_why "$client")
+  if [[ -n "$why" ]]; then
+    echo "$why"
+  fi
+}
+
+history_expiry_print_notes() {
+  local client="${1:-}"
+  local status="${2:-}"
+  local notes
+  notes=$(history_expiry_notes "$client" "$status")
+  [[ -n "$notes" ]] || return 0
+  echo "Notes:"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && echo "- $line"
+  done <<< "$notes"
 }
 
 history_expiry_print_client_block() {
   local client="${1:-}"
   echo
   echo "=== ${client} ==="
-  echo "Suggested staking flags: $(history_expiry_suggested_flags "$client")"
-  history_expiry_rationale "$client"
-  echo "Optional extra savings:"
-  history_expiry_optional_rolling_flags "$client"
+  history_expiry_print_recommended_block "$client"
+  echo
+  history_expiry_print_optional "$client"
+  echo
+  history_expiry_print_notes "$client"
 }
 
 history_expiry_print_all() {
-  history_expiry_banner
+  history_expiry_print_title
+  echo
+  echo "How to apply: Execution Client → Edit configuration"
+  echo "Archive / Caplin archive / full-history RPC nodes should ignore these."
   local c
   for c in Geth Nethermind Besu Reth Erigon Ethrex; do
     history_expiry_print_client_block "$c"
   done
   echo
-  echo "=== Consensus layer (if relevant) ==="
-  echo "Lighthouse: default blob/payload prune is enough; skip --supernode / --prune-blobs=false."
-  echo "Teku: --data-storage-mode=minimal (default)."
-  echo "Prysm: consider --beacon-db-pruning if you do not need historic CL data."
-  history_expiry_print_disclaimer
+  echo "=== Consensus layer ==="
+  echo "- Lighthouse: default blob/payload prune is enough; skip --supernode / --prune-blobs=false."
+  echo "- Teku: --data-storage-mode=minimal (default)."
+  echo "- Prysm: --beacon-db-pruning if you do not need historic CL data."
 }
 
 history_expiry_read_unit() {
@@ -424,58 +464,68 @@ history_expiry_read_unit() {
 }
 
 history_expiry_evaluate_unit_text() {
+  # First line is the machine status token (node-checker / bats).
+  # Remaining lines are the operator-facing report. ExecStart is omitted
+  # unless HISTORY_EXPIRY_VERBOSE=1.
   local unit_text="${1:-}"
   local cl_text="${2:-}"
-  local description execstart client cl status
+  local verbose="${3:-${HISTORY_EXPIRY_VERBOSE:-0}}"
+  local description execstart client cl status extra
   description=$(history_expiry_extract_description "$unit_text")
   execstart=$(history_expiry_extract_execstart "$unit_text")
   client=$(history_expiry_detect_client "$description" "$execstart")
   cl=$(history_expiry_detect_client "$(history_expiry_extract_description "$cl_text")" "")
   if [[ -z "$client" ]]; then
     echo "no_el"
-    echo "No execution client detected in the unit file."
+    echo "Detected: (none) — no execution client detected"
     return 0
   fi
   status=$(history_expiry_status "$client" "$execstart")
   echo "$status"
-  echo "Detected EL: ${client}"
-  if [[ -n "$execstart" ]]; then
+  echo "Detected: ${client} — $(history_expiry_status_plain "$status")"
+  if [[ "$verbose" == "1" && -n "$execstart" ]]; then
     echo "ExecStart (collapsed): ${execstart}"
   fi
+  echo
+  history_expiry_print_recommended_block "$client"
+  echo
+  history_expiry_print_apply "$client"
   case "$status" in
-    recommended)
-      echo "Installed flags already match the staking-oriented ~2TB suggestion: $(history_expiry_suggested_flags "$client")"
-      echo "Optional extra savings (only if disk is still tight and you do not need local receipts):"
-      history_expiry_optional_rolling_flags "$client"
-      ;;
-    missing)
-      echo "Installed EL is missing recommended history-expiry / prune flags for a ~2TB staking full node."
-      echo "Suggested flags: $(history_expiry_suggested_flags "$client")"
-      history_expiry_rationale "$client"
-      echo "Optional extra savings:"
-      history_expiry_optional_rolling_flags "$client"
-      ;;
-    archive)
-      echo "INFO: This looks like an intentional archive / full-history EL. Suggestions are opt-in and skipped as a failure."
-      echo "If you actually want a staking full node on ~2TB, suggested flags: $(history_expiry_suggested_flags "$client")"
-      ;;
-    caplin_archive)
-      echo "INFO: Caplin archive flags detected; consensus history may be kept on purpose. Not a failure."
-      echo "EL prune suggestion remains: $(history_expiry_suggested_flags "$client")"
-      ;;
-    unsupported)
-      echo "INFO: ${client} has no history-expiry CLI yet. $(history_expiry_suggested_flags "$client")"
-      history_expiry_rationale "$client"
+    archive|caplin_archive|unsupported)
       ;;
     *)
-      echo "Could not classify this execution client."
+      extra=$(history_expiry_optional_flags "$client")
+      if [[ -n "$extra" ]]; then
+        echo
+        history_expiry_print_optional "$client"
+      fi
       ;;
   esac
+  echo
+  history_expiry_print_notes "$client" "$status"
   if [[ -n "$cl" ]]; then
     echo
-    history_expiry_cl_note "$cl"
+    echo "CL: $(history_expiry_cl_note "$cl")"
   fi
-  history_expiry_print_disclaimer
+}
+
+history_expiry_print_checker_detail() {
+  # Compact structured follow-up for node-checker (after the one-line summary).
+  local client="${1:-}"
+  local status="${2:-}"
+  echo "Recommended flags: $(history_expiry_suggested_flags "$client")"
+  echo "How to apply: Execution Client → Edit configuration"
+  case "$status" in
+    archive)
+      echo "Notes: archive / full-history — suggestions are opt-in, not a failure."
+      ;;
+    caplin_archive)
+      echo "Notes: Caplin archive flags present — not a failure."
+      ;;
+    missing)
+      echo "Why: $(history_expiry_suggested_why "$client")"
+      ;;
+  esac
 }
 
 history_expiry_checker_summary() {
@@ -483,7 +533,7 @@ history_expiry_checker_summary() {
   local status="${1:-}" client="${2:-}"
   case "$status" in
     recommended)
-      echo "${client} already has staking-oriented expiry/prune flags ($(history_expiry_suggested_flags "$client"))."
+      echo "${client} already has recommended expiry/prune flags ($(history_expiry_suggested_flags "$client"))."
       ;;
     missing)
       echo "${client} lacks recommended ~2TB staking expiry/prune flags. Suggested: $(history_expiry_suggested_flags "$client")"
@@ -517,25 +567,27 @@ history_expiry_checker_level() {
 }
 
 history_expiry_main() {
-  local print_all=0 checker=0 unit="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+  local print_all=0 checker=0 verbose=0 unit="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
   local cl_unit="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
   local pause=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --all) print_all=1; shift ;;
       --checker) checker=1; pause=0; shift ;;
+      --verbose) verbose=1; shift ;;
       --no-pause) pause=0; shift ;;
       --unit) unit="${2:-}"; shift 2 ;;
       --cl-unit) cl_unit="${2:-}"; shift 2 ;;
       -h|--help)
         cat <<'EOF'
-Usage: history_expiry_suggestions.sh [--all] [--checker] [--unit FILE] [--cl-unit FILE]
+Usage: history_expiry_suggestions.sh [--all] [--checker] [--verbose] [--unit FILE] [--cl-unit FILE]
 
 Print suggested rolling-history / prune flags for ~2TB staking full nodes.
 Does not modify systemd units.
 
   --all        Print the per-client suggestion table (ignore installed unit)
   --checker    Compact output for node-checker (no pause)
+  --verbose    Include collapsed ExecStart in interactive / unit output
   --unit FILE  Read this execution.service instead of /etc/systemd/system/execution.service
 EOF
         return 0
@@ -583,13 +635,13 @@ EOF
     echo "$status"
     echo "$client"
     history_expiry_checker_summary "$status" "$client"
-    history_expiry_evaluate_unit_text "$unit_text" "$cl_text" | tail -n +2
+    history_expiry_print_checker_detail "$client" "$status"
     return 0
   fi
 
-  history_expiry_banner
+  history_expiry_print_title
   echo
-  history_expiry_evaluate_unit_text "$unit_text" "$cl_text"
+  HISTORY_EXPIRY_VERBOSE="$verbose" history_expiry_evaluate_unit_text "$unit_text" "$cl_text" "$verbose" | tail -n +2
   echo
   echo "Full table: $0 --all"
   echo "Docs: docs/history-expiry-suggestions.md"

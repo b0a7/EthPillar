@@ -270,7 +270,7 @@ check_resources() {
     disk_usage=$(df / | awk '/\// {print $5}' | tr -d '%')
     if [ "$disk_usage" -gt $DISK_WARN ]; then
         print_check_result "WARN" "High disk usage: ${disk_usage}%"
-        print_check_result "INFO" "On ~2TB staking disks, review history expiry / prune flags (Toolbox → History expiry suggestions)."
+        print_check_result "INFO" "On ~2TB staking disks, review history expiry / prune flags (Execution Client → History expiry)."
         ((warning_checks++))
     else
         print_check_result "PASS" "Disk usage: ${disk_usage}%"
@@ -745,7 +745,7 @@ check_history_expiry() {
     esac
     # Never FAIL: archive / Caplin archive / missing flags stay WARN or INFO.
     if [[ "$status" == "missing" || "$status" == "archive" || "$status" == "caplin_archive" ]]; then
-        history_expiry_evaluate_unit_text "$unit_text" "$cl_text" | tail -n +2
+        history_expiry_print_checker_detail "$client" "$status"
     fi
 }
 
