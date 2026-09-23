@@ -270,7 +270,7 @@ check_resources() {
     disk_usage=$(df / | awk '/\// {print $5}' | tr -d '%')
     if [ "$disk_usage" -gt $DISK_WARN ]; then
         print_check_result "WARN" "High disk usage: ${disk_usage}%"
-        print_check_result "INFO" "On ~2TB staking disks, review history expiry / prune flags (Execution Client → History expiry)."
+        print_check_result "INFO" "On ~2TB staking disks, review history expiry / prune flags (Execution Client → Suggest pruning parameters)."
         ((warning_checks++))
     else
         print_check_result "PASS" "Disk usage: ${disk_usage}%"

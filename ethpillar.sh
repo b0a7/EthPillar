@@ -397,7 +397,7 @@ while true; do
       3 "Stop execution"
       4 "Restart execution"
       5 "Edit configuration"
-      11 "History expiry: suggested prune flags (~2TB staking)"
+      11 "Suggest pruning parameters"
       6 "Update to latest release"
       7 "Resync execution client"
       8 "Expose execution client RPC Port"
@@ -440,7 +440,7 @@ while true; do
           execution
         ;;
       11)
-        runScript helpers/history_expiry_suggestions.sh
+        suggestPruningParameters
         ;;
       6)
         runScript update_execution.sh

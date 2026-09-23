@@ -3053,11 +3053,66 @@ editSystemdUnitAndMaybeRestart() {
 }
 
 
+# Launch tmeld on a prepared workdir, then list-changed → confirm → .bak → apply
+# → daemon-reload / restart. Caller deletes *workdir*.
+# Left pane is the apply contract (same as compareSystemdDefaults).
+finishTmeldSystemdApply() {
+    local workdir="$1"
+    local py="${ETHPILLAR_PYTHON:-python3}"
+    local changed svc restart_list rc
+
+    set +e
+    PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare launch --workdir "$workdir"
+    set -e
+
+    changed=$(PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare list-changed --workdir "$workdir" | tr -d '\r')
+    if [[ -z "${changed// }" ]]; then
+        whiptail --title "Compare systemd configs" --msgbox \
+            "No changes were saved in the left pane.\nNothing to apply." 9 60
+        return 0
+    fi
+
+    if ! whiptail --title "Apply systemd changes" --yesno \
+        "Apply saved changes to:\n\n${changed}\n\nA .bak backup will be created for each unit (same as client switch)." 14 70; then
+        return 0
+    fi
+
+    set +e
+    PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare apply --workdir "$workdir"
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "Apply systemd changes" --msgbox \
+            "Apply failed. Original units should still be intact\n(or restorable from .bak)." 10 70
+        return 1
+    fi
+
+    restart_list=""
+    for svc in $changed; do
+        restart_list+=" • ${svc}\n"
+    done
+    if whiptail --title "Reload daemon and restart services" --yesno \
+        "Do you want to daemon-reload and restart:\n\n${restart_list}" 14 70; then
+        sudo systemctl daemon-reload
+        for svc in $changed; do
+            sudo systemctl restart "$svc" || true
+        done
+        ohai "Restarted: ${changed}"
+    else
+        # Unit files already updated on disk; reload so a later restart uses them.
+        sudo systemctl daemon-reload
+    fi
+
+    ohai "Done. Press ENTER to continue."
+    read
+}
+
+
 # Compare installed systemd units to what EthPillar would generate today.
 # Opens tmeld (Meld-in-terminal): left=installed (applied), right=default (reference).
 # Merge with Alt+Left (right→left) then Ctrl+S on LEFT. On exit: .bak / apply / restart.
 compareSystemdDefaults() {
-    local workdir py rc changed svc restart_list
+    local workdir py rc
     ensure_python_deps
 
     if [[ ! -f /etc/systemd/system/execution.service \
@@ -3108,54 +3163,143 @@ Saving the right pane does nothing for EthPillar.
 After you quit, you can apply saved left-pane changes
 (with optional .bak backup)." 22 72
 
-    set +e
-    PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare launch --workdir "$workdir"
-    set -e
+    finishTmeldSystemdApply "$workdir"
+    rm -rf "$workdir"
+}
 
-    changed=$(PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare list-changed --workdir "$workdir" | tr -d '\r')
-    if [[ -z "${changed// }" ]]; then
-        whiptail --title "Compare systemd configs" --msgbox \
-            "No changes were saved in the left pane.\nNothing to apply." 9 60
-        rm -rf "$workdir"
+
+# Suggest pruning / history-expiry flags for the installed execution client.
+# Left = exact execution.service; right = same unit with prune flags merged
+# into ExecStart only (not an EthPillar regen). Apply path matches compare.
+suggestPruningParameters() {
+    local helper="${BASE_DIR}/helpers/history_expiry_suggestions.sh"
+    local unit="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    local cl_unit="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local workdir py rc
+    local unit_text="" cl_text="" description execstart client status cl_client
+    local level="recommended" flags warning_tmp
+
+    # shellcheck source=helpers/history_expiry_suggestions.sh
+    source "$helper"
+    ensure_python_deps
+
+    if [[ ! -f "$unit" ]] && ! sudo test -f "$unit"; then
+        whiptail --title "Suggest pruning parameters" --msgbox \
+            "No execution client unit found.\n\nInstall an execution client first." 10 70
         return 0
     fi
 
-    if ! whiptail --title "Apply systemd changes" --yesno \
-        "Apply saved changes to:\n\n${changed}\n\nA .bak backup will be created for each unit (same as client switch)." 14 70; then
-        rm -rf "$workdir"
+    unit_text=$(history_expiry_read_unit "$unit" 2>/dev/null || true)
+    cl_text=$(history_expiry_read_unit "$cl_unit" 2>/dev/null || true)
+    if [[ -z "$unit_text" ]]; then
+        whiptail --title "Suggest pruning parameters" --msgbox \
+            "Could not read ${unit}." 8 72
+        return 1
+    fi
+
+    description=$(history_expiry_extract_description "$unit_text")
+    execstart=$(history_expiry_extract_execstart "$unit_text")
+    client=$(history_expiry_detect_client "$description" "$execstart")
+    status=$(history_expiry_status "$client" "$execstart")
+    cl_client=$(history_expiry_detect_client "$(history_expiry_extract_description "$cl_text")" "")
+
+    case "$status" in
+        no_el)
+            whiptail --title "Suggest pruning parameters" --msgbox \
+                "No execution client detected.\n\nInstall an execution client first." 10 70
+            return 0
+            ;;
+        unsupported)
+            whiptail --title "Suggest pruning parameters" --msgbox \
+                "${client:-Ethrex} has no history-expiry CLI yet.\nNothing to suggest." 10 70
+            return 0
+            ;;
+        unknown)
+            whiptail --title "Suggest pruning parameters" --msgbox \
+                "Could not classify the installed execution client." 8 70
+            return 0
+            ;;
+        recommended)
+            whiptail --title "Suggest pruning parameters" --msgbox \
+                "${client} already has recommended expiry/prune flags.\n\n$(history_expiry_suggested_flags "$client")\n\nNothing to change." 12 72
+            return 0
+            ;;
+        archive|caplin_archive)
+            if ! whiptail --title "Suggest pruning parameters" --yesno \
+                "${client} looks like an intentional archive / full-history node.\n\nPruning is destructive and can drop historic data.\n\nOpen the suggestion editor anyway?" 14 72; then
+                return 0
+            fi
+            ;;
+    esac
+
+    if history_expiry_has_further_savings "$client"; then
+        level=$(whiptail --title "Suggest pruning parameters" --radiolist \
+            "${client}: choose prune level (Recommended is the ~2TB staking default).
+
+Recommended:
+  $(history_expiry_suggested_flags "$client")
+
+Further savings:
+  $(history_expiry_further_savings_flags "$client")" \
+            20 78 2 \
+            recommended "Recommended (~2TB staking)" ON \
+            further "Further savings (more aggressive)" OFF \
+            3>&1 1>&2 2>&3) || return 0
+    fi
+
+    flags=$(history_expiry_flags_for_level "$client" "$level")
+    if [[ -z "${flags// }" ]]; then
+        whiptail --title "Suggest pruning parameters" --msgbox \
+            "No prune flags to merge for ${client}." 8 70
         return 0
     fi
 
+    warning_tmp=$(mktemp /tmp/ethpillar-prune-warn-XXXXXX)
+    history_expiry_pre_tmeld_warnings "$client" "$status" "$cl_client" >"$warning_tmp"
+    whiptail --title "Suggest pruning parameters — warnings" --scrolltext --textbox "$warning_tmp" 20 78
+    rm -f "$warning_tmp"
+
+    workdir=$(mktemp -d /tmp/ethpillar-prune-suggest-XXXXXX)
+    py="${ETHPILLAR_PYTHON:-python3}"
+
     set +e
-    PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare apply --workdir "$workdir"
+    PYTHONPATH="${BASE_DIR}" "$py" -m manage.config_compare prepare-prune-suggest \
+        --workdir "$workdir" --unit "$unit" --level "$level" --flags "$flags"
     rc=$?
     set -e
+
+    if [[ $rc -eq 2 ]]; then
+        whiptail --title "Suggest pruning parameters" --msgbox \
+            "Selected flags are already present on ExecStart.\nNothing to merge." 10 70
+        rm -rf "$workdir"
+        return 0
+    fi
     if [[ $rc -ne 0 ]]; then
-        whiptail --title "Apply systemd changes" --msgbox \
-            "Apply failed. Original units should still be intact\n(or restorable from .bak)." 10 70
+        whiptail --title "Suggest pruning parameters" --msgbox \
+            "Failed to prepare the suggestion.\n\nSee terminal output for details." 10 70
         rm -rf "$workdir"
         return 1
     fi
 
-    restart_list=""
-    for svc in $changed; do
-        restart_list+=" • ${svc}\n"
-    done
-    if whiptail --title "Reload daemon and restart services" --yesno \
-        "Do you want to daemon-reload and restart:\n\n${restart_list}" 14 70; then
-        sudo systemctl daemon-reload
-        for svc in $changed; do
-            sudo systemctl restart "$svc" || true
-        done
-        ohai "Restarted: ${changed}"
-    else
-        # Unit files already updated on disk; reload so a later restart uses them.
-        sudo systemctl daemon-reload
-    fi
+    whiptail --title "Suggest pruning parameters" --msgbox \
+"Opening tmeld (side-by-side compare/merge).
 
+Left  = installed execution.service (this is what gets applied)
+Right = same unit with selected prune flags merged into ExecStart only
+
+Workflow — stay on the LEFT pane:
+ • Enter a file from the folder view to open a tab
+ • Alt+Down / Alt+Up  jump between differences
+ • Alt+Left           copy this chunk from RIGHT → LEFT
+ • Ctrl+S             save LEFT (required to keep merges)
+ • Esc / Ctrl+Q       quit
+
+Saving the right pane does nothing for EthPillar.
+After you quit, you can apply saved left-pane changes
+(with optional .bak backup)." 22 72
+
+    finishTmeldSystemdApply "$workdir"
     rm -rf "$workdir"
-    ohai "Done. Press ENTER to continue."
-    read
 }
 
 

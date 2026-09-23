@@ -7,7 +7,8 @@
 #
 # Made for home and solo stakers 🏠🥩
 #
-# Suggest-first / print-only. Does not rewrite systemd units.
+# Flag/status source of truth for Execution Client → Suggest pruning parameters.
+# Print/CLI and node-checker stay status-based; the TUI merges flags via tmeld.
 # Research notes: docs/history-expiry-suggestions.md
 #
 
@@ -297,6 +298,322 @@ history_expiry_optional_why() {
   esac
 }
 
+history_expiry_further_savings_flags() {
+  # Single concrete flag set for the Further savings picker. Empty if none.
+  # Placeholder forms (e.g. --history.blocks=<N>) are not mergeable.
+  local client="${1:-}"
+  case "$client" in
+    Geth)
+      echo "--history.chain=postprague"
+      ;;
+    Besu)
+      echo "--Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768"
+      ;;
+    Reth)
+      echo "--prune.bodies.distance=1056768 --prune.receipts.distance=1056768"
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
+}
+
+history_expiry_has_further_savings() {
+  local flags
+  flags=$(history_expiry_further_savings_flags "${1:-}")
+  [[ -n "${flags// }" ]]
+}
+
+history_expiry_flags_for_level() {
+  # Usage: history_expiry_flags_for_level CLIENT [recommended|further]
+  local client="${1:-}"
+  local level="${2:-recommended}"
+  local flags
+  if [[ "$level" == "further" ]] && history_expiry_has_further_savings "$client"; then
+    history_expiry_further_savings_flags "$client"
+    return 0
+  fi
+  flags=$(history_expiry_suggested_flags "$client")
+  if [[ "$flags" == "("* ]]; then
+    echo ""
+    return 0
+  fi
+  printf '%s\n' "$flags"
+}
+
+history_expiry_collapse_ws() {
+  printf '%s' "${1:-}" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g; s/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+history_expiry_flag_key() {
+  # --History.Pruning=Rolling → --history.pruning
+  local tok="${1:-}"
+  history_expiry_norm "${tok%%=*}"
+}
+
+history_expiry_flag_value() {
+  local tok="${1:-}"
+  if [[ "$tok" == *=* ]]; then
+    history_expiry_norm "${tok#*=}"
+  else
+    echo ""
+  fi
+}
+
+history_expiry_normalize_flag_tokens() {
+  # Print one --flag or --flag=value per line from a flag list.
+  local collapsed
+  local -a words=()
+  local i t
+  collapsed=$(history_expiry_collapse_ws "${1:-}")
+  [[ -n "$collapsed" ]] || return 0
+  read -r -a words <<< "$collapsed"
+  i=0
+  while [[ $i -lt ${#words[@]} ]]; do
+    t="${words[$i]}"
+    if [[ "$t" == -* && "$t" != *=* ]] && (( i + 1 < ${#words[@]} )) && [[ "${words[$((i + 1))]}" != -* ]]; then
+      printf '%s=%s\n' "$t" "${words[$((i + 1))]}"
+      i=$((i + 2))
+    else
+      printf '%s\n' "$t"
+      i=$((i + 1))
+    fi
+  done
+}
+
+history_expiry_merge_execstart() {
+  # Usage: history_expiry_merge_execstart EXECSTART FLAGS
+  # Preserve unrelated tokens; replace same-name peers (e.g. --history.chain=*).
+  local execstart="${1:-}"
+  local add="${2:-}"
+  local collapsed
+  local -a words=()
+  local -a add_tokens=()
+  local -a kept=()
+  local -A incoming_val=()
+  local -A incoming_tok=()
+  local -A satisfied=()
+  local i t key val existing next line
+
+  collapsed=$(history_expiry_collapse_ws "$execstart")
+  if [[ -z "${add// }" ]]; then
+    printf '%s' "$collapsed"
+    return 0
+  fi
+
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    key=$(history_expiry_flag_key "$line")
+    [[ -n "$key" ]] || continue
+    add_tokens+=("$line")
+    incoming_val["$key"]=$(history_expiry_flag_value "$line")
+    incoming_tok["$key"]="$line"
+  done < <(history_expiry_normalize_flag_tokens "$add")
+
+  if [[ ${#add_tokens[@]} -eq 0 ]]; then
+    printf '%s' "$collapsed"
+    return 0
+  fi
+
+  read -r -a words <<< "$collapsed"
+  i=0
+  while [[ $i -lt ${#words[@]} ]]; do
+    t="${words[$i]}"
+    key=$(history_expiry_flag_key "$t")
+    if [[ "$t" == -* && -n "${incoming_val[$key]+x}" ]]; then
+      existing=$(history_expiry_flag_value "$t")
+      next=""
+      if [[ "$t" != *=* ]] && (( i + 1 < ${#words[@]} )) && [[ "${words[$((i + 1))]}" != -* ]]; then
+        next="${words[$((i + 1))]}"
+        existing=$(history_expiry_norm "$next")
+      fi
+      if [[ "$existing" == "${incoming_val[$key]}" ]]; then
+        kept+=("$t")
+        if [[ -n "$next" ]]; then
+          kept+=("$next")
+          i=$((i + 2))
+        else
+          i=$((i + 1))
+        fi
+        satisfied["$key"]=1
+        continue
+      fi
+      if [[ -n "$next" ]]; then
+        i=$((i + 2))
+      else
+        i=$((i + 1))
+      fi
+      continue
+    fi
+    kept+=("$t")
+    i=$((i + 1))
+  done
+
+  for line in "${add_tokens[@]}"; do
+    key=$(history_expiry_flag_key "$line")
+    if [[ -z "${satisfied[$key]:-}" ]]; then
+      kept+=("$line")
+      satisfied["$key"]=1
+    fi
+  done
+  printf '%s' "${kept[*]}"
+}
+
+history_expiry_format_execstart() {
+  # Rebuild an ExecStart= block. multiline=1 keeps EthPillar continuation style.
+  local merged="${1:-}"
+  local multiline="${2:-0}"
+  local collapsed
+  local -a words=()
+  local -a cmd=()
+  local -a flag_lines=()
+  local i t last j
+
+  collapsed=$(history_expiry_collapse_ws "$merged")
+  if [[ -z "$collapsed" ]]; then
+    printf 'ExecStart='
+    return 0
+  fi
+  read -r -a words <<< "$collapsed"
+  i=0
+  while [[ $i -lt ${#words[@]} && "${words[$i]}" != -* ]]; do
+    cmd+=("${words[$i]}")
+    i=$((i + 1))
+  done
+  if [[ ${#cmd[@]} -eq 0 ]]; then
+    cmd+=("${words[0]}")
+    i=1
+  fi
+  while [[ $i -lt ${#words[@]} ]]; do
+    t="${words[$i]}"
+    if [[ "$t" == -* && "$t" != *=* ]] && (( i + 1 < ${#words[@]} )) && [[ "${words[$((i + 1))]}" != -* ]]; then
+      flag_lines+=("$t ${words[$((i + 1))]}")
+      i=$((i + 2))
+    else
+      flag_lines+=("$t")
+      i=$((i + 1))
+    fi
+  done
+
+  if [[ "$multiline" != "1" ]]; then
+    if [[ ${#flag_lines[@]} -eq 0 ]]; then
+      printf 'ExecStart=%s' "${cmd[*]}"
+    else
+      printf 'ExecStart=%s %s' "${cmd[*]}" "${flag_lines[*]}"
+    fi
+    return 0
+  fi
+
+  printf 'ExecStart=%s' "${cmd[*]}"
+  if [[ ${#flag_lines[@]} -eq 0 ]]; then
+    return 0
+  fi
+  printf ' \\\n'
+  last=$((${#flag_lines[@]} - 1))
+  for ((j = 0; j < last; j++)); do
+    printf '    %s \\\n' "${flag_lines[j]}"
+  done
+  printf '    %s' "${flag_lines[last]}"
+}
+
+history_expiry_replace_execstart() {
+  # Swap the ExecStart= continuation block; leave every other line untouched.
+  local unit_text="${1:-}"
+  local new_block="${2:-}"
+  local in_exec=0
+  local printed=0
+  local line
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ $in_exec -eq 0 ]]; then
+      if [[ "$line" == ExecStart=* ]]; then
+        if [[ $printed -eq 0 ]]; then
+          printf '%s\n' "$new_block"
+          printed=1
+        fi
+        if [[ "$line" == *\\ ]]; then
+          in_exec=1
+        fi
+        continue
+      fi
+      printf '%s\n' "$line"
+      continue
+    fi
+    if [[ "$line" != *\\ ]]; then
+      in_exec=0
+    fi
+  done <<< "$unit_text"
+}
+
+history_expiry_execstart_is_multiline() {
+  printf '%s\n' "${1:-}" | grep -qE '^ExecStart=.*\\[[:space:]]*$'
+}
+
+history_expiry_merge_unit_text() {
+  # Merge FLAGS into ExecStart only. No-op (exact original text) when already present.
+  local unit_text="${1:-}"
+  local add="${2:-}"
+  local execstart merged new_block multiline=0
+
+  execstart=$(history_expiry_extract_execstart "$unit_text")
+  merged=$(history_expiry_merge_execstart "$execstart" "$add")
+  if [[ "$(history_expiry_collapse_ws "$merged")" == "$(history_expiry_collapse_ws "$execstart")" ]]; then
+    printf '%s' "$unit_text"
+    return 0
+  fi
+  if history_expiry_execstart_is_multiline "$unit_text"; then
+    multiline=1
+  fi
+  new_block=$(history_expiry_format_execstart "$merged" "$multiline")
+  history_expiry_replace_execstart "$unit_text" "$new_block"
+}
+
+history_expiry_merge_unit_file() {
+  # Usage: history_expiry_merge_unit_file FILE FLAGS
+  # Preserve trailing newlines (command substitution would strip them).
+  local path="${1:-}"
+  local add="${2:-}"
+  local text
+  if [[ ! -e "$path" ]]; then
+    return 1
+  fi
+  text=$(cat "$path"; printf x) || return 1
+  text="${text%x}"
+  history_expiry_merge_unit_text "$text" "$add"
+}
+
+history_expiry_pre_tmeld_warnings() {
+  # Operator-facing warnings shown before tmeld. Offline prune is notes only.
+  local client="${1:-}"
+  local status="${2:-}"
+  local cl="${3:-}"
+  local notes extra
+
+  echo "Pruning is destructive and can be irreversible."
+  echo "Rocket Pool / SSV / StakeWise: a short history window can break local eth_getLogs; use an external RPC."
+  echo
+  notes=$(history_expiry_notes "$client" "$status")
+  if [[ -n "$notes" ]]; then
+    echo "Notes:"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && echo "- $line"
+    done <<< "$notes"
+  fi
+  extra=$(history_expiry_apply_extra "$client")
+  if [[ -n "$extra" ]]; then
+    echo
+    echo "Offline prune (do not run automatically — notes only):"
+    echo "$extra"
+  fi
+  if [[ -n "$cl" ]]; then
+    echo
+    echo "CL: $(history_expiry_cl_note "$cl")"
+  else
+    echo
+    echo "CL: Beacon archive / supernode flags are optional extras, not required to validate."
+  fi
+}
+
 history_expiry_apply_extra() {
   # Extra apply line only when an offline prune/resync step is required.
   local client="${1:-}"
@@ -389,7 +706,7 @@ history_expiry_print_apply() {
   local client="${1:-}"
   local extra
   echo "How to apply:"
-  echo "Execution Client → Edit configuration"
+  echo "Execution Client → Suggest pruning parameters"
   extra=$(history_expiry_apply_extra "$client")
   if [[ -n "$extra" ]]; then
     echo "$extra"
@@ -435,7 +752,7 @@ history_expiry_print_client_block() {
 history_expiry_print_all() {
   history_expiry_print_title
   echo
-  echo "How to apply: Execution Client → Edit configuration"
+  echo "How to apply: Execution Client → Suggest pruning parameters"
   echo "Archive / Caplin archive / full-history RPC nodes should ignore these."
   local c
   for c in Geth Nethermind Besu Reth Erigon Ethrex; do
@@ -514,7 +831,7 @@ history_expiry_print_checker_detail() {
   local client="${1:-}"
   local status="${2:-}"
   echo "Recommended flags: $(history_expiry_suggested_flags "$client")"
-  echo "How to apply: Execution Client → Edit configuration"
+  echo "How to apply: Execution Client → Suggest pruning parameters"
   case "$status" in
     archive)
       echo "Notes: archive / full-history — suggestions are opt-in, not a failure."
@@ -583,7 +900,7 @@ history_expiry_main() {
 Usage: history_expiry_suggestions.sh [--all] [--checker] [--verbose] [--unit FILE] [--cl-unit FILE]
 
 Print suggested rolling-history / prune flags for ~2TB staking full nodes.
-Does not modify systemd units.
+CLI / node-checker stay print-only. The Execution Client TUI merges flags via tmeld.
 
   --all        Print the per-client suggestion table (ignore installed unit)
   --checker    Compact output for node-checker (no pause)

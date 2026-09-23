@@ -7,6 +7,7 @@ from manage.config_compare import (
     EXIT_NO_DIFF,
     _mev_params_for_client,
     generate_default_unit,
+    prepare_prune_suggest_workdir,
     prepare_workdir,
 )
 from manage.service_parse import canonicalize_unit, semantic_equal
@@ -289,3 +290,68 @@ def test_resolve_context_bn_endpoint_falls_back_to_charon_api(monkeypatch, tmp_p
 
     ctx = _resolve_context({}, {"charon": str(charon_svc), "validator": str(validator_svc)})
     assert ctx["bn_endpoint"] == "http://127.0.0.1:3600"
+
+
+_GETH_UNIT_MISSING_HISTORY = """\
+[Unit]
+Description=Geth Execution Layer Client service for MAINNET
+
+[Service]
+User=execution
+ExecStart=/usr/local/bin/geth \\
+    --mainnet \\
+    --state.scheme=path \\
+    --datadir=/var/lib/geth
+LimitNOFILE=65535
+"""
+
+
+def test_prepare_prune_suggest_merges_only_execstart(tmp_path):
+    unit = tmp_path / "execution.service"
+    unit.write_text(_GETH_UNIT_MISSING_HISTORY, encoding="utf-8")
+    work = tmp_path / "work"
+
+    differing, meta = prepare_prune_suggest_workdir(
+        work, unit_path=str(unit), level="recommended"
+    )
+    assert differing == ["execution"]
+    assert meta["mode"] == "prune-suggest"
+    left = (work / "installed" / "execution.service").read_text(encoding="utf-8")
+    right = (work / "default" / "execution.service").read_text(encoding="utf-8")
+    assert left == _GETH_UNIT_MISSING_HISTORY
+    assert "--history.chain=postmerge" not in left
+    assert "--history.chain=postmerge" in right
+    assert "User=execution" in right
+    assert "LimitNOFILE=65535" in right
+    assert "--state.scheme=path" in right
+    assert right.count("ExecStart=") == 1
+    assert "LimitNOFILE" in left and left.split("LimitNOFILE")[0].count("--") == right.split("LimitNOFILE")[0].count("--") - 1
+
+
+def test_prepare_prune_suggest_no_diff_when_flags_present(tmp_path):
+    unit = tmp_path / "execution.service"
+    unit.write_text(
+        _GETH_UNIT_MISSING_HISTORY.replace(
+            "--datadir=/var/lib/geth",
+            "--datadir=/var/lib/geth \\\n    --history.chain=postmerge",
+        ),
+        encoding="utf-8",
+    )
+    work = tmp_path / "work"
+    differing, _meta = prepare_prune_suggest_workdir(
+        work, unit_path=str(unit), flags="--history.chain=postmerge"
+    )
+    assert differing == []
+
+
+def test_prepare_prune_suggest_further_level(tmp_path):
+    unit = tmp_path / "execution.service"
+    unit.write_text(_GETH_UNIT_MISSING_HISTORY, encoding="utf-8")
+    work = tmp_path / "work"
+    differing, _meta = prepare_prune_suggest_workdir(
+        work, unit_path=str(unit), level="further"
+    )
+    assert "execution" in differing
+    right = (work / "default" / "execution.service").read_text(encoding="utf-8")
+    assert "--history.chain=postprague" in right
+    assert "--history.chain=postmerge" not in right

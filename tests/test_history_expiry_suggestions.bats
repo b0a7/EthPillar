@@ -2,9 +2,9 @@
 #
 # tests/test_history_expiry_suggestions.bats
 #
-# Unit tests for helpers/history_expiry_suggestions.sh detection and
-# suggestion text. Mock Description / ExecStart strings only — never
-# talks to a live Ethereum client.
+# Unit tests for helpers/history_expiry_suggestions.sh detection,
+# suggestion text, and ExecStart prune-flag merge. Mock Description /
+# ExecStart strings only — never talks to a live Ethereum client.
 #
 # Run: bats tests/test_history_expiry_suggestions.bats
 #
@@ -176,7 +176,7 @@ EOF
   [[ "$output" == *"--history.chain=postmerge"* ]]
   [[ "$output" == *"Recommended flags:"* ]]
   [[ "$output" == *"How to apply:"* ]]
-  [[ "$output" == *"Execution Client → Edit configuration"* ]]
+  [[ "$output" == *"Execution Client → Suggest pruning parameters"* ]]
   [[ "$output" != *"ExecStart (collapsed)"* ]]
 }
 
@@ -266,11 +266,26 @@ EOF
   [[ "$output" == *"Recommended flags:"* ]]
   [[ "$output" == *"--History.Pruning=Rolling --History.RetentionEpochs=33024"* ]]
   [[ "$output" == *"How to apply:"* ]]
-  [[ "$output" == *"Execution Client → Edit configuration"* ]]
+  [[ "$output" == *"Execution Client → Suggest pruning parameters"* ]]
   [[ "$output" == *"Notes:"* ]]
   [[ "$output" == *"Flat"* ]]
   [[ "$output" != *"ExecStart (collapsed)"* ]]
   [[ "$output" != *"82125"* ]]
+}
+
+@test "suggestPruningParameters reuses compare tmeld apply path" {
+  grep -q 'prepare-prune-suggest' functions.sh
+  grep -q 'finishTmeldSystemdApply' functions.sh
+  awk '
+    /^suggestPruningParameters\(\)/ { in_fn=1 }
+    in_fn && /finishTmeldSystemdApply/ { found=1 }
+    in_fn && /^}/ { exit found ? 0 : 1 }
+  ' functions.sh
+  awk '
+    /^compareSystemdDefaults\(\)/ { in_fn=1 }
+    in_fn && /finishTmeldSystemdApply/ { found=1 }
+    in_fn && /^}/ { exit found ? 0 : 1 }
+  ' functions.sh
 }
 
 @test "history expiry is under Execution Client, not Toolbox" {
@@ -278,17 +293,134 @@ EOF
     /^submenuExecution\(\)/ { in_el=1; in_tools=0 }
     /^submenuTools\(\)/ { in_tools=1; in_el=0 }
     /^}/ { if (in_el || in_tools) { in_el=0; in_tools=0 } }
-    in_el && /history_expiry_suggestions/ { el=1 }
-    in_tools && /history_expiry_suggestions/ { tools=1 }
+    in_el && /suggestPruningParameters/ { el=1 }
+    in_tools && /suggestPruningParameters/ { tools=1 }
     END { exit (el && !tools) ? 0 : 1 }
   ' ethpillar.sh
+  grep -q 'Suggest pruning parameters' ethpillar.sh
 }
 
-@test "docs and node-checker do not point History expiry at Toolbox" {
+@test "docs and node-checker do not point Suggest pruning parameters at Toolbox" {
   run grep -n -i 'toolbox' docs/history-expiry-suggestions.md
   [ "$status" -ne 0 ]
   run grep -n 'Toolbox → History expiry' plugins/node-checker/run.sh
   [ "$status" -ne 0 ]
-  grep -q 'Execution Client → History expiry' plugins/node-checker/run.sh
-  grep -q 'Execution Client → History expiry' docs/history-expiry-suggestions.md
+  grep -q 'Execution Client → Suggest pruning parameters' plugins/node-checker/run.sh
+  grep -q 'Execution Client → **Suggest pruning parameters**' docs/history-expiry-suggestions.md
+}
+
+@test "further savings exist for Geth Besu Reth and not Nethermind Erigon" {
+  run history_expiry_has_further_savings "Geth"
+  [ "$status" -eq 0 ]
+  run history_expiry_has_further_savings "Besu"
+  [ "$status" -eq 0 ]
+  run history_expiry_has_further_savings "Reth"
+  [ "$status" -eq 0 ]
+  run history_expiry_has_further_savings "Nethermind"
+  [ "$status" -ne 0 ]
+  run history_expiry_has_further_savings "Erigon"
+  [ "$status" -ne 0 ]
+  run history_expiry_flags_for_level "Geth" "further"
+  [ "$output" = "--history.chain=postprague" ]
+  run history_expiry_flags_for_level "Nethermind" "further"
+  [[ "$output" == *"--History.Pruning=Rolling"* ]]
+}
+
+@test "merge adds recommended Geth flags and leaves unrelated flags" {
+  run history_expiry_merge_execstart \
+    "/usr/local/bin/geth --mainnet --state.scheme=path --http --datadir=/var/lib/geth" \
+    "--history.chain=postmerge"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--state.scheme=path"* ]]
+  [[ "$output" == *"--http"* ]]
+  [[ "$output" == *"--datadir=/var/lib/geth"* ]]
+  [[ "$output" == *"--history.chain=postmerge"* ]]
+  [[ "$output" == *"--mainnet"* ]]
+}
+
+@test "merge replaces conflicting Geth --history.chain peer" {
+  run history_expiry_merge_execstart \
+    "/usr/local/bin/geth --history.chain=all --http --maxpeers=50" \
+    "--history.chain=postmerge"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--history.chain=postmerge"* ]]
+  [[ "$output" != *"--history.chain=all"* ]]
+  [[ "$output" == *"--http"* ]]
+  [[ "$output" == *"--maxpeers=50"* ]]
+}
+
+@test "merge replaces space-separated Geth --history.chain peer" {
+  run history_expiry_merge_execstart \
+    "/usr/local/bin/geth --history.chain all --http" \
+    "--history.chain=postmerge"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--history.chain=postmerge"* ]]
+  [[ "$output" != *" all "* ]]
+  [[ "$output" == *"--http"* ]]
+}
+
+@test "merge replaces Nethermind History.Pruning and keeps Hybrid" {
+  run history_expiry_merge_execstart \
+    "/usr/local/bin/nethermind --Pruning.Mode=Hybrid --History.Pruning=Disabled --JsonRpc.Port=8545" \
+    "--History.Pruning=Rolling --History.RetentionEpochs=33024"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--Pruning.Mode=Hybrid"* ]]
+  [[ "$output" == *"--History.Pruning=Rolling"* ]]
+  [[ "$output" == *"--History.RetentionEpochs=33024"* ]]
+  [[ "$output" != *"--History.Pruning=Disabled"* ]]
+  [[ "$output" == *"--JsonRpc.Port=8545"* ]]
+}
+
+@test "merge replaces Erigon --prune.mode and leaves unrelated flags" {
+  run history_expiry_merge_execstart \
+    "/usr/local/bin/erigon --datadir=/var/lib/erigon --prune.mode=archive --http.port=8545" \
+    "--prune.mode=minimal"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--prune.mode=minimal"* ]]
+  [[ "$output" != *"--prune.mode=archive"* ]]
+  [[ "$output" == *"--datadir=/var/lib/erigon"* ]]
+  [[ "$output" == *"--http.port=8545"* ]]
+}
+
+@test "merge is a no-op when recommended flags are already present" {
+  run history_expiry_merge_execstart \
+    "/usr/local/bin/geth --history.chain=postmerge --http" \
+    "--history.chain=postmerge"
+  [ "$status" -eq 0 ]
+  [ "$output" = "/usr/local/bin/geth --history.chain=postmerge --http" ]
+}
+
+@test "merge unit text only changes ExecStart" {
+  local unit merged
+  unit=$(cat <<'EOF'
+[Unit]
+Description=Geth Execution Layer Client service for MAINNET
+
+[Service]
+User=execution
+ExecStart=/usr/local/bin/geth \
+    --mainnet \
+    --state.scheme=path \
+    --datadir=/var/lib/geth
+LimitNOFILE=65535
+EOF
+)
+  merged=$(history_expiry_merge_unit_text "$unit" "--history.chain=postmerge")
+  [[ "$merged" == *"Description=Geth Execution Layer Client service for MAINNET"* ]]
+  [[ "$merged" == *"User=execution"* ]]
+  [[ "$merged" == *"LimitNOFILE=65535"* ]]
+  [[ "$merged" == *"--history.chain=postmerge"* ]]
+  [[ "$merged" == *"--state.scheme=path"* ]]
+  [[ "$merged" == *"--datadir=/var/lib/geth"* ]]
+  [[ "$merged" != *"--history.chain=all"* ]]
+}
+
+@test "pre-tmeld warnings mention offline prune as notes only" {
+  run history_expiry_pre_tmeld_warnings "Geth" "missing" "Lighthouse"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Pruning is destructive"* ]]
+  [[ "$output" == *"eth_getLogs"* ]]
+  [[ "$output" == *"do not run automatically"* ]]
+  [[ "$output" == *"prune-history"* ]]
+  [[ "$output" == *"CL: Lighthouse"* ]]
 }
