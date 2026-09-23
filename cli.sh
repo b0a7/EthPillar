@@ -1,6 +1,7 @@
 #!/bin/bash
 # EthPillar non-interactive CLI (automation / scripting).
 # Sourced by ethpillar.sh; expects functions.sh and env already loaded.
+# Commands: status, start|stop|restart, check-updates, upgrade, logs, help.
 
 # ── Installed targets ────────────────────────────────────────────────────────
 
@@ -131,6 +132,7 @@ Commands:
   start|stop|restart [target]     Control installed clients (default: all)
   check-updates [target]          Report available updates (default: all)
   upgrade [target]                Apply updates non-interactively (default: all)
+  logs                            View rolling consolidated logs (same as TUI Rolling Consolidated Logs)
   --version                       Print installed client and EthPillar versions
   --help | -h | help              Show this help
 
@@ -152,6 +154,7 @@ Exit codes:
   check-updates   0 = up to date; 2 = update(s) available; 1 = error
   upgrade         0 = success; 1 = error
   start|stop|restart  0 = success; 1 = error
+  logs            0 = normal exit from the log viewer; 1 = unexpected arguments or error
 
 Examples:
   ethpillar status
@@ -159,6 +162,7 @@ Examples:
   ethpillar check-updates
   ethpillar upgrade execution
   ethpillar upgrade ethpillar
+  ethpillar logs
 EOF
 }
 
@@ -468,6 +472,17 @@ cli_cmd_upgrade() {
     return "$rc"
 }
 
+# ── Logs ─────────────────────────────────────────────────────────────────────
+
+# Same as TUI Logging & Monitoring → 🔍 View Rolling Consolidated Logs.
+cli_cmd_logs() {
+    if [[ -n "${1:-}" ]]; then
+        echo "Unexpected argument: $1 (try: ethpillar logs)" >&2
+        return 1
+    fi
+    show_rolling_consolidated_logs
+}
+
 # ── Dispatcher ───────────────────────────────────────────────────────────────
 
 # Handle ethpillar CLI subcommands. Returns 0 if a CLI command was handled
@@ -515,6 +530,12 @@ cli_dispatch() {
         upgrade)
             shift
             cli_cmd_upgrade "${1:-all}"
+            CLI_EXIT_CODE=$?
+            return 0
+            ;;
+        logs)
+            shift
+            cli_cmd_logs "$@"
             CLI_EXIT_CODE=$?
             return 0
             ;;

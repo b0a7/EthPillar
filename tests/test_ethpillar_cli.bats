@@ -2,7 +2,7 @@
 #
 # tests/test_ethpillar_cli.bats
 #
-# Tests for ethpillar non-interactive CLI (help, status, start/stop/restart, targets).
+# Tests for ethpillar non-interactive CLI (help, status, start/stop/restart, targets, logs).
 #
 
 setup() {
@@ -55,7 +55,7 @@ EOF
         chmod +x "$MOCK_BIN_DIR/$name"
     }
 
-    for cmd in apt-get git python3 usermod mkdir stty pip; do
+    for cmd in apt-get git python3 usermod mkdir stty pip docker ccze; do
         create_mock "$cmd"
     done
     create_mock "whiptail"
@@ -74,6 +74,15 @@ echo '{}'
 exit 0
 EOF
     chmod +x "$MOCK_BIN_DIR/curl"
+
+    # journalctl must never follow (-f) in CI. Logs argv so logs-dispatch tests
+    # can assert the rolling consolidated unit list.
+    cat <<EOF > "$MOCK_BIN_DIR/journalctl"
+#!/bin/bash
+echo "journalctl \$*" >> "$COMMAND_LOG"
+exit 0
+EOF
+    chmod +x "$MOCK_BIN_DIR/journalctl"
 
     # Mock systemctl: tracks ActiveState per unit via files in SYSTEMCTL_STATE_DIR
     cat <<EOF > "$MOCK_BIN_DIR/systemctl"
@@ -148,6 +157,7 @@ set_unit_state() {
     [[ "$output" == *"status"* ]]
     [[ "$output" == *"check-updates"* ]]
     [[ "$output" == *"upgrade"* ]]
+    [[ "$output" == *"logs"* ]]
     [[ "$output" == *"execution"* ]]
     [[ "$output" == *"consensus"* ]]
     [[ "$output" == *"ethpillar"* ]]
@@ -168,6 +178,44 @@ set_unit_state() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"Unknown command"* ]]
     [[ "$output" == *"--help"* ]]
+}
+
+@test "logs: help lists the command as TUI Rolling Consolidated Logs" {
+    run ./ethpillar.sh help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"logs"* ]]
+    [[ "$output" == *"View rolling consolidated logs"* ]]
+    [[ "$output" == *"TUI Rolling Consolidated Logs"* ]]
+}
+
+@test "logs: dispatches to view_journal_logs, not view_logs.sh" {
+    run ./ethpillar.sh logs
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q "view_logs.sh" "$COMMAND_LOG"
+    ! grep -q "tmux" "$COMMAND_LOG"
+}
+
+@test "show_rolling_consolidated_logs: Aztec remote-rpc then the same journal units as TUI" {
+    awk '
+        /^show_rolling_consolidated_logs\(\)/ {flag=1}
+        flag {print}
+        flag && /^}/ {exit}
+    ' functions.sh > "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q '/opt/ethpillar/aztec' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q 'docker compose logs -f --tail=233' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q 'view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q 'show_rolling_consolidated_logs' ethpillar.sh
+    grep -q 'show_rolling_consolidated_logs' cli.sh
+}
+
+@test "logs: unexpected leftover arguments error cleanly" {
+    run ./ethpillar.sh logs leftover
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unexpected argument"* ]]
+    [[ "$output" == *"ethpillar logs"* ]]
+    ! grep -q "journalctl -u validator" "$COMMAND_LOG"
+    ! grep -q "view_logs.sh" "$COMMAND_LOG"
 }
 
 @test "status: no clients installed exits 0" {

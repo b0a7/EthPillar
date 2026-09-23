@@ -29,7 +29,7 @@ cd "$BASE_DIR" || exit 1
 # Load functions
 source ./functions.sh
 
-# Non-interactive CLI helpers (status / start|stop|restart / check-updates / upgrade)
+# Non-interactive CLI helpers (status / start|stop|restart / check-updates / upgrade / logs)
 # shellcheck disable=SC1091
 source ./cli.sh
 
@@ -303,11 +303,7 @@ while true; do
         runScript view_logs.sh
         ;;
       🔍)
-        # Aztec with remote rpc
-        if [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.service ]]; then
-              cd  /opt/ethpillar/aztec && docker compose logs -f --tail=233
-        fi
-        view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f
+        show_rolling_consolidated_logs
         ;;
       📜)
         export_logs
@@ -1957,7 +1953,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     exit $?
   fi
 
-  # Non-interactive CLI (status, start/stop/restart, check-updates, upgrade, --help, --version)
+  # Non-interactive CLI (status, start/stop/restart, check-updates, upgrade, logs, --help, --version)
   if cli_dispatch "$@"; then
     exit "$CLI_EXIT_CODE"
   fi
