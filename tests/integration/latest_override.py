@@ -183,7 +183,7 @@ def prepare_rc_overrides(
 
     Returns a dict with ``rows``, ``clients``, ``repos``, and ``payload``.
     """
-    from find_client_rc import CLIENT_REPOS, find_rc
+    from find_client_rc import CLIENT_REPOS, find_rc, is_newer_than_latest
 
     # Discover against official LATEST; a leftover override would remap LATEST→RC
     # and make find_rc skip the candidate as "same as latest".
@@ -207,7 +207,8 @@ def prepare_rc_overrides(
         rows.append(row)
         rc_tag = row.get("rc_tag")
         latest = row.get("latest")
-        if row.get("status") == "ok" and rc_tag and rc_tag != latest:
+        # Defense in depth: finder already requires newer-than-LATEST.
+        if row.get("status") == "ok" and rc_tag and is_newer_than_latest(str(rc_tag), str(latest or "")):
             client_map[client] = str(rc_tag)
 
     log_rc_override_plan(rows)
