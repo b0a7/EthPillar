@@ -241,6 +241,39 @@ EOF
   [ "$INSTALLED_COMMIT" = "668ea9d" ]
 }
 
+@test "getClVcCurrentVersion reads official lodestar v1.48.0/c7dc2b0" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'echo "* Version: v1.48.0/c7dc2b0"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.48.0" ]
+  [ "$INSTALLED_COMMIT" = "c7dc2b0" ]
+}
+
+@test "getClVcCurrentVersion ignores extra /hex outside the Lodestar Version line" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'printf "%s\n" "Unpacking Lodestar binary from /tmp/lodestar-v1.48.0-linux-amd64/deadbeef/lodestar" "* Version: v1.48.0/c7dc2b0" "* by ChainSafe Systems, 2018-2026"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.48.0" ]
+  [ "$INSTALLED_COMMIT" = "c7dc2b0" ]
+}
+
+@test "getClVcCurrentVersion reads lodestar v1.8.0/stable/a4b29cf" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  write_stub_binary "$stub" 'echo "* Version: v1.8.0/stable/a4b29cf"'
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.8.0" ]
+  [ "$INSTALLED_COMMIT" = "a4b29cf" ]
+}
+
 @test "getClVcCurrentVersion preserves lodestar prerelease when present" {
   local stub="$TEST_BIN_DIR/lodestar"
   write_stub_binary "$stub" 'echo "* Version: v1.45.0-rc.0/668ea9d"'
@@ -407,6 +440,10 @@ EOF
 @test "version_matches_latest matches commit prefix either way" {
   version_matches_latest "v1.45.0" "v1.45.0" "668ea9d" "668ea9dea24189d9be99940acd923e8920e75bf6"
   version_matches_latest "1.45.0" "v1.45.0" "668ea9dea24189d9be99940acd923e8920e75bf6" "668ea9d"
+}
+
+@test "version_matches_latest matches official lodestar short commit vs tag peel" {
+  version_matches_latest "v1.48.0" "v1.48.0" "c7dc2b0" "c7dc2b0b3b715635fb9b616bf178137ad64f7bba"
 }
 
 @test "version_matches_latest mismatches same semver different commits" {

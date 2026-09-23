@@ -28,6 +28,7 @@ setup() {
     # Force-reset each test so a "behind" case cannot leak into the next.
     export MOCK_EL_LATEST=v1.30.0
     export MOCK_CL_LATEST=v5.3.0
+    export MOCK_CL_COMMIT=
     export MOCK_MEV_LATEST=v1.8.0
     export MOCK_CHARON_LATEST=v1.11.0
     export MOCK_EP_REMOTE_VERSION
@@ -82,7 +83,7 @@ if [[ "\$*" == *release_info* ]]; then
       echo "{\"version\":\"\${MOCK_EL_LATEST:-v1.30.0}\",\"commit\":\"\"}"
       ;;
     lighthouse|lodestar|teku|nimbus|prysm|grandine)
-      echo "{\"version\":\"\${MOCK_CL_LATEST:-v5.3.0}\",\"commit\":\"\"}"
+      echo "{\"version\":\"\${MOCK_CL_LATEST:-v5.3.0}\",\"commit\":\"\${MOCK_CL_COMMIT:-}\"}"
       ;;
     mevboost)
       echo "{\"version\":\"\${MOCK_MEV_LATEST:-v1.8.0}\",\"commit\":\"\"}"
@@ -215,6 +216,22 @@ write_bin() {
 #!/bin/bash
 echo "$(basename "$path") \$*" >> "$COMMAND_LOG"
 echo "$stdout"
+exit 0
+EOF
+    chmod +x "$path"
+}
+
+# Official Lodestar --version plus unpack-path /hex noise that used to steal INSTALLED_COMMIT.
+write_lodestar_bin() {
+    local path="$1"
+    local ver_line="${2:-* Version: v1.48.0/c7dc2b0}"
+    cat <<EOF > "$path"
+#!/bin/bash
+echo "lodestar \$*" >> "$COMMAND_LOG"
+printf '%s\n' \\
+  "Unpacking Lodestar binary from /tmp/lodestar-v1.48.0-linux-amd64/deadbeef/lodestar" \\
+  "$ver_line" \\
+  "* by ChainSafe Systems, 2018-2026"
 exit 0
 EOF
     chmod +x "$path"
@@ -505,6 +522,34 @@ set_unit_state() {
     ! grep -q "update_validator.sh" "$UPDATE_LOG"
     ! grep -q "update_mevboost.sh" "$UPDATE_LOG"
     ! grep -q "systemctl stop" "$COMMAND_LOG"
+}
+
+@test "upgrade consensus: skips Lodestar on official v1.48.0/c7dc2b0 despite extra /hex noise" {
+    export MOCK_CL_LATEST=v1.48.0
+    export MOCK_CL_COMMIT=c7dc2b0b3b715635fb9b616bf178137ad64f7bba
+    write_lodestar_bin "$MOCK_BIN_DIR/lodestar"
+    write_service "$CONSENSUS_SERVICE_FILE" "Lodestar Consensus Client" "$MOCK_BIN_DIR/lodestar"
+
+    run ./ethpillar.sh upgrade consensus
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"consensus: already up to date (1.48.0 (c7dc2b0)) — skipping"* ]]
+    [ ! -s "$UPDATE_LOG" ]
+    ! grep -q "systemctl stop" "$COMMAND_LOG"
+    ! grep -q "update_consensus.sh" "$COMMAND_LOG"
+}
+
+@test "upgrade consensus: calls update script when Lodestar is behind" {
+    export MOCK_CL_LATEST=v1.49.0
+    export MOCK_CL_COMMIT=aabbccddeeff0011
+    write_lodestar_bin "$MOCK_BIN_DIR/lodestar"
+    write_service "$CONSENSUS_SERVICE_FILE" "Lodestar Consensus Client" "$MOCK_BIN_DIR/lodestar"
+
+    run ./ethpillar.sh upgrade consensus
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "update_consensus.sh --auto" "$UPDATE_LOG"
+    ! grep -q "skipping" <<< "$output"
 }
 
 @test "upgrade ethpillar: skips when EP_VERSION matches remote" {

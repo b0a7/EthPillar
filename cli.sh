@@ -253,21 +253,17 @@ cli_cmd_service_action() {
 
 # Check one client target; prints a status line.
 # Returns 0 if up to date, 2 if update available, 1 on error.
+# Compare with TUI promptYesNo: load versions then version_matches_latest.
 cli_check_client_update() {
     local target="$1"
-    local rc
 
-    client_version_status "$target"
-    rc=$?
-    case "$rc" in
-        0)
-            echo "${target}: up to date ($(format_version_label "$VERSION" "${INSTALLED_COMMIT:-}"))"
-            ;;
-        2)
-            echo "${target}: update available ($(format_version_label "$VERSION" "${INSTALLED_COMMIT:-}") → $(format_version_label "$TAG" "${TAG_COMMIT:-}"))"
-            ;;
-    esac
-    return "$rc"
+    load_client_versions "$target" || return 1
+    if version_matches_latest; then
+        echo "${target}: up to date ($(format_version_label "$VERSION" "${INSTALLED_COMMIT:-}"))"
+        return 0
+    fi
+    echo "${target}: update available ($(format_version_label "$VERSION" "${INSTALLED_COMMIT:-}") → $(format_version_label "$TAG" "${TAG_COMMIT:-}"))"
+    return 2
 }
 
 # Compare local EP_VERSION to origin/main ethpillar.sh.
@@ -340,11 +336,11 @@ cli_auto_update_script() {
 
 # Upgrade one target. Clients already on LATEST are skipped so --auto does not
 # stop/replace a running binary with the same version. update_*.sh --auto is
-# unchanged (forced reinstall when invoked directly). Comparison is
-# client_version_status → version_matches_latest (same as check-updates / TUI).
+# unchanged (forced reinstall when invoked directly).
+# Same gate as TUI update menus: load versions, then version_matches_latest
+# (promptYesNo).
 cli_upgrade_one() {
     local target="$1"
-    local rc
 
     case "$target" in
         ethpillar)
@@ -359,13 +355,11 @@ cli_upgrade_one() {
             ;;
     esac
 
-    client_version_status "$target"
-    rc=$?
-    if [[ "$rc" -eq 0 ]]; then
+    load_client_versions "$target" || return 1
+    if version_matches_latest; then
         echo "${target}: already up to date ($(format_version_label "$VERSION" "${INSTALLED_COMMIT:-}")) — skipping"
         return 0
     fi
-    [[ "$rc" -eq 2 ]] || return 1
 
     bash "$(cli_auto_update_script "$target")" --auto
 }

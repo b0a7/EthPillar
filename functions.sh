@@ -634,6 +634,7 @@ getClVcCurrentVersion(){
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
     local svc_file
     local raw_version=""
+    local version_line=""
     if [[ "$role" == "vc" ]]; then
         svc_file="$validator_svc"
     else
@@ -654,8 +655,17 @@ getClVcCurrentVersion(){
       Lodestar)
         LODESTAR_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lodestar")
         raw_version=$("$LODESTAR_BIN" --version 2>&1 || true)
-        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$raw_version" | head -1 || true)
-        INSTALLED_COMMIT=$(grep -oE '/[a-fA-F0-9]{6,40}' <<< "$raw_version" | tail -1 | tr -d '/' || true)
+        # Official: "* Version: v1.48.0/c7dc2b0" or "v1.8.0/stable/a4b29cf".
+        # Only the Version line — a full-blob /hex scan (or the first vX.Y.Z
+        # line) picks unpack/tmp paths like
+        # /tmp/lodestar-v1.48.0-linux-amd64/deadbeef and then
+        # version_matches_latest treats the same tag as behind.
+        version_line=$(grep -iE 'Version:[[:space:]]*v?[0-9]+\.[0-9]+\.[0-9]+' <<< "$raw_version" | head -1 || true)
+        if [[ -z "$version_line" ]]; then
+          version_line=$(grep -iE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "$raw_version" | head -1 || true)
+        fi
+        VERSION=$(grep -oiE 'v[0-9]+\.[0-9]+\.[0-9]+(-(rc|alpha|beta|dev)[0-9A-Za-z.]*)?' <<< "$version_line" | head -1 || true)
+        INSTALLED_COMMIT=$(grep -oE '/[a-fA-F0-9]{7,40}' <<< "$version_line" | tail -1 | tr -d '/' || true)
         ;;
       Teku)
         TEKU_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/teku/bin/teku")
@@ -764,9 +774,10 @@ load_client_versions() {
                 echo "consensus: not installed"
                 return 1
             fi
-            release_client="${CL,,}"
-            getClVcCurrentVersion "$CL" cl || true
-            fetch_latest_release "$release_client" || {
+            # Same call as update_consensus.sh before promptYesNo.
+            CLIENT="$CL"
+            getClVcCurrentVersion || true
+            fetch_latest_release "${CLIENT,,}" || {
                 echo "consensus ($CL): could not resolve LATEST"
                 return 1
             }
@@ -777,9 +788,10 @@ load_client_versions() {
                 echo "validator: not installed"
                 return 1
             fi
-            release_client="${VC,,}"
-            getClVcCurrentVersion "$VC" vc || true
-            fetch_latest_release "$release_client" || {
+            # Same call as update_validator.sh before promptYesNo.
+            CLIENT="$VC"
+            getClVcCurrentVersion "$CLIENT" vc || true
+            fetch_latest_release "${CLIENT,,}" || {
                 echo "validator ($VC): could not resolve LATEST"
                 return 1
             }
@@ -805,16 +817,6 @@ load_client_versions() {
             return 1
             ;;
     esac
-}
-
-# 0 if installed matches LATEST, 2 if behind, 1 on error.
-# Same comparison as TUI promptYesNo (version_matches_latest).
-client_version_status() {
-    load_client_versions "$1" || return 1
-    if version_matches_latest; then
-        return 0
-    fi
-    return 2
 }
 
 # Read clients from systemd config files
