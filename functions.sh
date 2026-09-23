@@ -645,6 +645,17 @@ parse_lodestar_installed_commit() {
   fi
 }
 
+# Lodestar readAndGetGitData() prefers live `git rev-parse` in cwd over baked
+# .git-data.json. ethpillar.sh cds to BASE_DIR, so `--version` from the repo
+# reports the EthPillar branch/tip. Run from a directory that is not a git
+# worktree (default /tmp). Override via LODESTAR_VERSION_CWD in tests.
+get_lodestar_version_output() {
+  local bin="$1"
+  local cwd="${LODESTAR_VERSION_CWD:-/tmp}"
+  [[ -d "$cwd" ]] || cwd=/tmp
+  (cd "$cwd" && "$bin" --version) 2>&1 || true
+}
+
 # Gets installed CL or VC version from binary.
 # Args: client (optional, defaults to CLIENT from getClient), role cl|vc (optional, defaults to cl).
 # Use role=cl for consensus/beacon (consensus.service); role=vc for validator (validator.service).
@@ -676,7 +687,7 @@ getClVcCurrentVersion(){
         ;;
       Lodestar)
         LODESTAR_BIN=$(get_systemd_exec_path "$svc_file" "/usr/local/bin/lodestar")
-        raw_version=$("$LODESTAR_BIN" --version 2>&1 || true)
+        raw_version=$(get_lodestar_version_output "$LODESTAR_BIN")
         # Official: "* Version: v1.48.0/c7dc2b0" or "v1.8.0/stable/a4b29cf".
         # Only the Version line. Commit must sit immediately after the semver
         # (or after a single channel token). Do not take the last /hex on the

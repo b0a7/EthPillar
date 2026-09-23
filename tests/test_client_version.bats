@@ -274,6 +274,37 @@ EOF
   [ "$INSTALLED_COMMIT" = "a4b29cf" ]
 }
 
+@test "get_lodestar_version_output invokes binary with cwd=/tmp" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  cat > "$stub" <<'EOF'
+#!/bin/bash
+printf 'cwd=%s\n' "$(pwd)"
+EOF
+  chmod +x "$stub"
+  run get_lodestar_version_output "$stub"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "cwd=/tmp" ]]
+}
+
+@test "getClVcCurrentVersion uses /tmp cwd so baked Lodestar commit wins over repo git" {
+  local stub="$TEST_BIN_DIR/lodestar"
+  cat > "$stub" <<'EOF'
+#!/bin/bash
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "* Version: v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2"
+else
+  echo "* Version: v1.48.0/c7dc2b0"
+fi
+EOF
+  chmod +x "$stub"
+  cat <<EOF > "$CONSENSUS_SERVICE_FILE"
+ExecStart=$stub
+EOF
+  getClVcCurrentVersion Lodestar cl
+  [ "$VERSION" = "v1.48.0" ]
+  [ "$INSTALLED_COMMIT" = "c7dc2b0" ]
+}
+
 @test "getClVcCurrentVersion ignores EthPillar branch SHA on Lodestar Version line" {
   local stub="$TEST_BIN_DIR/lodestar"
   write_stub_binary "$stub" 'echo "* Version: v1.48.0/cursor/cli-upgrade-skip-when-latest-0415/14901a2"'
