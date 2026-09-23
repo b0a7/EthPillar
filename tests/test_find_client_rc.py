@@ -178,14 +178,20 @@ def test_is_stable_candidate_rejects_prerelease_and_junk():
 
 
 def test_matches_forced_seed_tolerates_missing_prerelease_and_commit_prefix():
+    # Integration 35809007081: Ethrex RC --version is 28.0.0 (bf0647f), tag v28.0.0-rc.1
+    assert matches_forced_seed("28.0.0", "v28.0.0-rc.1", "bf0647f", "")
+    assert matches_forced_seed("28.0.0", "28.0.0-rc.1", "bf0647f", "deadbeef")
     assert matches_forced_seed("28.1.0", "v28.1.0-rc.1")
     assert matches_forced_seed("28.1.0", "28.1.0")
     assert matches_forced_seed("v28.1.0-rc.1", "28.1.0-rc.1")
     assert matches_forced_seed("28.1.0", "v28.1.0-rc.1", "abc1234", "abc1234def")
-    assert matches_forced_seed("28.1.0", "v28.1.0-rc.1", "abc1234def", "abc1234")
+    # Lodestar-style: Version line may omit -rc.N and still carry a commit.
+    assert matches_forced_seed("1.48.0", "1.48.0-rc.0", "c7dc2b0", "c7dc2b0dead")
+    assert matches_forced_seed("v8.0.1", "v8.0.1-rc.0")
+    # Base mismatch still fails (different patch / series).
     assert not matches_forced_seed("28.0.0", "v28.1.0-rc.1")
-    assert not matches_forced_seed("28.1.0", "v28.1.0-rc.1", "aaaaaaa", "bbbbbbb")
-    assert not matches_forced_seed("", "v28.1.0-rc.1")
+    assert not matches_forced_seed("27.0.0", "v28.0.0-rc.1")
+    assert not matches_forced_seed("", "v28.0.0-rc.1")
 
 
 def test_parse_geth_download_versions_dedupes():

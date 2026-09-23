@@ -24,7 +24,8 @@ installed_matches_latest_tag() {
   version_matches_latest "$1" "$2" "${INSTALLED_COMMIT:-}" "${3:-}"
 }
 
-# Forced-seed compare: base version ± commit; tolerate missing -rc.N on --version.
+# Forced-seed compare: base semver only (28.0.0 ↔ 28.0.0-rc.1). Commits optional.
+# General — not Ethrex-only. Integration 35809007081 failed exact tag match.
 installed_matches_forced_seed() {
   local installed="$1"
   local expected="$2"

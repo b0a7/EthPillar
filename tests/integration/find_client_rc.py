@@ -158,7 +158,12 @@ def base_semver(version: str) -> str:
 
 
 def commits_compatible(installed: str = "", expected: str = "") -> bool:
-    """Return True when commits are missing or one is a prefix of the other."""
+    """Return True when commits are missing or one is a prefix of the other.
+
+    Forced-seed matching does not require this: RC binaries often print a
+    ``HEAD-<hash>`` that is not the GitHub tag peel. Kept for callers that
+    want an optional extra signal.
+    """
     inst = (installed or "").strip().lower()
     tag = (expected or "").strip().lower()
     if not inst or not tag:
@@ -172,17 +177,22 @@ def matches_forced_seed(
     inst_commit: str = "",
     tag_commit: str = "",
 ) -> bool:
-    """Return True when *installed* matches a forced deploy seed.
+    """Return True when *installed* matches a forced deploy seed/RC tag.
 
-    Some RC/nightly binaries print final-release semver without ``-rc.N``
-    (Ethrex ``28.1.0`` vs tag ``v28.1.0-rc.1``). Accept the same base version
-    and, when both commits are known, a prefix match either way.
+    General rule (not client-specific): compare **base semver only**.
+    Prerelease suffixes (``-rc.1``, ``-alpha``, ``-HEAD-…``) and commit/hash
+    suffixes are optional. This is the Integration 35809007081 Ethrex case
+    (``28.0.0 (bf0647f)`` vs tag ``v28.0.0-rc.1``) and the same class of
+    Lodestar/other RC binaries that omit ``-rc.N`` from ``--version``.
+
+    *inst_commit* / *tag_commit* are accepted for API compatibility and are
+    **not** required to match. Official LATEST compares still use
+    ``version_matches_latest`` (exact tag + optional commit).
     """
+    del inst_commit, tag_commit  # optional; do not fail forced-seed on hash
     if not installed or not expected:
         return False
-    if base_semver(installed) != base_semver(expected):
-        return False
-    return commits_compatible(inst_commit, tag_commit)
+    return base_semver(installed) == base_semver(expected)
 
 
 def _releases(repo: str) -> list[dict]:
