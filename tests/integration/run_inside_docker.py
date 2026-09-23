@@ -46,6 +46,7 @@ from port_bindings import (  # noqa: E402
     el_supports_rpc_expose,
     expected_cl_quic_unit_flag,
     has_caplin_execution,
+    probe_cl_quic_capability,
     read_env_ports,
     verify_cl_quic_unit_flag,
     verify_port_expectations,
@@ -749,7 +750,14 @@ def _verify_default_port_bindings(args: Any, expected_services: List[str]) -> bo
         has_execution and not has_consensus and ("caplin" in (args.combo or "").lower() or "caplin" in (args.cc or "").lower())
     )
     cl_name = client_from_service("consensus") if has_consensus else ""
-    expect_cl_quic = has_consensus and cl_enables_quic_by_default(cl_name)
+    quic = (
+        probe_cl_quic_capability(cl_name)
+        if has_consensus and cl_enables_quic_by_default(cl_name)
+        else None
+    )
+    expect_cl_quic = bool(quic and quic.expect_listen)
+    if quic and not expect_cl_quic:
+        print(f"  ℹ️  {quic.reason}", flush=True)
 
     expectations = default_port_expectations(
         el_p2p_port=ports["el_p2p"],

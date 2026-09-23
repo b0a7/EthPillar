@@ -1,6 +1,9 @@
 """Parse ``ss -lntu`` output and verify RPC/P2P port bind addresses."""
 from __future__ import annotations
 
+import os
+import re
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass
@@ -163,6 +166,34 @@ CL_QUIC_UNIT_FLAGS: Dict[str, str] = {
     "Teku": "",
 }
 
+# Version floors from comments in ethpillar.sh (UFW QUIC notes). Backup only
+# when help is awkward, and a Nimbus hard floor when help is ambiguous/lying.
+# Verified: Nimbus v26.7.0-4110bc ``--help`` does **not** list ``--quic-port``.
+CL_QUIC_VERSION_FLOORS: Dict[str, str] = {
+    "Nimbus": "26.8.0",
+    "Teku": "26.7.0",
+    "Lodestar": "1.42.0",
+    "Prysm": "5.2.0",
+}
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_SEMVER_RE = re.compile(
+    r"v?(\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|dev)[0-9A-Za-z.]*)?)",
+    re.IGNORECASE,
+)
+_HELP_FLAG_RE = re.compile(r"(?m)(?:^|[\s])--[A-Za-z][A-Za-z0-9_-]*")
+_WRAPPER_BINS = {"env", "nice", "ionice", "sudo"}
+_SHELL_BINS = {"bash", "sh", "dash"}
+
+
+@dataclass(frozen=True)
+class QuicCapability:
+    """Result of a CL QUIC listen-assert capability probe."""
+
+    expect_listen: bool
+    reason: str
+    help_advertised: Optional[bool] = None
+
 
 def cl_enables_quic_by_default(cl_name: str) -> bool:
     """Return True when *cl_name* listens for QUIC without an opt-in flag."""
@@ -179,6 +210,241 @@ def expected_cl_quic_unit_flag(cl_name: str, quic_port: int) -> Optional[str]:
     if prefix is None or prefix == "":
         return None
     return f"{prefix}{quic_port}"
+
+
+def cl_quic_help_flag(cl_name: str) -> Optional[str]:
+    """Return the help-token EthPillar pins for *cl_name*, or ``None``.
+
+    Teku enables QUIC without a pinned flag, so this returns ``None`` and
+    callers fall back to the version floor / inconclusive path.
+    """
+    prefix = CL_QUIC_UNIT_FLAGS.get(cl_name)
+    if prefix is None or prefix == "":
+        return None
+    return prefix.rstrip("=")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove CSI color sequences (Nimbus ``--help`` is colorized)."""
+    return _ANSI_RE.sub("", text or "")
+
+
+def parse_cl_version_from_text(text: str) -> str:
+    """Extract the first ``v?X.Y.Z`` (optional prerelease) from *text*."""
+    match = _SEMVER_RE.search(text or "")
+    return match.group(0) if match else ""
+
+
+def parse_major_minor_patch(version: str) -> Optional[Tuple[int, int, int]]:
+    """Return ``(major, minor, patch)`` from *version*, ignoring prerelease."""
+    match = re.search(r"v?(\d+)\.(\d+)(?:\.(\d+))?", version or "", re.IGNORECASE)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3) or 0)
+
+
+def version_meets_quic_floor(cl_name: str, version: str) -> Optional[bool]:
+    """Compare *version* to the ethpillar.sh QUIC floor for *cl_name*.
+
+    Uses base semver only (``26.8.0-rc.1`` meets ``26.8.0``). Returns
+    ``None`` when the client has no floor or *version* cannot be parsed.
+    """
+    floor = CL_QUIC_VERSION_FLOORS.get(cl_name)
+    if not floor:
+        return None
+    got = parse_major_minor_patch(version)
+    need = parse_major_minor_patch(floor)
+    if got is None or need is None:
+        return None
+    return got >= need
+
+
+def help_advertises_quic_flag(help_text: str, flag: str) -> Optional[bool]:
+    """Return whether *help_text* lists *flag*.
+
+    ``True`` / ``False`` when the text looks like real ``--help``.
+    ``None`` when help is empty, tiny, or otherwise awkward to parse.
+    """
+    if not flag:
+        return None
+    text = strip_ansi(help_text)
+    if not text.strip():
+        return None
+    escaped = re.escape(flag)
+    if re.search(rf"(?m)(?:^|[\s|/]){escaped}(?:[=:\s,|/]|$)", text):
+        return True
+    if len(_HELP_FLAG_RE.findall(text)) >= 5:
+        return False
+    return None
+
+
+def consensus_exec_argv_from_unit(unit_text: str) -> List[str]:
+    """Return ExecStart argv (binary + optional subcommand) from unit text."""
+    first = ""
+    for line in (unit_text or "").splitlines():
+        if line.startswith("ExecStart="):
+            payload = line[len("ExecStart=") :].rstrip()
+            if payload.endswith("\\"):
+                payload = payload[:-1].rstrip()
+            first = payload.strip()
+            break
+    if not first:
+        return []
+    try:
+        parts = shlex.split(first)
+    except ValueError:
+        parts = first.split()
+    if not parts:
+        return []
+    basename = os.path.basename(parts[0])
+    if basename in _WRAPPER_BINS:
+        index = 1
+        while index < len(parts) and "=" in parts[index]:
+            index += 1
+        parts = parts[index:]
+        if not parts:
+            return []
+        basename = os.path.basename(parts[0])
+    if basename in _SHELL_BINS:
+        return []
+    return parts
+
+
+def read_consensus_exec_argv(
+    unit_path: str = "/etc/systemd/system/consensus.service",
+) -> List[str]:
+    """Read consensus ExecStart argv from *unit_path*."""
+    try:
+        with open(unit_path, encoding="utf-8") as handle:
+            return consensus_exec_argv_from_unit(handle.read())
+    except OSError:
+        return []
+
+
+def run_cli_output(argv: Sequence[str], extra: Sequence[str], timeout: int = 30) -> str:
+    """Run *argv* + *extra* from ``/tmp`` and return combined stdout/stderr."""
+    if not argv:
+        return ""
+    try:
+        result = subprocess.run(
+            list(argv) + list(extra),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd="/tmp",
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        return ""
+    return (result.stdout or "") + (result.stderr or "")
+
+
+def collect_installed_cl_probe(
+    unit_path: str = "/etc/systemd/system/consensus.service",
+) -> Tuple[str, str]:
+    """Probe the installed consensus binary for ``--help`` and a version.
+
+    Returns:
+        ``(help_text, version)``. Either may be empty when the binary cannot
+        be resolved or the probe fails (awkward → version-floor backup).
+    """
+    argv = read_consensus_exec_argv(unit_path)
+    if not argv:
+        return "", ""
+    help_text = run_cli_output(argv, ["--help"])
+    if not strip_ansi(help_text).strip():
+        help_text = run_cli_output(argv, ["-h"])
+    version_text = run_cli_output(argv, ["--version"])
+    version = parse_cl_version_from_text(version_text) or parse_cl_version_from_text(help_text)
+    return help_text, version
+
+
+def decide_cl_quic_listen(
+    cl_name: str,
+    *,
+    help_text: str = "",
+    version: str = "",
+) -> QuicCapability:
+    """Decide whether to require a public UDP QUIC listen for *cl_name*.
+
+    Primary: help advertises the EthPillar-pinned flag for this client.
+    Backup: version floor from ``ethpillar.sh`` when help is awkward.
+    Nimbus below v26.8.0 skips even if help advertises ``--quic-port``
+    (QUIC gossip landed in v26.8.0; help-lying defense).
+    """
+    if not cl_enables_quic_by_default(cl_name):
+        return QuicCapability(False, f"{cl_name} is not a QUIC-by-default client", None)
+
+    flag = cl_quic_help_flag(cl_name)
+    advertised = help_advertises_quic_flag(help_text, flag) if flag else None
+    meets_floor = version_meets_quic_floor(cl_name, version)
+    floor = CL_QUIC_VERSION_FLOORS.get(cl_name, "")
+
+    # Nimbus v26.7.0 never binds UDP 9001. Skip even if help were lying.
+    if cl_name == "Nimbus" and meets_floor is False:
+        shown = version or "unknown"
+        return QuicCapability(
+            False,
+            (
+                f"INFO: skip CL QUIC listen: Nimbus {shown} is below QUIC floor "
+                f"{floor} (QUIC gossip is v{floor}+)"
+            ),
+            advertised,
+        )
+
+    if advertised is True:
+        return QuicCapability(True, f"{cl_name} help advertises {flag}", True)
+    if advertised is False:
+        return QuicCapability(
+            False,
+            f"INFO: skip CL QUIC listen: {cl_name} help does not advertise {flag}",
+            False,
+        )
+
+    if meets_floor is True:
+        return QuicCapability(
+            True,
+            (
+                f"INFO: {cl_name} help awkward; version {version} meets "
+                f"QUIC floor {floor}"
+            ),
+            None,
+        )
+    if meets_floor is False:
+        return QuicCapability(
+            False,
+            (
+                f"INFO: skip CL QUIC listen: {cl_name} help awkward; version "
+                f"{version} is below QUIC floor {floor}"
+            ),
+            None,
+        )
+
+    return QuicCapability(
+        True,
+        f"INFO: {cl_name} QUIC capability probe inconclusive; expecting listen",
+        advertised,
+    )
+
+
+def probe_cl_quic_capability(
+    cl_name: str,
+    *,
+    unit_path: str = "/etc/systemd/system/consensus.service",
+    help_text: Optional[str] = None,
+    version: Optional[str] = None,
+) -> QuicCapability:
+    """Live wrapper: probe the installed binary, then :func:`decide_cl_quic_listen`.
+
+    Pass *help_text* / *version* to skip the live subprocess (unit tests).
+    """
+    if help_text is None and version is None:
+        help_text, version = collect_installed_cl_probe(unit_path)
+    return decide_cl_quic_listen(
+        cl_name,
+        help_text=help_text or "",
+        version=version or "",
+    )
 
 
 def verify_cl_quic_unit_flag(cl_name: str, quic_port: int) -> Tuple[bool, str]:
