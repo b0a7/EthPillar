@@ -307,7 +307,8 @@ EOF
     in_tools && /suggestPruningParameters/ { tools=1 }
     END { exit (el && !tools) ? 0 : 1 }
   ' ethpillar.sh
-  grep -q 'Suggest pruning parameters' ethpillar.sh
+  grep -q 'Suggest pruning parameters' functions.sh
+  grep -q 'buildExecutionSuboptions' ethpillar.sh
 }
 
 @test "Execution Client menu tags are sequential with Suggest pruning as 6" {
