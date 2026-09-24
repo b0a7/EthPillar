@@ -673,8 +673,41 @@ def cmd_prepare_prune_suggest(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def tmeld_pane_paths(
+    workdir: Path, meta: Optional[Dict[str, object]] = None
+) -> Tuple[str, str]:
+    """Return left/right paths to pass to tmeld.
+
+    A single differing unit opens the two ``.service`` files so the first
+    screen is the content diff (used by prune-suggest). Multiple units keep
+    the installed/ vs default/ folder compare.
+    """
+    if meta is None:
+        meta = _load_meta(workdir)
+    differing: List[str] = list(meta.get("differing") or [])
+    installed_dir = workdir / "installed"
+    default_dir = workdir / "default"
+    if len(differing) == 1:
+        key = str(differing[0])
+        left = installed_dir / f"{key}.service"
+        right = default_dir / f"{key}.service"
+        if left.is_file() and right.is_file():
+            return str(left), str(right)
+    return str(installed_dir), str(default_dir)
+
+
+def tmeld_command(
+    workdir: Path,
+    tmeld: str,
+    meta: Optional[Dict[str, object]] = None,
+) -> List[str]:
+    """Build the tmeld argv for a prepared workdir (no subprocess)."""
+    left, right = tmeld_pane_paths(workdir, meta)
+    return [tmeld, left, right, "--show-line-numbers"]
+
+
 def launch_tmeld(workdir: Path) -> int:
-    """Open tmeld folder compare: installed (left) vs default (right)."""
+    """Open tmeld: file pair when one unit differs, else folder compare."""
     meta = _load_meta(workdir)
     differing: List[str] = meta.get("differing") or []
     if not differing:
@@ -688,12 +721,9 @@ def launch_tmeld(workdir: Path) -> int:
             "(ensure_python_deps). Install manually with: pip install tmeld"
         )
 
-    installed_dir = workdir / "installed"
-    default_dir = workdir / "default"
     left_label = str(meta.get("left_label") or "installed (what gets applied)")
     right_label = str(meta.get("right_label") or "EthPillar default (reference)")
-    # Folder compare gives a WinMerge-like multi-file UI with tabs on Enter.
-    cmd = [tmeld, str(installed_dir), str(default_dir), "--show-line-numbers"]
+    cmd = tmeld_command(workdir, tmeld, meta)
     print(f"Launching: {' '.join(cmd)}")
     print(f"Left = {left_label} | Right = {right_label}")
     print("Stay on LEFT: Alt+Left copies a chunk from right→left, then Ctrl+S.")

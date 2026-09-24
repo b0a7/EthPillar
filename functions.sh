@@ -3168,6 +3168,39 @@ After you quit, you can apply saved left-pane changes
 }
 
 
+# Build Execution Client SUBOPTIONS with sequential visible tags.
+# Sets SUBOPTIONS and EXEC_MENU_{SUGGEST,UPDATE,RESYNC,EXPOSE,SWITCH,BACK}.
+# EXEC_MENU_SUGGEST is empty when the installed EL is unsupported (Ethrex).
+buildExecutionSuboptions() {
+    local client="${1:-}"
+    local helper="${BASE_DIR}/helpers/history_expiry_suggestions.sh"
+    local n=5
+    EXEC_MENU_SUGGEST=""
+    if [[ -f "$helper" ]]; then
+        # shellcheck source=helpers/history_expiry_suggestions.sh
+        source "$helper"
+    fi
+    SUBOPTIONS=(
+      1 "View logs"
+      2 "Start execution"
+      3 "Stop execution"
+      4 "Restart execution"
+      5 "Edit configuration"
+    )
+    if history_expiry_prune_suggest_menu_visible "$client"; then
+        n=$((n + 1))
+        EXEC_MENU_SUGGEST="$n"
+        SUBOPTIONS+=("$n" "Suggest pruning parameters")
+    fi
+    n=$((n + 1)); EXEC_MENU_UPDATE="$n"; SUBOPTIONS+=("$n" "Update to latest release")
+    n=$((n + 1)); EXEC_MENU_RESYNC="$n"; SUBOPTIONS+=("$n" "Resync execution client")
+    n=$((n + 1)); EXEC_MENU_EXPOSE="$n"; SUBOPTIONS+=("$n" "Expose execution client RPC Port")
+    n=$((n + 1)); EXEC_MENU_SWITCH="$n"; SUBOPTIONS+=("$n" "Switch execution client")
+    SUBOPTIONS+=(- "")
+    n=$((n + 1)); EXEC_MENU_BACK="$n"; SUBOPTIONS+=("$n" "Back to main menu")
+}
+
+
 # Suggest pruning / history-expiry flags for the installed execution client.
 # Left = exact execution.service; right = same unit with prune flags merged
 # into ExecStart only (not an EthPillar regen). Apply path matches compare.
@@ -3288,7 +3321,6 @@ Left  = installed execution.service (this is what gets applied)
 Right = same unit with selected prune flags merged into ExecStart only
 
 Workflow — stay on the LEFT pane:
- • Enter a file from the folder view to open a tab
  • Alt+Down / Alt+Up  jump between differences
  • Alt+Left           copy this chunk from RIGHT → LEFT
  • Ctrl+S             save LEFT (required to keep merges)
@@ -3296,7 +3328,7 @@ Workflow — stay on the LEFT pane:
 
 Saving the right pane does nothing for EthPillar.
 After you quit, you can apply saved left-pane changes
-(with optional .bak backup)." 22 72
+(with optional .bak backup)." 21 72
 
     finishTmeldSystemdApply "$workdir"
     rm -rf "$workdir"

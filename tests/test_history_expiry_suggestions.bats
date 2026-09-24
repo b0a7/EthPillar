@@ -288,6 +288,16 @@ EOF
   ' functions.sh
 }
 
+@test "prune-suggest help opens the unit diff not the folder list" {
+  awk '
+    /^suggestPruningParameters\(\)/ { in_fn=1 }
+    in_fn && /folder view/ { bad=1 }
+    in_fn && /^}/ { exit bad ? 1 : 0 }
+  ' functions.sh
+  grep -q 'tmeld_pane_paths' manage/config_compare.py
+  grep -q 'content diff' manage/config_compare.py
+}
+
 @test "history expiry is under Execution Client, not Toolbox" {
   awk '
     /^submenuExecution\(\)/ { in_el=1; in_tools=0 }
@@ -301,28 +311,54 @@ EOF
 }
 
 @test "Execution Client menu tags are sequential with Suggest pruning as 6" {
+  grep -q 'buildExecutionSuboptions' ethpillar.sh
   awk '
     /^submenuExecution\(\)/ { in_fn=1 }
-    in_fn && /^}/ { exit 0 }
-    in_fn && /[0-9]+ "Suggest pruning parameters"/ {
-      if ($1 != 6) exit 1
-    }
-    in_fn && /[0-9]+ "Back to main menu"/ {
-      if ($1 != 11) exit 1
-    }
-    in_fn && /^[[:space:]]*[0-9]+[[:space:]]+"/ {
-      tag = $1 + 0
-      if (prev != "" && tag != prev + 1) exit 1
-      prev = tag
-    }
-  ' ethpillar.sh
-  awk '
-    /^submenuExecution\(\)/ { in_fn=1 }
+    in_fn && /suggestPruningParameters/ { found=1 }
     in_fn && /^}/ { exit found ? 0 : 1 }
-    in_fn && /^[[:space:]]*6\)/ { want=1 }
-    want && /suggestPruningParameters/ { found=1 }
-    want && /^[[:space:]]*[0-9]+\)/ && !/^[[:space:]]*6\)/ { want=0 }
   ' ethpillar.sh
+  # shellcheck disable=SC1091
+  source ./functions.sh
+  buildExecutionSuboptions "Geth"
+  [[ "$EXEC_MENU_SUGGEST" == "6" ]]
+  [[ "$EXEC_MENU_BACK" == "11" ]]
+  [[ "${SUBOPTIONS[*]}" == *"Suggest pruning parameters"* ]]
+  local prev="" tag
+  local i
+  for ((i = 0; i < ${#SUBOPTIONS[@]}; i += 2)); do
+    tag="${SUBOPTIONS[$i]}"
+    [[ "$tag" == "-" ]] && continue
+    if [[ -n "$prev" ]]; then
+      [[ "$tag" -eq $((prev + 1)) ]]
+    fi
+    prev="$tag"
+  done
+}
+
+@test "Ethrex Execution menu omits Suggest pruning and stays sequential" {
+  run history_expiry_prune_suggest_menu_visible "Ethrex"
+  [ "$status" -ne 0 ]
+  run history_expiry_prune_suggest_menu_visible "Geth"
+  [ "$status" -eq 0 ]
+  run history_expiry_prune_suggest_menu_visible "Nethermind"
+  [ "$status" -eq 0 ]
+  # shellcheck disable=SC1091
+  source ./functions.sh
+  buildExecutionSuboptions "Ethrex"
+  [[ -z "$EXEC_MENU_SUGGEST" ]]
+  [[ "$EXEC_MENU_UPDATE" == "6" ]]
+  [[ "$EXEC_MENU_BACK" == "10" ]]
+  [[ "${SUBOPTIONS[*]}" != *"Suggest pruning parameters"* ]]
+  local prev="" tag
+  local i
+  for ((i = 0; i < ${#SUBOPTIONS[@]}; i += 2)); do
+    tag="${SUBOPTIONS[$i]}"
+    [[ "$tag" == "-" ]] && continue
+    if [[ -n "$prev" ]]; then
+      [[ "$tag" -eq $((prev + 1)) ]]
+    fi
+    prev="$tag"
+  done
 }
 
 @test "docs and node-checker do not point Suggest pruning parameters at Toolbox" {

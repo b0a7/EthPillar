@@ -214,6 +214,14 @@ history_expiry_status() {
   echo "missing"
 }
 
+history_expiry_prune_suggest_menu_visible() {
+  # Execution Client lists Suggest pruning only when it can do more than
+  # "not implemented". Ethrex (and any future unsupported EL) stay hidden.
+  # no_el / unknown stay visible so the in-flow msgbox can explain.
+  local client="${1:-}"
+  [[ "$(history_expiry_status "$client" "")" != "unsupported" ]]
+}
+
 history_expiry_status_plain() {
   # Operator-facing status words (not the machine token).
   case "${1:-}" in

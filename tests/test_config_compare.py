@@ -9,6 +9,8 @@ from manage.config_compare import (
     generate_default_unit,
     prepare_prune_suggest_workdir,
     prepare_workdir,
+    tmeld_command,
+    tmeld_pane_paths,
 )
 from manage.service_parse import canonicalize_unit, semantic_equal
 
@@ -355,3 +357,37 @@ def test_prepare_prune_suggest_further_level(tmp_path):
     right = (work / "default" / "execution.service").read_text(encoding="utf-8")
     assert "--history.chain=postprague" in right
     assert "--history.chain=postmerge" not in right
+
+
+def test_prune_suggest_tmeld_opens_unit_file_pair(tmp_path):
+    """Prune-suggest must skip the folder list and open execution.service."""
+    unit = tmp_path / "execution.service"
+    unit.write_text(_GETH_UNIT_MISSING_HISTORY, encoding="utf-8")
+    work = tmp_path / "work"
+    differing, meta = prepare_prune_suggest_workdir(
+        work, unit_path=str(unit), flags="--history.chain=postmerge"
+    )
+    assert differing == ["execution"]
+    left, right = tmeld_pane_paths(work, meta)
+    assert Path(left) == work / "installed" / "execution.service"
+    assert Path(right) == work / "default" / "execution.service"
+    cmd = tmeld_command(work, "/usr/bin/tmeld", meta)
+    assert cmd == [("/usr/bin/tmeld"), left, right, "--show-line-numbers"]
+    assert Path(cmd[1]).is_file()
+    assert Path(cmd[2]).is_file()
+
+
+def test_tmeld_pane_paths_multi_unit_keeps_folder_compare(tmp_path):
+    """Compare systemd configs still uses folders when several units differ."""
+    installed = tmp_path / "installed"
+    default = tmp_path / "default"
+    installed.mkdir()
+    default.mkdir()
+    (installed / "execution.service").write_text("[Service]\n", encoding="utf-8")
+    (default / "execution.service").write_text("[Service]\n", encoding="utf-8")
+    (installed / "consensus.service").write_text("[Service]\n", encoding="utf-8")
+    (default / "consensus.service").write_text("[Service]\n", encoding="utf-8")
+    meta = {"differing": ["execution", "consensus"]}
+    left, right = tmeld_pane_paths(tmp_path, meta)
+    assert Path(left) == installed
+    assert Path(right) == default

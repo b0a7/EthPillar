@@ -4,11 +4,13 @@ Helper for home stakers who are nervous about disk growth on ~2TB NVMe.
 
 `helpers/history_expiry_suggestions.sh` is the source of truth for suggested
 and optional flags plus status. Execution Client → **Suggest pruning
-parameters** opens tmeld: left is the exact installed `execution.service`
-(what gets applied), right is that same unit with selected prune flags merged
-into **ExecStart only** (not a full EthPillar regen). After you quit, the
-compare-style apply path runs (list-changed → confirm → `.bak` → apply →
-daemon-reload / restart). Node Checker stays print/status-based.
+parameters** opens tmeld directly on the `execution.service` pair (not the
+folder list): left is the exact installed unit (what gets applied), right is
+that same unit with selected prune flags merged into **ExecStart only** (not
+a full EthPillar regen). After you quit, the compare-style apply path runs
+(list-changed → confirm → `.bak` → apply → daemon-reload / restart). Node
+Checker stays print/status-based. The menu row is hidden for unsupported ELs
+(Ethrex).
 
 Suggestions target **staking / full nodes**, not intentional archive, Caplin
 archive, or operators who need local `eth_getLogs` / receipts (Rocket Pool,
@@ -113,14 +115,16 @@ CL is usually not the 2TB growth driver. Staking defaults:
 
 - Execution Client → **Suggest pruning parameters**:
   1. Detects the installed EL from `/etc/systemd/system/execution.service`.
-  2. Short-circuits (msgbox, no tmeld) when there is no EL, the client is
-     unsupported (Ethrex), or recommended flags are already present.
+  2. The menu row is omitted for unsupported ELs (Ethrex: no history-expiry
+     CLI). Short-circuits (msgbox, no tmeld) when there is no EL or
+     recommended flags are already present.
   3. Archive / Caplin archive: warns, then opens tmeld only if you confirm.
   4. Geth / Besu / Reth: pick **Recommended** (default) vs **Further
      savings**. Nethermind / Erigon skip the picker and use recommended.
   5. Pre-tmeld warnings cover destructive prune, RP/SSV `eth_getLogs`, and
      Geth/Besu offline prune commands as **notes only** (never auto-run).
-  6. Consensus layer is a one-line note, not a second pane.
+  6. tmeld opens on the unit file pair (content diff), not the folder list.
+  7. Consensus layer is a one-line note, not a second pane.
 - Security & Node Checks → **Node Checker** (WARN if flags missing or disk
   ≥90%; INFO for archive/Caplin; never FAIL). Print/status only.
 - CLI: `helpers/history_expiry_suggestions.sh` (`--all`, `--unit FILE`,
