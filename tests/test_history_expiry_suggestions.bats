@@ -300,6 +300,31 @@ EOF
   grep -q 'Suggest pruning parameters' ethpillar.sh
 }
 
+@test "Execution Client menu tags are sequential with Suggest pruning as 6" {
+  awk '
+    /^submenuExecution\(\)/ { in_fn=1 }
+    in_fn && /^}/ { exit 0 }
+    in_fn && /[0-9]+ "Suggest pruning parameters"/ {
+      if ($1 != 6) exit 1
+    }
+    in_fn && /[0-9]+ "Back to main menu"/ {
+      if ($1 != 11) exit 1
+    }
+    in_fn && /^[[:space:]]*[0-9]+[[:space:]]+"/ {
+      tag = $1 + 0
+      if (prev != "" && tag != prev + 1) exit 1
+      prev = tag
+    }
+  ' ethpillar.sh
+  awk '
+    /^submenuExecution\(\)/ { in_fn=1 }
+    in_fn && /^}/ { exit found ? 0 : 1 }
+    in_fn && /^[[:space:]]*6\)/ { want=1 }
+    want && /suggestPruningParameters/ { found=1 }
+    want && /^[[:space:]]*[0-9]+\)/ && !/^[[:space:]]*6\)/ { want=0 }
+  ' ethpillar.sh
+}
+
 @test "docs and node-checker do not point Suggest pruning parameters at Toolbox" {
   run grep -n -i 'toolbox' docs/history-expiry-suggestions.md
   [ "$status" -ne 0 ]

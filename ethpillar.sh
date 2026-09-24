@@ -397,13 +397,13 @@ while true; do
       3 "Stop execution"
       4 "Restart execution"
       5 "Edit configuration"
-      11 "Suggest pruning parameters"
-      6 "Update to latest release"
-      7 "Resync execution client"
-      8 "Expose execution client RPC Port"
-      9 "Switch execution client"
+      6 "Suggest pruning parameters"
+      7 "Update to latest release"
+      8 "Resync execution client"
+      9 "Expose execution client RPC Port"
+      10 "Switch execution client"
       - ""
-      10 "Back to main menu"
+      11 "Back to main menu"
     )
 
     # Display the submenu and get the user's choice
@@ -439,22 +439,22 @@ while true; do
           "Do you want to restart execution client?" \
           execution
         ;;
-      11)
+      6)
         suggestPruningParameters
         ;;
-      6)
+      7)
         runScript update_execution.sh
         ;;
-      7)
+      8)
         runScript resync_execution.sh
         ;;
-      8)
+      9)
         exposeRpcEL
         ;;
-      9)
+      10)
         runScript switch_client.sh execution
         ;;
-      10)
+      11)
         break
         ;;
     esac
