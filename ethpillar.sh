@@ -390,20 +390,8 @@ done
 submenuExecution(){
 while true; do
     getBackTitle
-    # Define the options for the submenu
-    SUBOPTIONS=(
-      1 "View logs"
-      2 "Start execution"
-      3 "Stop execution"
-      4 "Restart execution"
-      5 "Edit configuration"
-      6 "Update to latest release"
-      7 "Resync execution client"
-      8 "Expose execution client RPC Port"
-      9 "Switch execution client"
-      - ""
-      10 "Back to main menu"
-    )
+    # Sequential tags; Suggest pruning is omitted for unsupported ELs (Ethrex).
+    buildExecutionSuboptions "${EL}"
 
     # Display the submenu and get the user's choice
     SUBCHOICE=$(whiptail --clear --cancel-button "Back" \
@@ -438,19 +426,22 @@ while true; do
           "Do you want to restart execution client?" \
           execution
         ;;
-      6)
+      ${EXEC_MENU_SUGGEST:-__no_suggest__})
+        suggestPruningParameters
+        ;;
+      ${EXEC_MENU_UPDATE})
         runScript update_execution.sh
         ;;
-      7)
+      ${EXEC_MENU_RESYNC})
         runScript resync_execution.sh
         ;;
-      8)
+      ${EXEC_MENU_EXPOSE})
         exposeRpcEL
         ;;
-      9)
+      ${EXEC_MENU_SWITCH})
         runScript switch_client.sh execution
         ;;
-      10)
+      ${EXEC_MENU_BACK})
         break
         ;;
     esac
