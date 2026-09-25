@@ -2,8 +2,8 @@
 #
 # tests/test_node_checker_quic.bats
 #
-# Unit tests for CL QUIC UDP helpers in plugins/node-checker/run.sh.
-# Does not start Ethereum clients.
+# Unit tests for CL QUIC UDP helpers in plugins/node-checker/networking.sh
+# (sourced by run.sh). Does not start Ethereum clients.
 #
 # Run: bats tests/test_node_checker_quic.bats
 #

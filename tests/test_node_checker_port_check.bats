@@ -3,7 +3,8 @@
 # tests/test_node_checker_port_check.bats
 #
 # Unit tests for inbound / troubleshoot port-check helpers in
-# plugins/node-checker/run.sh. Does not start Ethereum clients.
+# plugins/node-checker/networking.sh (sourced by run.sh).
+# Does not start Ethereum clients.
 #
 # Run: bats tests/test_node_checker_port_check.bats
 #
@@ -83,6 +84,14 @@ sample_identity_json() {
   }
 }
 EOF
+}
+
+@test "run.sh sources networking.sh for port-check helpers" {
+	[ -f plugins/node-checker/networking.sh ]
+	[ "$(type -t check_open_ports)" = "function" ]
+	[ "$(type -t expected_cl_quic_udp_ports)" = "function" ]
+	[ "$(type -t print_port_troubleshoot_guidance)" = "function" ]
+	grep -q 'source "${SOURCE_DIR}/networking.sh"' plugins/node-checker/run.sh
 }
 
 # ── classifiers / multiaddr ───────────────────────────────────────────────────
