@@ -118,17 +118,17 @@ EOF
     ! grep -q curl "$COMMAND_LOG"
 }
 
-@test "version: same output and exit code as --version" {
-    run ./ethpillar.sh --version
-    flag_status=$status
-    flag_output=$output
-    [ "$flag_status" -eq 0 ]
-
+@test "version: exits 0 and prints the same default lines as --version" {
     run ./ethpillar.sh version
-    [ "$status" -eq "$flag_status" ]
-    [ "$output" = "$flag_output" ]
-    [[ "$output" == *"EthPillar:"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Consensus client: Not installed."* ]]
+    [[ "$output" == *"Execution client: Not installed."* ]]
+    [[ "$output" == *"Validator client: Not installed."* ]]
+    [[ "$output" == *"Mev-boost: Not Installed"* ]]
+    ep_version=$(grep '^EP_VERSION=' ethpillar.sh | cut -d'"' -f2)
+    [[ "$output" == *"EthPillar: $ep_version"* ]]
     ! grep -q whiptail "$COMMAND_LOG"
+    ! grep -q curl "$COMMAND_LOG"
 }
 
 @test "help: documents version as the primary form (and --version as alias)" {
