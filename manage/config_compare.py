@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -232,6 +233,10 @@ def _resolve_context(env: Dict[str, str], paths: Dict[str, str]) -> Dict[str, ob
         default="/secrets/jwtsecret",
     )
     sync_url = _scrape_sync_url(cons_args)
+    if not sync_url and "consensus" in contents:
+        # Nimbus keeps its checkpoint URL in the trustedNodeSync ExecStartPre.
+        m = re.search(r"--trusted-node-url=\"?([^\s'\"]+)", contents["consensus"])
+        sync_url = m.group(1) if m else ""
     if not sync_url:
         sync_urls = getattr(config, f"{network}_sync_urls", [])
         if sync_urls:
@@ -367,6 +372,7 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
             return nimbus.generate_nimbus_bn_service(
                 network, jwt, cl_rest, cl_p2p, cl_p2p_2, cl_peers,
                 fee_parameters=fee_params, mev_parameters=mev_params,
+                sync_url=sync_url,
             )
         if cl == "Teku":
             if Path("/etc/systemd/system/charon.service").is_file():

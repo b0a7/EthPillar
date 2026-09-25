@@ -185,7 +185,7 @@ class TestRunInstallRouting:
     We mock all client modules and verify that only the selected ones are called.
     """
     
-    def _run(self, role, ec, cc, vc=None, flags_override=None):
+    def _run(self, role, ec, cc, vc=None, flags_override=None, params_override=None):
         flags = resolve_role_flags(role, "mainnet")
         flags.update(flags_override or {})
             
@@ -225,7 +225,8 @@ class TestRunInstallRouting:
             stack.enter_context(patch('deploy.common.setup_node'))
             stack.enter_context(patch('deploy.common.finish_install'))
             
-            run_install(role, "mainnet", ec, cc, vc or cc, flags, MOCK_PARAMS.copy(), MOCK_ENV.copy())
+            params = {**MOCK_PARAMS, **(params_override or {})}
+            run_install(role, "mainnet", ec, cc, vc or cc, flags, params, MOCK_ENV.copy())
             
             return {
                 'reth': r_ec, 'besu': b_ec, 'nethermind': n_ec, 'erigon': e_ec, 'geth': g_ec,
@@ -359,6 +360,15 @@ class TestRunInstallRouting:
         call_kwargs = mocks['nb_bn'].call_args
         assert mev_params_expected in call_kwargs.kwargs.get('mev_parameters', ''), \
             f"Expected MEV params '{mev_params_expected}' in nimbus install, got: {call_kwargs}"
+
+    def test_switch_consensus_client_nimbus_passes_checkpoint_sync_url(self):
+        # Nimbus has no checkpoint-sync unit flag; the URL must reach install_nimbus_bn
+        # so it can run trustedNodeSync instead of syncing from genesis.
+        sync_url = 'https://mainnet.checkpoint.sigp.io'
+        mocks = self._run("Switch Consensus Client", None, "Nimbus", None,
+                          flags_override={"validator": False, "switch_client": "consensus"},
+                          params_override={"sync_url": sync_url})
+        assert mocks['nb_bn'].call_args.kwargs.get('sync_url') == sync_url
 
     def test_switch_consensus_client_teku_with_mevboost(self):
         # Verify Teku gets MEV params when switching with mevboost enabled

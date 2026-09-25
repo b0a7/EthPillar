@@ -294,6 +294,27 @@ def test_resolve_context_bn_endpoint_falls_back_to_charon_api(monkeypatch, tmp_p
     assert ctx["bn_endpoint"] == "http://127.0.0.1:3600"
 
 
+def test_nimbus_custom_checkpoint_url_round_trips(monkeypatch, tmp_path):
+    """Nimbus keeps its checkpoint URL in ExecStartPre; compare must read it back."""
+    import deploy.nimbus as nimbus
+    from manage.config_compare import _resolve_context
+
+    url = "https://checkpointz.pietjepuk.net/?key=a&b=c"
+    unit = nimbus.generate_nimbus_bn_service(
+        "mainnet", "/secrets/jwtsecret", "5052", "9000", "9001", "100", sync_url=url,
+    )
+    cons = tmp_path / "consensus.service"
+    cons.write_text(unit, encoding="utf-8")
+    monkeypatch.setattr(
+        "manage.config_compare.read_text_file",
+        lambda path: Path(path).read_text(encoding="utf-8"),
+    )
+
+    ctx = _resolve_context({}, {"consensus": str(cons)})
+    assert ctx["sync_url"] == url
+    assert semantic_equal(unit, generate_default_unit("consensus", ctx))
+
+
 _GETH_UNIT_MISSING_HISTORY = """\
 [Unit]
 Description=Geth Execution Layer Client service for MAINNET
