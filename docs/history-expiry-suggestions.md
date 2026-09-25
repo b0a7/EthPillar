@@ -44,10 +44,12 @@ docs before applying.
   `geth prune-history --datadir <dir> --history.chain postmerge`.
 - **Pre-Prague:** `--history.chain=postprague` (newer binaries; eth-docker
   `pre-prague-expiry`).
-- **Rolling:** `--history.chain=recent --history.blocks=N` (N > 100000) landed
-  as work-in-progress in 2026; still treat as settling.
+- **Rolling:** `--history.chain=recent --history.blocks=1056768` (~5 months;
+  same window as Besu/Reth Further). Newer and still settling; N must be
+  >100000.
 - **Archive:** `--gcmode=archive` (hash scheme) or `--history.state=0` (path).
-- **Suitable for a ~2TB drive:** `--history.chain=postprague`.
+- **Suitable for a ~2TB drive:** Recommended `--history.chain=postprague`.
+  Further savings: `--history.chain=recent --history.blocks=1056768`.
   `--history.chain=postmerge` alone is no longer the recommendation
   (pre-Prague history is getting tight).
 
@@ -124,9 +126,10 @@ CL is usually not the growth driver on a ~2TB drive. Staking defaults:
      CLI). Short-circuits (msgbox, no tmeld) when there is no EL or
      recommended flags are already present.
   3. Archive / Caplin archive: warns, then opens tmeld only if you confirm.
-  4. Besu / Reth: pick **Recommended** (suitable for a ~2TB drive) vs
-     **Further savings**. Geth / Nethermind / Erigon skip the picker and
-     use recommended (`--history.chain=postprague` for Geth).
+  4. Geth / Besu / Reth: pick **Recommended** (suitable for a ~2TB drive)
+     vs **Further savings**. Nethermind / Erigon skip the picker and use
+     recommended. Geth Recommended is `--history.chain=postprague`; Further
+     is `--history.chain=recent --history.blocks=1056768`.
   5. Pre-tmeld warnings cover destructive prune, RP/SSV `eth_getLogs`, and
      Geth/Besu offline prune commands as **notes only** (never auto-run).
   6. tmeld opens on the unit file pair (content diff), not the folder list.

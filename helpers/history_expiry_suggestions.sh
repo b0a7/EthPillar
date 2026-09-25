@@ -280,7 +280,7 @@ history_expiry_optional_flags() {
   local client="${1:-}"
   case "$client" in
     Geth)
-      echo "--history.chain=recent --history.blocks=<N>"
+      echo "--history.chain=recent --history.blocks=1056768"
       ;;
     Besu)
       echo "--Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768"
@@ -298,7 +298,7 @@ history_expiry_optional_flags() {
 history_expiry_optional_why() {
   local client="${1:-}"
   case "$client" in
-    Geth) echo "Rolling recent (N > 100000) is still settling; not offered in the TUI picker." ;;
+    Geth) echo "Rolling recent (~5 months / 1056768 blocks) is newer and still settling." ;;
     Besu) echo "~5 months rolling. Experimental; skip if you need local receipts/logs." ;;
     Reth) echo "~5 months rolling, or aggressive --minimal. Both drop receipts some protocols need." ;;
     *) echo "" ;;
@@ -311,7 +311,7 @@ history_expiry_further_savings_flags() {
   local client="${1:-}"
   case "$client" in
     Geth)
-      echo ""
+      echo "--history.chain=recent --history.blocks=1056768"
       ;;
     Besu)
       echo "--Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768"
@@ -628,15 +628,15 @@ history_expiry_apply_extra() {
   # Optional $2 is the selected flag set so Geth's offline hint matches the mode.
   local client="${1:-}"
   local flags="${2:-}"
-  local mode="postprague"
   case "$client" in
     Geth)
       if [[ "$flags" == *"--history.chain=recent"* || "$flags" == *"--history.chain recent"* ]]; then
-        mode="recent"
+        echo "Offline first: geth prune-history --datadir <datadir> --history.chain recent --history.blocks 1056768"
       elif [[ "$flags" == *"--history.chain=postmerge"* || "$flags" == *"--history.chain postmerge"* ]]; then
-        mode="postmerge"
+        echo "Offline first: geth prune-history --datadir <datadir> --history.chain postmerge"
+      else
+        echo "Offline first: geth prune-history --datadir <datadir> --history.chain postprague"
       fi
-      echo "Offline first: geth prune-history --datadir <datadir> --history.chain ${mode}"
       ;;
     Besu) echo "Existing full-history DB: besu --data-path=<path> storage prune-pre-merge-blocks" ;;
     *) echo "" ;;
