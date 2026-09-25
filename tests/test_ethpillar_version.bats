@@ -2,7 +2,7 @@
 #
 # tests/test_ethpillar_version.bats
 #
-# Tests for ethpillar.sh --version (CLI version output).
+# Tests for ethpillar.sh version / --version (CLI version output).
 #
 
 setup() {
@@ -116,6 +116,26 @@ EOF
     [[ "$output" == *"EthPillar: $ep_version"* ]]
     ! grep -q whiptail "$COMMAND_LOG"
     ! grep -q curl "$COMMAND_LOG"
+}
+
+@test "version: exits 0 and prints the same default lines as --version" {
+    run ./ethpillar.sh version
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Consensus client: Not installed."* ]]
+    [[ "$output" == *"Execution client: Not installed."* ]]
+    [[ "$output" == *"Validator client: Not installed."* ]]
+    [[ "$output" == *"Mev-boost: Not Installed"* ]]
+    ep_version=$(grep '^EP_VERSION=' ethpillar.sh | cut -d'"' -f2)
+    [[ "$output" == *"EthPillar: $ep_version"* ]]
+    ! grep -q whiptail "$COMMAND_LOG"
+    ! grep -q curl "$COMMAND_LOG"
+}
+
+@test "help: documents version as the primary form (and --version as alias)" {
+    run ./ethpillar.sh help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'\n  version '* ]]
+    [[ "$output" == *"--version"* ]]
 }
 
 @test "--version: prints client versions from binaries when services exist" {
