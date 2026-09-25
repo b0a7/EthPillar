@@ -27,6 +27,10 @@ POLL_INTERVAL_SEC = 5
 EXECUTION_POLL_ATTEMPTS = 12   # 60s
 CONSENSUS_POLL_ATTEMPTS = 36   # 180s — CC checkpoint sync can be slow on testnets
 CAPLIN_POLL_ATTEMPTS = 72      # 360s — HOODI checkpoint + header sync before Caplin binds 9000
+SYSTEMCTL_START_TIMEOUT_SEC = 30
+# Nimbus trustedNodeSync is ExecStartPre; the unit sets TimeoutStartSec=1800.
+# Keep the systemctl client slightly above that so a systemd timeout is visible.
+CONSENSUS_SYSTEMCTL_START_TIMEOUT_SEC = 1860
 
 # Prefer local warmed cache (see warm_checkpoint_cache.py); fall back to ethpandaops.
 from checkpoint_cache_common import checkpoint_sync_url_for_network  # noqa: E402
@@ -51,6 +55,13 @@ from port_bindings import (  # noqa: E402
     verify_cl_quic_unit_flag,
     verify_port_expectations,
     wait_for_port_scope,
+)
+from nimbus_checkpoint_asserts import (  # noqa: E402
+    NIMBUS_DB_DIR,
+    journal_indicates_start_timeout,
+    nimbus_checkpoint_db_ready,
+    systemd_result_is_start_timeout,
+    unit_uses_nimbus_checkpoint_sync,
 )
 
 # Import INSTALL_DIR from common so the path is maintained centrally
@@ -397,6 +408,70 @@ def check_service_file_substitution(service_name: str) -> bool:
     return True
 
 
+def check_nimbus_first_start_checkpoint_sync(service_name: str = "consensus") -> bool:
+    """Assert Nimbus ExecStartPre trustedNodeSync produced a db and did not time out.
+
+    No-op when *service_name* is not a Nimbus checkpoint-sync consensus unit.
+    Hard-fails on systemd ``Result=timeout`` / TimeoutStartSec / missing ``db``.
+    """
+    service_path = f"/etc/systemd/system/{service_name}.service"
+    if not os.path.isfile(service_path):
+        return True
+    with open(service_path, encoding="utf-8") as handle:
+        unit_text = handle.read()
+    if not unit_uses_nimbus_checkpoint_sync(unit_text):
+        return True
+
+    print("  [nimbus] Checking first-start trustedNodeSync result...", flush=True)
+
+    result_prop = subprocess.run(
+        _systemctl_cmd("show", "-p", "Result", "--value", service_name),
+        capture_output=True, text=True,
+    )
+    result = result_prop.stdout.strip()
+    if systemd_result_is_start_timeout(result):
+        print(
+            f"  ❌ Nimbus consensus start Result={result} "
+            f"(TimeoutStartSec / ExecStartPre timed out)",
+            flush=True,
+        )
+        subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "40"])
+        return False
+
+    journal = subprocess.run(
+        ["journalctl", "-u", service_name, "--no-pager", "-n", "200"],
+        capture_output=True, text=True,
+    )
+    journal_text = journal.stdout or ""
+    if journal_indicates_start_timeout(journal_text):
+        print(
+            "  ❌ Nimbus consensus journal shows a start-timeout / ExecStartPre timeout",
+            flush=True,
+        )
+        print(journal_text[-4000:], flush=True)
+        return False
+
+    if not nimbus_checkpoint_db_ready(use_sudo=True):
+        print(
+            f"  ❌ Nimbus trustedNodeSync did not create {NIMBUS_DB_DIR}",
+            flush=True,
+        )
+        if journal_text:
+            print(journal_text[-4000:], flush=True)
+        return False
+    print(f"  ✅ Nimbus checkpoint db present at {NIMBUS_DB_DIR}", flush=True)
+
+    if "trustednodesync" in journal_text.lower() or "trusted node sync" in journal_text.lower():
+        print("  ✅ Journal shows trustedNodeSync ran", flush=True)
+    else:
+        print(
+            "  ℹ️  Journal did not mention trustedNodeSync; "
+            "db presence is the success criterion",
+            flush=True,
+        )
+    return True
+
+
 def _journalctl_args(service_name: str) -> List[str]:
     """Return journalctl args scoped to the service's current MainPID when available."""
     pid_result = subprocess.run(
@@ -581,13 +656,36 @@ def check_service_start(
             return False
         print(f"  ✅ daemon-reload succeeded (service file syntax OK)", flush=True)
 
-        # Step 2: start the service
-        result = subprocess.run(
-            _systemctl_cmd("start", service_name),
-            capture_output=True, text=True, timeout=30
+        # Step 2: start the service (blocks through ExecStartPre; Nimbus
+        # trustedNodeSync can take many minutes — do not use the 30s default).
+        start_timeout = (
+            CONSENSUS_SYSTEMCTL_START_TIMEOUT_SEC
+            if service_name == "consensus"
+            else SYSTEMCTL_START_TIMEOUT_SEC
         )
+        try:
+            result = subprocess.run(
+                _systemctl_cmd("start", service_name),
+                capture_output=True, text=True, timeout=start_timeout
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"  ❌ systemctl start {service_name} exceeded {start_timeout}s "
+                f"(ExecStartPre / TimeoutStartSec)",
+                flush=True,
+            )
+            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "40"])
+            return False
         if result.returncode != 0:
-            print(f"  ❌ systemctl start {service_name} failed:\n{result.stderr}", flush=True)
+            stderr = result.stderr or ""
+            if journal_indicates_start_timeout(stderr) or "timeout" in stderr.lower():
+                print(
+                    f"  ❌ systemctl start {service_name} failed: "
+                    f"TimeoutStartSec / ExecStartPre timed out:\n{stderr}",
+                    flush=True,
+                )
+            else:
+                print(f"  ❌ systemctl start {service_name} failed:\n{stderr}", flush=True)
             subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "20"])
             return False
 
@@ -961,6 +1059,11 @@ def verify(args: Any):
             print(f"  ⏭️  Skipping {s} health check (prior service health check failed)", flush=True)
             success = False
         elif not check_service_start(s, has_caplin=has_caplin and s == "execution"):
+            success = False
+            service_health_failed = True
+            if s == "consensus" and not check_nimbus_first_start_checkpoint_sync():
+                pass
+        elif s == "consensus" and not check_nimbus_first_start_checkpoint_sync():
             success = False
             service_health_failed = True
 

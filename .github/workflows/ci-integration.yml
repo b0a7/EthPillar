@@ -2,8 +2,20 @@ name: CI — Integration
 
 # Informational until branch protection promotes these checks to required.
 # Scheduled full-suite runs use ci-nightly.yml; use workflow_dispatch for ad-hoc integration only.
+# The filter input is forwarded to run_docker_tests.py --filter. Default is the
+# Nimbus Sepolia Full Node initial-install smoke (trustedNodeSync ExecStartPre).
+# Clear the input (empty string) to run the full matrix.
 on:
   workflow_dispatch:
+    inputs:
+      filter:
+        description: >
+          Substring(s) for run_docker_tests.py --filter (comma-separated).
+          Default is Nimbus-Nethermind_SEPOLIA (initial-install only; no Switch,
+          Upgrade, ePBS, or other clients). Empty string runs the full matrix.
+        required: false
+        type: string
+        default: Nimbus-Nethermind_SEPOLIA
 
 permissions:
   contents: read
@@ -20,3 +32,4 @@ jobs:
     secrets: inherit
     with:
       artifact_name_prefix: integration-report
+      filter: ${{ inputs.filter }}

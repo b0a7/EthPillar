@@ -75,6 +75,22 @@ The `Dockerfile.test` uses `ubuntu:24.04` and sets systemd as the `CMD`. The tes
 ./run_docker_tests.sh
 ```
 
+`--filter` (repeatable) runs only matrix cases whose label or log name contains
+the substring. Example — Nimbus Sepolia Full Node initial-install (the path that
+exercises ``trustedNodeSync`` ExecStartPre):
+
+```bash
+./run_docker_tests.sh --filter Nimbus-Nethermind_SEPOLIA
+```
+
+`CI — Integration` (`ci-integration.yml`) forwards a `filter` workflow_dispatch
+input to that flag (comma-separated for multiple needles). The default input is
+`Nimbus-Nethermind_SEPOLIA`. Clear it to run the full matrix. Nightly calls
+`integration-test.yml` with an empty filter and is unchanged. Filtered runs skip
+the once-per-client RPC expose cycle. After Nimbus consensus start, the harness
+requires `/var/lib/nimbus/db` and hard-fails on TimeoutStartSec / ExecStartPre
+timeout.
+
 ## Install smoke tests
 
 Lightweight checks for `install.sh` — separate from the full client deployment matrix.

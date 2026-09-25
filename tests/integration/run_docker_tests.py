@@ -246,6 +246,21 @@ def generate_tests():
 
     return tests
 
+
+def filter_tasks(tasks: List[TestTask], needles: List[str]) -> List[TestTask]:
+    """Return tasks whose label or log name contains any *needles* substring.
+
+    Matching is case-insensitive. Empty or whitespace-only needles are ignored;
+    if none remain, *tasks* is returned unchanged.
+    """
+    lowered = [n.lower() for n in needles if n and str(n).strip()]
+    if not lowered:
+        return list(tasks)
+    return [
+        t for t in tasks
+        if any(n in t.label.lower() or n in t.log_name.lower() for n in lowered)
+    ]
+
 def tail_file(filepath, lines=20):
     """Return the last *lines* of *filepath* for live log panels."""
     if not filepath or not os.path.exists(filepath):
@@ -647,16 +662,16 @@ async def main():
 
     tasks = generate_tests()
     if args.filter:
-        needles = [f.lower() for f in args.filter]
-        tasks = [
-            t for t in tasks
-            if any(n in t.label.lower() or n in t.log_name.lower() for n in needles)
-        ]
+        tasks = filter_tasks(tasks, args.filter)
         if not tasks:
             print(f"No tests matched --filter {args.filter!r}")
             sys.exit(1)
         print(f"Filtered to {len(tasks)} test(s): {[t.log_name for t in tasks]}")
-    assign_rpc_exposure_flags(tasks)
+        # Ad-hoc / smoke filters are for one install path; skip the once-per-client
+        # RPC expose cycle so a Nimbus checkpoint-sync run does not restart units.
+        print("Skipping RPC exposure scheduling (filtered run).", flush=True)
+    else:
+        assign_rpc_exposure_flags(tasks)
     semaphore = asyncio.Semaphore(args.parallel)
     
     start_time = time.time()

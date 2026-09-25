@@ -7,6 +7,13 @@ on:
         description: Prefix for the uploaded integration report artifact
         required: true
         type: string
+      filter:
+        description: >
+          Optional substring(s) forwarded to run_docker_tests.py --filter
+          (comma-separated). Empty runs the full matrix.
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -48,7 +55,22 @@ jobs:
             checkpoint-${{ runner.os }}-
 
       - name: Run integration matrix
-        run: bash tests/integration/run_docker_tests.sh
+        env:
+          INTEGRATION_FILTER: ${{ inputs.filter }}
+        run: |
+          extra=()
+          if [[ -n "${INTEGRATION_FILTER}" ]]; then
+            IFS=',' read -ra parts <<< "${INTEGRATION_FILTER}"
+            for part in "${parts[@]}"; do
+              part="${part#"${part%%[![:space:]]*}"}"
+              part="${part%"${part##*[![:space:]]}"}"
+              if [[ -n "${part}" ]]; then
+                extra+=(--filter "${part}")
+              fi
+            done
+          fi
+          echo "Integration filters: ${extra[*]:-<none (full matrix)>}"
+          bash tests/integration/run_docker_tests.sh "${extra[@]}"
 
       - name: Fix cache permissions for Actions save
         if: always()
