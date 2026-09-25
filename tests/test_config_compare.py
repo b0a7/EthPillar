@@ -346,7 +346,7 @@ def test_prepare_prune_suggest_no_diff_when_flags_present(tmp_path):
     assert differing == []
 
 
-def test_prepare_prune_suggest_geth_further_merges_recent_and_blocks(tmp_path):
+def test_prepare_prune_suggest_geth_further_falls_back_to_postprague(tmp_path):
     unit = tmp_path / "execution.service"
     unit.write_text(_GETH_UNIT_MISSING_HISTORY, encoding="utf-8")
     work = tmp_path / "work"
@@ -355,9 +355,8 @@ def test_prepare_prune_suggest_geth_further_merges_recent_and_blocks(tmp_path):
     )
     assert "execution" in differing
     right = (work / "default" / "execution.service").read_text(encoding="utf-8")
-    assert "--history.chain=recent" in right
-    assert "--history.blocks=1056768" in right
-    assert "--history.chain=postprague" not in right
+    assert "--history.chain=postprague" in right
+    assert "--history.chain=recent" not in right
     assert "--history.chain=postmerge" not in right
 
 

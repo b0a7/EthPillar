@@ -379,9 +379,9 @@ EOF
   grep -q 'Suggest pruning parameters' docs/history-expiry-suggestions.md
 }
 
-@test "further savings exist for Geth Besu Reth and not Nethermind Erigon" {
+@test "further savings exist for Besu Reth and not Geth Nethermind Erigon" {
   run history_expiry_has_further_savings "Geth"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   run history_expiry_has_further_savings "Besu"
   [ "$status" -eq 0 ]
   run history_expiry_has_further_savings "Reth"
@@ -393,7 +393,7 @@ EOF
   run history_expiry_flags_for_level "Geth" "recommended"
   [ "$output" = "--history.chain=postprague" ]
   run history_expiry_flags_for_level "Geth" "further"
-  [ "$output" = "--history.chain=recent --history.blocks=1056768" ]
+  [ "$output" = "--history.chain=postprague" ]
   run history_expiry_flags_for_level "Nethermind" "further"
   [[ "$output" == *"--History.Pruning=Rolling"* ]]
 }
@@ -401,12 +401,12 @@ EOF
 @test "Suggest pruning radiolist names Recommended as suitable for a ~2TB drive" {
   grep -F -q 'Recommended (suitable for a ~2TB drive)' functions.sh
   grep -F -q 'Recommended is the usual choice for home staking on ~2TB disks' functions.sh
-  grep -F -q 'Further savings (experimental — rolling recent)' functions.sh
+  ! grep -F -q 'Further savings (experimental — rolling recent)' functions.sh
   ! grep -F -q 'Recommended (~2TB staking)' functions.sh
   ! grep -F -q 'Recommended is the ~2TB staking default' functions.sh
   grep -F -q 'Recommended `--history.chain=postprague`' docs/history-expiry-suggestions.md
-  grep -F -q -- '--history.chain=recent --history.blocks=1056768' docs/history-expiry-suggestions.md
-  grep -F -q 'Experimental: rolling recent' helpers/history_expiry_suggestions.sh
+  grep -F -q 'No Further picker until rolling history is released' docs/history-expiry-suggestions.md
+  grep -q 'Restore (experimental) --history.chain=recent' helpers/history_expiry_suggestions.sh
   ! grep -F -q '300-500' helpers/history_expiry_suggestions.sh
   ! grep -F -q '300–500' docs/history-expiry-suggestions.md
 }

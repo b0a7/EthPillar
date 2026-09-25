@@ -279,9 +279,9 @@ history_expiry_optional_flags() {
   # Flags only. Empty when there is no tighter-than-recommended option.
   local client="${1:-}"
   case "$client" in
-    Geth)
-      echo "--history.chain=recent --history.blocks=1056768"
-      ;;
+    # Geth: no optional TUI/CLI further set until rolling history is in a
+    # tagged release. Restore --history.chain=recent --history.blocks=1056768
+    # (experimental) then.
     Besu)
       echo "--Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768"
       ;;
@@ -298,7 +298,6 @@ history_expiry_optional_flags() {
 history_expiry_optional_why() {
   local client="${1:-}"
   case "$client" in
-    Geth) echo "Experimental: rolling recent (~5 months / 1056768 blocks) is newer and still settling." ;;
     Besu) echo "~5 months rolling. Experimental; skip if you need local receipts/logs." ;;
     Reth) echo "~5 months rolling, or aggressive --minimal. Both drop receipts some protocols need." ;;
     *) echo "" ;;
@@ -310,9 +309,9 @@ history_expiry_further_savings_flags() {
   # Placeholder forms (e.g. --history.blocks=<N>) are not mergeable.
   local client="${1:-}"
   case "$client" in
-    Geth)
-      echo "--history.chain=recent --history.blocks=1056768"
-      ;;
+    # Geth Further is withheld: --history.chain=recent is not in a tagged
+    # Geth release yet. Restore (experimental) --history.chain=recent
+    # --history.blocks=1056768 once rolling history ships.
     Besu)
       echo "--Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768"
       ;;
