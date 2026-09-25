@@ -2,7 +2,7 @@
 #
 # tests/test_ethpillar_version.bats
 #
-# Tests for ethpillar.sh --version (CLI version output).
+# Tests for ethpillar.sh version / --version (CLI version output).
 #
 
 setup() {
@@ -116,6 +116,26 @@ EOF
     [[ "$output" == *"EthPillar: $ep_version"* ]]
     ! grep -q whiptail "$COMMAND_LOG"
     ! grep -q curl "$COMMAND_LOG"
+}
+
+@test "version: same output and exit code as --version" {
+    run ./ethpillar.sh --version
+    flag_status=$status
+    flag_output=$output
+    [ "$flag_status" -eq 0 ]
+
+    run ./ethpillar.sh version
+    [ "$status" -eq "$flag_status" ]
+    [ "$output" = "$flag_output" ]
+    [[ "$output" == *"EthPillar:"* ]]
+    ! grep -q whiptail "$COMMAND_LOG"
+}
+
+@test "help: documents version as the primary form (and --version as alias)" {
+    run ./ethpillar.sh help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'\n  version '* ]]
+    [[ "$output" == *"--version"* ]]
 }
 
 @test "--version: prints client versions from binaries when services exist" {

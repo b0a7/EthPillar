@@ -1,7 +1,8 @@
 #!/bin/bash
 # EthPillar non-interactive CLI (automation / scripting).
 # Sourced by ethpillar.sh; expects functions.sh and env already loaded.
-# Commands: status, start|stop|restart, check-updates, upgrade, logs, help.
+# Commands: check-updates, help, logs, start|stop|restart, status,
+#           update|upgrade, version (--version alias).
 
 # ── Installed targets ────────────────────────────────────────────────────────
 
@@ -128,16 +129,16 @@ Usage: ethpillar [<command> [target]]
 With no arguments, launches the interactive TUI.
 
 Commands:
-  status [--json]                 Show systemd status of installed clients
-  start|stop|restart [target]     Control installed clients (default: all)
   check-updates [target]          Report available updates (default: all)
-  upgrade [target]                Apply updates non-interactively (default: all)
+  help | --help | -h              Show this help
   logs                            View rolling consolidated logs (same as TUI Rolling Consolidated Logs)
-  --version                       Print installed client and EthPillar versions
-  --help | -h | help              Show this help
-
   --migrate_cdvn [--migrate_cdvn_path=PATH]
                                   Migrate a Charon DV node (advanced)
+  start|stop|restart [target]     Control installed clients (default: all)
+  status [--json]                 Show systemd status of installed clients
+  update [target]                 Apply updates non-interactively (same as upgrade)
+  upgrade [target]                Apply updates non-interactively (default: all)
+  version                         Print installed client and EthPillar versions (alias: --version)
 
 Targets on this node:
   clients:  ${clients:-none}
@@ -150,11 +151,11 @@ EOF
     fi
     cat <<EOF
 Exit codes:
-  status          0 = all installed clients active; 1 = any inactive/failed
   check-updates   0 = up to date; 2 = update(s) available; 1 = error
-  upgrade         0 = success; 1 = error
-  start|stop|restart  0 = success; 1 = error
   logs            0 = normal exit from the log viewer; 1 = unexpected arguments or error
+  start|stop|restart  0 = success; 1 = error
+  status          0 = all installed clients active; 1 = any inactive/failed
+  update|upgrade  0 = success; 1 = error
 
 Examples:
   ethpillar status
@@ -416,7 +417,7 @@ cli_dispatch() {
             CLI_EXIT_CODE=0
             return 0
             ;;
-        --version)
+        version|--version)
             printInstalledVersions
             CLI_EXIT_CODE=0
             return 0
@@ -440,7 +441,7 @@ cli_dispatch() {
             CLI_EXIT_CODE=$?
             return 0
             ;;
-        upgrade)
+        update|upgrade)
             shift
             cli_cmd_upgrade "${1:-all}"
             CLI_EXIT_CODE=$?

@@ -2,7 +2,8 @@
 #
 # tests/test_ethpillar_cli.bats
 #
-# Tests for ethpillar non-interactive CLI (help, status, start/stop/restart, targets, logs).
+# Tests for ethpillar non-interactive CLI (help, status, start/stop/restart,
+# targets, logs, update|upgrade, version).
 #
 
 setup() {
@@ -279,8 +280,11 @@ set_unit_state() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"status"* ]]
     [[ "$output" == *"check-updates"* ]]
+    [[ "$output" == *"update"* ]]
     [[ "$output" == *"upgrade"* ]]
     [[ "$output" == *"logs"* ]]
+    [[ "$output" == *"version"* ]]
+    [[ "$output" == *"--version"* ]]
     [[ "$output" == *"execution"* ]]
     [[ "$output" == *"consensus"* ]]
     [[ "$output" == *"ethpillar"* ]]
@@ -288,6 +292,41 @@ set_unit_state() {
     [[ "$output" == *"validator"* ]]
     [[ "$output" == *"mevboost"* ]]
     ! grep -q whiptail "$COMMAND_LOG"
+}
+
+# Primary command tokens in the Commands: block, A–Z by bare name
+# (leading dashes stripped so --migrate_cdvn sorts as migrate_cdvn).
+cli_help_command_names() {
+    awk '
+        /^Commands:/ {flag=1; next}
+        flag && /^[A-Za-z]/ {exit}
+        flag && /^  [^ ]/ {
+            line=$0
+            sub(/^  /, "", line)
+            split(line, a, /[ |]/)
+            name=a[1]
+            gsub(/^-+/, "", name)
+            if (name != "") print name
+        }
+    '
+}
+
+@test "help: Commands list is alphabetical" {
+    run ./ethpillar.sh help
+    [ "$status" -eq 0 ]
+    names=$(cli_help_command_names <<< "$output")
+    [ -n "$names" ]
+    sorted=$(printf '%s\n' "$names" | LC_ALL=C sort)
+    [ "$names" = "$sorted" ]
+    [[ "$names" == *"check-updates"* ]]
+    [[ "$names" == *"help"* ]]
+    [[ "$names" == *"logs"* ]]
+    [[ "$names" == *"migrate_cdvn"* ]]
+    [[ "$names" == *"start"* ]]
+    [[ "$names" == *"status"* ]]
+    [[ "$names" == *"update"* ]]
+    [[ "$names" == *"upgrade"* ]]
+    [[ "$names" == *"version"* ]]
 }
 
 @test "help: same as --help" {
@@ -442,6 +481,62 @@ set_unit_state() {
     run ./ethpillar.sh upgrade execution
     [ "$status" -eq 1 ]
     [[ "$output" == *"not installed"* ]]
+}
+
+@test "update: alias of upgrade (same reject for not-installed target)" {
+    run ./ethpillar.sh update execution
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not installed"* ]]
+}
+
+@test "update: alias of upgrade (same skip when already on LATEST)" {
+    install_mock_clients
+    set_unit_state charon active
+
+    run ./ethpillar.sh update charon
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"charon: already up to date (1.11.0) — skipping"* ]]
+    [ ! -s "$UPDATE_LOG" ]
+    ! grep -q "systemctl stop" "$COMMAND_LOG"
+    ! grep -q "update_charon.sh" "$COMMAND_LOG"
+}
+
+@test "update: alias of upgrade (same update script when behind)" {
+    install_mock_clients
+    set_unit_state charon active
+    export MOCK_CHARON_LATEST=v1.12.0
+
+    run ./ethpillar.sh update charon
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "update_charon.sh --auto" "$UPDATE_LOG"
+    ! grep -q "skipping" <<< "$output"
+}
+
+@test "update and upgrade: same targets and exit codes when all current" {
+    install_mock_clients
+
+    run ./ethpillar.sh upgrade all
+    upgrade_status=$status
+    upgrade_output=$output
+    [ "$upgrade_status" -eq 0 ]
+
+    : > "$UPDATE_LOG"
+    run ./ethpillar.sh update all
+    [ "$status" -eq "$upgrade_status" ]
+    [[ "$output" == *"execution: already up to date"* ]]
+    [[ "$output" == *"consensus: already up to date"* ]]
+    [[ "$output" == *"validator: already up to date"* ]]
+    [[ "$output" == *"mevboost: already up to date"* ]]
+    [[ "$output" == *"charon: already up to date"* ]]
+    [[ "$output" == *"ethpillar: already up to date"* ]]
+    [ ! -s "$UPDATE_LOG" ]
+    # Both verbs print the same per-target skip lines.
+    while IFS= read -r line; do
+        [[ "$line" == *": already up to date"* ]] || continue
+        [[ "$upgrade_output" == *"$line"* ]]
+    done <<< "$output"
 }
 
 @test "upgrade: skips charon when already on LATEST (no update script / no stop)" {
