@@ -1,7 +1,7 @@
 #!/bin/bash
 # EthPillar non-interactive CLI (automation / scripting).
 # Sourced by ethpillar.sh; expects functions.sh and env already loaded.
-# Commands: check-updates, help, logs, start|stop|restart, status,
+# Commands: check-updates, help, logs [unit ...], start|stop|restart, status,
 #           update|upgrade, version (--version alias).
 
 # ── Installed targets ────────────────────────────────────────────────────────
@@ -15,6 +15,9 @@ cli_service_path() {
         validator) echo "${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}" ;;
         mevboost)  echo "${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}" ;;
         charon)    echo "${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}" ;;
+        csm_nimbusvalidator)
+            echo "${CSM_VALIDATOR_SERVICE_FILE:-/etc/systemd/system/csm_nimbusvalidator.service}"
+            ;;
         *)         echo "/etc/systemd/system/${unit}.service" ;;
     esac
 }
@@ -30,6 +33,9 @@ cli_is_client_installed() {
 CLI_CLIENT_START_ORDER=(execution consensus mevboost charon validator)
 # Stop order: reverse dependency (validator before charon).
 CLI_CLIENT_STOP_ORDER=(validator charon mevboost consensus execution)
+# Units accepted by `ethpillar logs [unit ...]`. Same set as the rolling
+# consolidated journalctl stream. Named units are followed in argv order.
+CLI_LOG_UNITS=(validator consensus execution mevboost charon csm_nimbusvalidator)
 
 # Print space-separated client targets installed on this host (no ethpillar).
 # Default listing follows start order.
@@ -115,6 +121,44 @@ cli_resolve_targets() {
     echo "$arg"
 }
 
+# Print space-separated log units installed on this host (CLI_LOG_UNITS order).
+cli_installed_log_units() {
+    local t units=()
+    for t in "${CLI_LOG_UNITS[@]}"; do
+        if cli_is_client_installed "$t"; then
+            units+=("$t")
+        fi
+    done
+    echo "${units[*]}"
+}
+
+# Resolve one or more log unit names. Prints units one per line in the order
+# given (first occurrence wins). Returns 1 on unknown or not-installed.
+cli_resolve_log_units() {
+    local arg seen=" " installed allowed
+    allowed="${CLI_LOG_UNITS[*]}"
+    installed=$(cli_installed_log_units)
+
+    for arg in "$@"; do
+        arg="${arg,,}"
+        if ! [[ " $allowed " == *" $arg "* ]]; then
+            echo "Unknown target: $arg" >&2
+            echo "Valid targets: $allowed" >&2
+            return 1
+        fi
+        if ! cli_is_client_installed "$arg"; then
+            echo "Target not installed: $arg" >&2
+            echo "Installed: ${installed:-none}" >&2
+            return 1
+        fi
+        if [[ " $seen " == *" $arg "* ]]; then
+            continue
+        fi
+        seen+="$arg "
+        printf '%s\n' "$arg"
+    done
+}
+
 # ── Help ─────────────────────────────────────────────────────────────────────
 
 cli_cmd_help() {
@@ -131,7 +175,7 @@ With no arguments, launches the interactive TUI.
 Commands:
   check-updates [target]          Report available updates (default: all)
   help | --help | -h              Show this help
-  logs                            View rolling consolidated logs (same as TUI Rolling Consolidated Logs)
+  logs [unit ...]                 View rolling consolidated logs (same as TUI Rolling Consolidated Logs)
   --migrate_cdvn [--migrate_cdvn_path=PATH]
                                   Migrate a Charon DV node (advanced)
   start|stop|restart [target]     Control installed clients (default: all)
@@ -160,6 +204,8 @@ Exit codes:
 Examples:
   ethpillar check-updates
   ethpillar logs
+  ethpillar logs charon validator
+  ethpillar logs execution
   ethpillar restart consensus
   ethpillar status
   ethpillar upgrade ethpillar
@@ -389,12 +435,28 @@ cli_cmd_upgrade() {
 # ── Logs ─────────────────────────────────────────────────────────────────────
 
 # Same as TUI Logging & Monitoring → 🔍 View Rolling Consolidated Logs.
+# No args: Aztec remote-rpc compose (when applicable) plus the full unit set.
+# With unit names: follow only those systemd units, in the order given
+# (duplicates dropped). Aztec docker compose is not used when units are named.
 cli_cmd_logs() {
-    if [[ -n "${1:-}" ]]; then
-        echo "Unexpected argument: $1 (try: ethpillar logs)" >&2
+    local units u
+    local args=()
+
+    if [[ $# -eq 0 ]]; then
+        show_rolling_consolidated_logs
+        return
+    fi
+
+    if ! units=$(cli_resolve_log_units "$@"); then
         return 1
     fi
-    show_rolling_consolidated_logs
+
+    while IFS= read -r u; do
+        [[ -n "$u" ]] || continue
+        args+=(-u "$u")
+    done <<< "$units"
+
+    view_journal_logs "${args[@]}" --no-hostname -f
 }
 
 # ── Dispatcher ───────────────────────────────────────────────────────────────

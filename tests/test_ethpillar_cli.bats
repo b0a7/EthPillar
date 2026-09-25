@@ -293,6 +293,8 @@ set_unit_state() {
     [[ "$output" == *"mevboost"* ]]
     [[ "$output" == *"status|start|stop|restart:"* ]]
     [[ "$output" == *"check-updates|update|upgrade:"* ]]
+    [[ "$output" == *"logs [unit"* ]]
+    [[ "$output" == *"ethpillar logs execution"* ]]
     ! [[ "$output" == *$'\n  clients:'* ]]
     ! grep -q whiptail "$COMMAND_LOG"
 }
@@ -348,9 +350,11 @@ cli_help_command_names() {
 @test "logs: help lists the command as TUI Rolling Consolidated Logs" {
     run ./ethpillar.sh help
     [ "$status" -eq 0 ]
-    [[ "$output" == *"logs"* ]]
+    [[ "$output" == *"logs [unit"* ]]
     [[ "$output" == *"View rolling consolidated logs"* ]]
     [[ "$output" == *"TUI Rolling Consolidated Logs"* ]]
+    [[ "$output" == *"ethpillar logs"* ]]
+    [[ "$output" == *"ethpillar logs execution"* ]]
 }
 
 @test "logs: dispatches to view_journal_logs, not view_logs.sh" {
@@ -374,13 +378,74 @@ cli_help_command_names() {
     grep -q 'show_rolling_consolidated_logs' cli.sh
 }
 
-@test "logs: unexpected leftover arguments error cleanly" {
+@test "logs: unknown unit name errors cleanly" {
     run ./ethpillar.sh logs leftover
     [ "$status" -eq 1 ]
-    [[ "$output" == *"Unexpected argument"* ]]
-    [[ "$output" == *"ethpillar logs"* ]]
-    ! grep -q "journalctl -u validator" "$COMMAND_LOG"
+    [[ "$output" == *"Unknown target: leftover"* ]]
+    [[ "$output" == *"Valid targets:"* ]]
+    [[ "$output" == *"execution"* ]]
+    ! grep -q "journalctl -u leftover" "$COMMAND_LOG"
+    ! grep -q "journalctl -u validator -u consensus" "$COMMAND_LOG"
     ! grep -q "view_logs.sh" "$COMMAND_LOG"
+}
+
+@test "logs: rejects a not-installed unit" {
+    write_service "$EXEC_SERVICE_FILE"
+
+    run ./ethpillar.sh logs consensus
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not installed"* ]]
+    [[ "$output" == *"consensus"* ]]
+    ! grep -q "journalctl -u consensus" "$COMMAND_LOG"
+}
+
+@test "logs: one installed unit follows only that unit" {
+    write_service "$EXEC_SERVICE_FILE"
+    write_service "$CONSENSUS_SERVICE_FILE"
+
+    run ./ethpillar.sh logs execution
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q "journalctl -u consensus" "$COMMAND_LOG"
+    ! grep -q "journalctl -u validator -u consensus -u execution" "$COMMAND_LOG"
+    ! grep -q "docker compose logs" "$COMMAND_LOG"
+    ! grep -q "view_logs.sh" "$COMMAND_LOG"
+}
+
+@test "logs: multiple units follow in the given order" {
+    write_service "$CHARON_SERVICE_FILE"
+    write_service "$VALIDATOR_SERVICE_FILE"
+
+    run ./ethpillar.sh logs charon validator
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u charon -u validator --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q "journalctl -u validator -u consensus -u execution" "$COMMAND_LOG"
+}
+
+@test "logs: mixed-case names and duplicates resolve once" {
+    write_service "$EXEC_SERVICE_FILE"
+
+    run ./ethpillar.sh logs Execution execution
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q "journalctl -u execution -u execution" "$COMMAND_LOG"
+}
+
+@test "logs: csm_nimbusvalidator is a valid installed unit" {
+    write_service "$CSM_VALIDATOR_SERVICE_FILE"
+
+    run ./ethpillar.sh logs csm_nimbusvalidator
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
+}
+
+@test "logs: unknown name after a valid unit does not start journalctl" {
+    write_service "$EXEC_SERVICE_FILE"
+
+    run ./ethpillar.sh logs execution leftover
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unknown target: leftover"* ]]
+    ! grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
 }
 
 @test "status: no clients installed exits 0" {
