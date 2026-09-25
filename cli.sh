@@ -158,12 +158,12 @@ Exit codes:
   update|upgrade  0 = success; 1 = error
 
 Examples:
-  ethpillar status
-  ethpillar restart consensus
   ethpillar check-updates
-  ethpillar upgrade execution
-  ethpillar upgrade ethpillar
   ethpillar logs
+  ethpillar restart consensus
+  ethpillar status
+  ethpillar upgrade ethpillar
+  ethpillar upgrade execution
 EOF
 }
 
