@@ -3,7 +3,7 @@
 # Author: coincashew.eth | coincashew.com
 # License: GNU GPL
 # Source: https://github.com/coincashew/ethpillar
-# Description: Print suggested history-expiry / prune flags for ~2TB staking nodes.
+# Description: Print suggested history-expiry / prune flags suitable for ~2TB disks.
 #
 # Made for home and solo stakers 🏠🥩
 #
@@ -146,7 +146,7 @@ history_expiry_has_recommended() {
   local client="${1:-}" execstart="${2:-}"
   case "$client" in
     Geth)
-      history_expiry_has_flag "$execstart" "--history.chain" "postmerge" && return 0
+      # postmerge alone is no longer enough (pre-Prague history still grows).
       history_expiry_has_flag "$execstart" "--history.chain" "postprague" && return 0
       history_expiry_has_flag "$execstart" "--history.chain" "recent" && return 0
       return 1
@@ -239,7 +239,7 @@ history_expiry_suggested_flags() {
   local client="${1:-}"
   case "$client" in
     Geth)
-      echo "--history.chain=postmerge"
+      echo "--history.chain=postprague"
       ;;
     Nethermind)
       echo "--History.Pruning=Rolling --History.RetentionEpochs=33024"
@@ -265,11 +265,11 @@ history_expiry_suggested_flags() {
 history_expiry_suggested_why() {
   local client="${1:-}"
   case "$client" in
-    Geth) echo "Drops pre-merge PoW history (~300-500 GB) on a ~2TB staking disk." ;;
+    Geth) echo "Drops pre-Prague history. Suitable for home staking on a ~2TB drive." ;;
     Nethermind) echo "Rolling history window (~5 months / 33024 epochs). Hybrid is state prune only." ;;
     Besu) echo "SNAP + BONSAI already skips pre-merge bodies on Mainnet checkpoint sync." ;;
     Reth) echo "Staking full-node profile: pre-merge body prune, ~10k-block state/receipt window." ;;
-    Erigon|Erigon-Caplin) echo "Leanest built-in mode (~100k blocks / ~14 days). Usual 2TB staking choice." ;;
+    Erigon|Erigon-Caplin) echo "Leanest built-in mode (~100k blocks / ~14 days). Usual choice for a ~2TB drive." ;;
     Ethrex) echo "Ethrex has no history-expiry CLI yet." ;;
     *) echo "No suggestion table for this client." ;;
   esac
@@ -280,7 +280,6 @@ history_expiry_optional_flags() {
   local client="${1:-}"
   case "$client" in
     Geth)
-      echo "--history.chain=postprague"
       echo "--history.chain=recent --history.blocks=<N>"
       ;;
     Besu)
@@ -299,7 +298,7 @@ history_expiry_optional_flags() {
 history_expiry_optional_why() {
   local client="${1:-}"
   case "$client" in
-    Geth) echo "postprague on newer binaries; recent is rolling (N > 100000) and still settling." ;;
+    Geth) echo "Rolling recent (N > 100000) is still settling; not offered in the TUI picker." ;;
     Besu) echo "~5 months rolling. Experimental; skip if you need local receipts/logs." ;;
     Reth) echo "~5 months rolling, or aggressive --minimal. Both drop receipts some protocols need." ;;
     *) echo "" ;;
@@ -312,7 +311,7 @@ history_expiry_further_savings_flags() {
   local client="${1:-}"
   case "$client" in
     Geth)
-      echo "--history.chain=postprague"
+      echo ""
       ;;
     Besu)
       echo "--Xchain-pruning-enabled=ALL --Xchain-pruning-blocks-retained=1056768"
@@ -609,7 +608,7 @@ history_expiry_pre_tmeld_warnings() {
       [[ -n "$line" ]] && echo "- $line"
     done <<< "$notes"
   fi
-  extra=$(history_expiry_apply_extra "$client")
+  extra=$(history_expiry_apply_extra "$client" "${4:-}")
   if [[ -n "$extra" ]]; then
     echo
     echo "Offline prune (do not run automatically — notes only):"
@@ -626,9 +625,19 @@ history_expiry_pre_tmeld_warnings() {
 
 history_expiry_apply_extra() {
   # Extra apply line only when an offline prune/resync step is required.
+  # Optional $2 is the selected flag set so Geth's offline hint matches the mode.
   local client="${1:-}"
+  local flags="${2:-}"
+  local mode="postprague"
   case "$client" in
-    Geth) echo "Offline first: geth prune-history --datadir <datadir> --history.chain postmerge" ;;
+    Geth)
+      if [[ "$flags" == *"--history.chain=recent"* || "$flags" == *"--history.chain recent"* ]]; then
+        mode="recent"
+      elif [[ "$flags" == *"--history.chain=postmerge"* || "$flags" == *"--history.chain postmerge"* ]]; then
+        mode="postmerge"
+      fi
+      echo "Offline first: geth prune-history --datadir <datadir> --history.chain ${mode}"
+      ;;
     Besu) echo "Existing full-history DB: besu --data-path=<path> storage prune-pre-merge-blocks" ;;
     *) echo "" ;;
   esac
@@ -677,7 +686,7 @@ history_expiry_cl_note() {
   local cl="${1:-}"
   case "$cl" in
     Lighthouse)
-      echo "Lighthouse already prunes blobs/payloads by default. Avoid --prune-blobs=false and --supernode on ~2TB staking disks."
+      echo "Lighthouse already prunes blobs/payloads by default. Avoid --prune-blobs=false and --supernode on a ~2TB drive."
       ;;
     Teku)
       echo "Teku --data-storage-mode=minimal (default) is the staking setting; archive reconstructs historic states."
@@ -701,7 +710,7 @@ history_expiry_cl_note() {
 }
 
 history_expiry_print_title() {
-  echo "History expiry suggestions (~2TB staking)"
+  echo "History expiry suggestions (suitable for ~2TB disks)"
   echo "Suggestions only — not applied."
 }
 
@@ -863,7 +872,7 @@ history_expiry_checker_summary() {
       echo "${client} already has recommended expiry/prune flags ($(history_expiry_suggested_flags "$client"))."
       ;;
     missing)
-      echo "${client} lacks recommended ~2TB staking expiry/prune flags. Suggested: $(history_expiry_suggested_flags "$client")"
+      echo "${client} lacks recommended expiry/prune flags for a ~2TB drive. Suggested: $(history_expiry_suggested_flags "$client")"
       ;;
     archive)
       echo "${client} looks like an intentional archive / full-history node; history-expiry suggestions are opt-in."
@@ -909,7 +918,7 @@ history_expiry_main() {
         cat <<'EOF'
 Usage: history_expiry_suggestions.sh [--all] [--checker] [--verbose] [--unit FILE] [--cl-unit FILE]
 
-Print suggested rolling-history / prune flags for ~2TB staking full nodes.
+Print suggested rolling-history / prune flags suitable for home staking on ~2TB disks.
 CLI / node-checker stay print-only. The Execution Client TUI merges flags via tmeld.
 
   --all        Print the per-client suggestion table (ignore installed unit)

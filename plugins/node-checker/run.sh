@@ -270,7 +270,7 @@ check_resources() {
     disk_usage=$(df / | awk '/\// {print $5}' | tr -d '%')
     if [ "$disk_usage" -gt $DISK_WARN ]; then
         print_check_result "WARN" "High disk usage: ${disk_usage}%"
-        print_check_result "INFO" "On ~2TB staking disks, review history expiry / prune flags (Execution Client → Suggest pruning parameters)."
+        print_check_result "INFO" "If you need the EL to fit a ~2TB drive, review history expiry / prune flags (Execution Client → Suggest pruning parameters)."
         ((warning_checks++))
     else
         print_check_result "PASS" "Disk usage: ${disk_usage}%"
@@ -856,7 +856,7 @@ check_mevboost_version
 print_section_header "Performance Checks"
 check_resources
 echo
-print_check_result "INFO" "History expiry / prune (staking ~2TB):"
+print_check_result "INFO" "History expiry / prune (suitable for a ~2TB drive):"
 check_history_expiry
 echo
 check_chrony

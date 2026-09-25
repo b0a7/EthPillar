@@ -321,8 +321,8 @@ def test_prepare_prune_suggest_merges_only_execstart(tmp_path):
     left = (work / "installed" / "execution.service").read_text(encoding="utf-8")
     right = (work / "default" / "execution.service").read_text(encoding="utf-8")
     assert left == _GETH_UNIT_MISSING_HISTORY
-    assert "--history.chain=postmerge" not in left
-    assert "--history.chain=postmerge" in right
+    assert "--history.chain=postprague" not in left
+    assert "--history.chain=postprague" in right
     assert "User=execution" in right
     assert "LimitNOFILE=65535" in right
     assert "--state.scheme=path" in right
@@ -335,18 +335,18 @@ def test_prepare_prune_suggest_no_diff_when_flags_present(tmp_path):
     unit.write_text(
         _GETH_UNIT_MISSING_HISTORY.replace(
             "--datadir=/var/lib/geth",
-            "--datadir=/var/lib/geth \\\n    --history.chain=postmerge",
+            "--datadir=/var/lib/geth \\\n    --history.chain=postprague",
         ),
         encoding="utf-8",
     )
     work = tmp_path / "work"
     differing, _meta = prepare_prune_suggest_workdir(
-        work, unit_path=str(unit), flags="--history.chain=postmerge"
+        work, unit_path=str(unit), flags="--history.chain=postprague"
     )
     assert differing == []
 
 
-def test_prepare_prune_suggest_further_level(tmp_path):
+def test_prepare_prune_suggest_geth_further_falls_back_to_postprague(tmp_path):
     unit = tmp_path / "execution.service"
     unit.write_text(_GETH_UNIT_MISSING_HISTORY, encoding="utf-8")
     work = tmp_path / "work"

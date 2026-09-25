@@ -41,23 +41,31 @@ setup() {
   [ "$output" = "Erigon-Caplin" ]
 }
 
-@test "Geth without history.chain is missing and suggests postmerge" {
+@test "Geth without history.chain is missing and suggests postprague" {
   local execstart="/usr/local/bin/geth --mainnet --state.scheme=path --datadir=/var/lib/geth"
   run history_expiry_status "Geth" "$execstart"
   [ "$output" = "missing" ]
   run history_expiry_suggested_flags "Geth"
-  [[ "$output" == *"--history.chain=postmerge"* ]]
+  [[ "$output" == *"--history.chain=postprague"* ]]
   run history_expiry_apply_extra "Geth"
   [[ "$output" == *"prune-history"* ]]
+  [[ "$output" == *"postprague"* ]]
 }
 
-@test "Geth --history.chain=postmerge is recommended" {
+@test "Geth --history.chain=postmerge is missing not recommended" {
   run history_expiry_status "Geth" "/usr/local/bin/geth --history.chain=postmerge --state.scheme=path"
-  [ "$output" = "recommended" ]
+  [ "$output" = "missing" ]
+  run history_expiry_checker_level "missing"
+  [ "$output" = "WARN" ]
 }
 
 @test "Geth --history.chain postprague is recommended" {
   run history_expiry_status "Geth" "/usr/local/bin/geth --history.chain postprague"
+  [ "$output" = "recommended" ]
+}
+
+@test "Geth --history.chain=recent is recommended" {
+  run history_expiry_status "Geth" "/usr/local/bin/geth --history.chain=recent --history.blocks=200000"
   [ "$output" = "recommended" ]
 }
 
@@ -173,7 +181,7 @@ EOF
   [[ "$output" == $'missing\n'* ]]
   [[ "$output" == *"Detected: Geth"* ]]
   [[ "$output" == *"missing recommended expiry flags"* ]]
-  [[ "$output" == *"--history.chain=postmerge"* ]]
+  [[ "$output" == *"--history.chain=postprague"* ]]
   [[ "$output" == *"Recommended flags:"* ]]
   [[ "$output" == *"How to apply:"* ]]
   [[ "$output" == *"Execution Client → Suggest pruning parameters"* ]]
@@ -206,7 +214,7 @@ EOF
   [[ "$output" == *"Reth"* ]]
   [[ "$output" == *"Erigon"* ]]
   [[ "$output" == *"Ethrex"* ]]
-  [[ "$output" == *"--history.chain=postmerge"* ]]
+  [[ "$output" == *"--history.chain=postprague"* ]]
   [[ "$output" == *"--History.Pruning=Rolling --History.RetentionEpochs=33024"* ]]
   [[ "$output" == *"Suggestions only"* ]]
   [[ "$output" == *"Recommended flags:"* ]]
@@ -371,9 +379,9 @@ EOF
   grep -q 'Suggest pruning parameters' docs/history-expiry-suggestions.md
 }
 
-@test "further savings exist for Geth Besu Reth and not Nethermind Erigon" {
+@test "further savings exist for Besu Reth and not Geth Nethermind Erigon" {
   run history_expiry_has_further_savings "Geth"
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   run history_expiry_has_further_savings "Besu"
   [ "$status" -eq 0 ]
   run history_expiry_has_further_savings "Reth"
@@ -382,10 +390,22 @@ EOF
   [ "$status" -ne 0 ]
   run history_expiry_has_further_savings "Erigon"
   [ "$status" -ne 0 ]
+  run history_expiry_flags_for_level "Geth" "recommended"
+  [ "$output" = "--history.chain=postprague" ]
   run history_expiry_flags_for_level "Geth" "further"
   [ "$output" = "--history.chain=postprague" ]
   run history_expiry_flags_for_level "Nethermind" "further"
   [[ "$output" == *"--History.Pruning=Rolling"* ]]
+}
+
+@test "Suggest pruning radiolist names Recommended as suitable for a ~2TB drive" {
+  grep -F -q 'Recommended (suitable for a ~2TB drive)' functions.sh
+  grep -F -q 'Recommended is the usual choice for home staking on ~2TB disks' functions.sh
+  ! grep -F -q 'Recommended (~2TB staking)' functions.sh
+  ! grep -F -q 'Recommended is the ~2TB staking default' functions.sh
+  grep -F -q 'Suitable for a ~2TB drive:** `--history.chain=postprague`' docs/history-expiry-suggestions.md
+  ! grep -F -q '300-500' helpers/history_expiry_suggestions.sh
+  ! grep -F -q '300–500' docs/history-expiry-suggestions.md
 }
 
 @test "merge adds recommended Geth flags and leaves unrelated flags" {
@@ -446,10 +466,10 @@ EOF
 
 @test "merge is a no-op when recommended flags are already present" {
   run history_expiry_merge_execstart \
-    "/usr/local/bin/geth --history.chain=postmerge --http" \
-    "--history.chain=postmerge"
+    "/usr/local/bin/geth --history.chain=postprague --http" \
+    "--history.chain=postprague"
   [ "$status" -eq 0 ]
-  [ "$output" = "/usr/local/bin/geth --history.chain=postmerge --http" ]
+  [ "$output" = "/usr/local/bin/geth --history.chain=postprague --http" ]
 }
 
 @test "merge unit text only changes ExecStart" {
@@ -484,5 +504,8 @@ EOF
   [[ "$output" == *"eth_getLogs"* ]]
   [[ "$output" == *"do not run automatically"* ]]
   [[ "$output" == *"prune-history"* ]]
+  [[ "$output" == *"postprague"* ]]
   [[ "$output" == *"CL: Lighthouse"* ]]
+  run history_expiry_pre_tmeld_warnings "Geth" "missing" "Lighthouse" "--history.chain=recent --history.blocks=200000"
+  [[ "$output" == *"history.chain recent"* ]]
 }

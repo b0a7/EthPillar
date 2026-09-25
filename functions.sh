@@ -3267,7 +3267,7 @@ suggestPruningParameters() {
 
     if history_expiry_has_further_savings "$client"; then
         level=$(whiptail --title "Suggest pruning parameters" --radiolist \
-            "${client}: choose prune level (Recommended is the ~2TB staking default).
+            "${client}: choose prune level. Recommended is the usual choice for home staking on ~2TB disks.
 
 Recommended:
   $(history_expiry_suggested_flags "$client")
@@ -3275,7 +3275,7 @@ Recommended:
 Further savings:
   $(history_expiry_further_savings_flags "$client")" \
             20 78 2 \
-            recommended "Recommended (~2TB staking)" ON \
+            recommended "Recommended (suitable for a ~2TB drive)" ON \
             further "Further savings (more aggressive)" OFF \
             3>&1 1>&2 2>&3) || return 0
     fi
@@ -3288,7 +3288,7 @@ Further savings:
     fi
 
     warning_tmp=$(mktemp /tmp/ethpillar-prune-warn-XXXXXX)
-    history_expiry_pre_tmeld_warnings "$client" "$status" "$cl_client" >"$warning_tmp"
+    history_expiry_pre_tmeld_warnings "$client" "$status" "$cl_client" "$flags" >"$warning_tmp"
     whiptail --title "Suggest pruning parameters — warnings" --scrolltext --textbox "$warning_tmp" 20 78
     rm -f "$warning_tmp"
 

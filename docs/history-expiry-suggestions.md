@@ -1,6 +1,8 @@
-# History expiry suggestions (~2TB home staking)
+# History expiry suggestions (suitable for ~2TB disks)
 
-Helper for home stakers who are nervous about disk growth on ~2TB NVMe.
+Helper for home stakers on ~2TB NVMe: these flags are the usual choice so
+the EL stays comfortable on that size of disk — not a claim that the modes
+use ~2TB.
 
 `helpers/history_expiry_suggestions.sh` is the source of truth for suggested
 and optional flags plus status. Execution Client → **Suggest pruning
@@ -45,7 +47,9 @@ docs before applying.
 - **Rolling:** `--history.chain=recent --history.blocks=N` (N > 100000) landed
   as work-in-progress in 2026; still treat as settling.
 - **Archive:** `--gcmode=archive` (hash scheme) or `--history.state=0` (path).
-- **2TB staking suggestion:** `--history.chain=postmerge` (drops ~300–500 GB).
+- **Suitable for a ~2TB drive:** `--history.chain=postprague`.
+  `--history.chain=postmerge` alone is no longer the recommendation
+  (pre-Prague history is getting tight).
 
 ### Nethermind (2.0 is LATEST, released ~2026-09-22)
 - **State prune:** `Pruning.Mode=Hybrid` with `VolumeFreeSpace` /
@@ -61,7 +65,7 @@ docs before applying.
   Patricia → Flat needs a resync / migration; EthPillar does not rewrite
   units. Patricia drop is TBD upstream.
 - **Full history:** `--Sync.AncientBodiesBarrier=0 --Sync.AncientReceiptsBarrier=0`.
-- **2TB staking suggestion:** keep Hybrid, add
+- **Suitable for a ~2TB drive:** keep Hybrid, add
   `--History.Pruning=Rolling --History.RetentionEpochs=33024`.
   Use `UseAncientBarriers` instead if Rocket Pool / SSV / StakeWise need
   local logs.
@@ -75,8 +79,8 @@ docs before applying.
   `--Xchain-pruning-blocks-retained=1056768` (~5 months) or `113056`
   (aggressive). Experimental in eth-docker.
 - **Archive:** Forest + FULL, or `X_BONSAI_ARCHIVE`.
-- **2TB staking suggestion:** keep SNAP + BONSAI; add rolling only if disk is
-  still tight.
+- **Suitable for a ~2TB drive:** keep SNAP + BONSAI; add rolling only if disk
+  is still tight.
 
 ### Reth
 - **Archive:** default when no `--full` / `--minimal` / `--prune.*`.
@@ -85,11 +89,12 @@ docs before applying.
 - **Rolling:** `--prune.bodies.distance 1056768 --prune.receipts.distance 1056768`
   (~5 months; eth-docker `rolling-expiry`).
 - **Aggressive:** `--minimal`.
-- **2TB staking suggestion:** keep `--full`. Use rolling/`--minimal` only for
-  extra savings; both drop receipts that some protocols need.
+- **Suitable for a ~2TB drive:** keep `--full`. Use rolling/`--minimal` only
+  for extra savings; both drop receipts that some protocols need.
 
 ### Erigon / Caplin
-- **minimal:** last ~100k blocks (~14 days). EthPillar default; best 2TB fit.
+- **minimal:** last ~100k blocks (~14 days). EthPillar default; usual choice
+  for a ~2TB drive.
 - **full:** ~262,144-block EIP-8252 window (v3.6+), unless
   `--prune.distance.blocks=keep-post-merge` (or the numeric sentinel) keeps
   all post-merge blocks.
@@ -105,7 +110,7 @@ No history-expiry flags (eth-docker `prune-history` is a no-op). Keep snap.
 Helper reports INFO.
 
 ### Consensus layer
-CL is usually not the 2TB growth driver. Staking defaults:
+CL is usually not the growth driver on a ~2TB drive. Staking defaults:
 - **Lighthouse:** blob/payload prune on by default; avoid `--prune-blobs=false`
   and `--supernode`.
 - **Teku:** `--data-storage-mode=minimal` (default).
@@ -119,8 +124,9 @@ CL is usually not the 2TB growth driver. Staking defaults:
      CLI). Short-circuits (msgbox, no tmeld) when there is no EL or
      recommended flags are already present.
   3. Archive / Caplin archive: warns, then opens tmeld only if you confirm.
-  4. Geth / Besu / Reth: pick **Recommended** (default) vs **Further
-     savings**. Nethermind / Erigon skip the picker and use recommended.
+  4. Besu / Reth: pick **Recommended** (suitable for a ~2TB drive) vs
+     **Further savings**. Geth / Nethermind / Erigon skip the picker and
+     use recommended (`--history.chain=postprague` for Geth).
   5. Pre-tmeld warnings cover destructive prune, RP/SSV `eth_getLogs`, and
      Geth/Besu offline prune commands as **notes only** (never auto-run).
   6. tmeld opens on the unit file pair (content diff), not the folder list.
