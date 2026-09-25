@@ -2,7 +2,8 @@
 #
 # tests/test_ethpillar_cli.bats
 #
-# Tests for ethpillar non-interactive CLI (help, status, start/stop/restart, targets, logs).
+# Tests for ethpillar non-interactive CLI (help, status, start/stop/restart,
+# targets, logs, update|upgrade, version).
 #
 
 setup() {
@@ -279,15 +280,58 @@ set_unit_state() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"status"* ]]
     [[ "$output" == *"check-updates"* ]]
+    [[ "$output" == *"update"* ]]
     [[ "$output" == *"upgrade"* ]]
     [[ "$output" == *"logs"* ]]
+    [[ "$output" == *"version"* ]]
+    [[ "$output" == *"--version"* ]]
     [[ "$output" == *"execution"* ]]
     [[ "$output" == *"consensus"* ]]
     [[ "$output" == *"ethpillar"* ]]
     [[ "$output" == *"Not installed:"* ]]
     [[ "$output" == *"validator"* ]]
     [[ "$output" == *"mevboost"* ]]
+    [[ "$output" == *"logs|restart|start|status|stop:"* ]]
+    [[ "$output" == *"check-updates|update|upgrade:"* ]]
+    [[ "$output" == *"logs [unit"* ]]
+    [[ "$output" == *"ethpillar logs execution"* ]]
+    ! [[ "$output" == *$'\n  clients:'* ]]
     ! grep -q whiptail "$COMMAND_LOG"
+}
+
+# Primary command tokens in the Commands: block, A–Z by bare name
+# (leading dashes stripped so --migrate_cdvn sorts as migrate_cdvn).
+cli_help_command_names() {
+    awk '
+        /^Commands:/ {flag=1; next}
+        flag && /^[A-Za-z]/ {exit}
+        flag && /^  [^ ]/ {
+            line=$0
+            sub(/^  /, "", line)
+            split(line, a, /[ |]/)
+            name=a[1]
+            gsub(/^-+/, "", name)
+            if (name != "") print name
+        }
+    '
+}
+
+@test "help: Commands list is alphabetical" {
+    run ./ethpillar.sh help
+    [ "$status" -eq 0 ]
+    names=$(cli_help_command_names <<< "$output")
+    [ -n "$names" ]
+    sorted=$(printf '%s\n' "$names" | LC_ALL=C sort)
+    [ "$names" = "$sorted" ]
+    [[ "$names" == *"check-updates"* ]]
+    [[ "$names" == *"help"* ]]
+    [[ "$names" == *"logs"* ]]
+    [[ "$names" == *"migrate_cdvn"* ]]
+    [[ "$names" == *"start"* ]]
+    [[ "$names" == *"status"* ]]
+    [[ "$names" == *"update"* ]]
+    [[ "$names" == *"upgrade"* ]]
+    [[ "$names" == *"version"* ]]
 }
 
 @test "help: same as --help" {
@@ -306,9 +350,11 @@ set_unit_state() {
 @test "logs: help lists the command as TUI Rolling Consolidated Logs" {
     run ./ethpillar.sh help
     [ "$status" -eq 0 ]
-    [[ "$output" == *"logs"* ]]
+    [[ "$output" == *"logs [unit"* ]]
     [[ "$output" == *"View rolling consolidated logs"* ]]
     [[ "$output" == *"TUI Rolling Consolidated Logs"* ]]
+    [[ "$output" == *"ethpillar logs"* ]]
+    [[ "$output" == *"ethpillar logs execution"* ]]
 }
 
 @test "logs: dispatches to view_journal_logs, not view_logs.sh" {
@@ -332,13 +378,74 @@ set_unit_state() {
     grep -q 'show_rolling_consolidated_logs' cli.sh
 }
 
-@test "logs: unexpected leftover arguments error cleanly" {
+@test "logs: unknown unit name errors cleanly" {
     run ./ethpillar.sh logs leftover
     [ "$status" -eq 1 ]
-    [[ "$output" == *"Unexpected argument"* ]]
-    [[ "$output" == *"ethpillar logs"* ]]
-    ! grep -q "journalctl -u validator" "$COMMAND_LOG"
+    [[ "$output" == *"Unknown target: leftover"* ]]
+    [[ "$output" == *"Valid targets:"* ]]
+    [[ "$output" == *"execution"* ]]
+    ! grep -q "journalctl -u leftover" "$COMMAND_LOG"
+    ! grep -q "journalctl -u validator -u consensus" "$COMMAND_LOG"
     ! grep -q "view_logs.sh" "$COMMAND_LOG"
+}
+
+@test "logs: rejects a not-installed unit" {
+    write_service "$EXEC_SERVICE_FILE"
+
+    run ./ethpillar.sh logs consensus
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not installed"* ]]
+    [[ "$output" == *"consensus"* ]]
+    ! grep -q "journalctl -u consensus" "$COMMAND_LOG"
+}
+
+@test "logs: one installed unit follows only that unit" {
+    write_service "$EXEC_SERVICE_FILE"
+    write_service "$CONSENSUS_SERVICE_FILE"
+
+    run ./ethpillar.sh logs execution
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q "journalctl -u consensus" "$COMMAND_LOG"
+    ! grep -q "journalctl -u validator -u consensus -u execution" "$COMMAND_LOG"
+    ! grep -q "docker compose logs" "$COMMAND_LOG"
+    ! grep -q "view_logs.sh" "$COMMAND_LOG"
+}
+
+@test "logs: multiple units follow in the given order" {
+    write_service "$CHARON_SERVICE_FILE"
+    write_service "$VALIDATOR_SERVICE_FILE"
+
+    run ./ethpillar.sh logs charon validator
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u charon -u validator --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q "journalctl -u validator -u consensus -u execution" "$COMMAND_LOG"
+}
+
+@test "logs: mixed-case names and duplicates resolve once" {
+    write_service "$EXEC_SERVICE_FILE"
+
+    run ./ethpillar.sh logs Execution execution
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q "journalctl -u execution -u execution" "$COMMAND_LOG"
+}
+
+@test "logs: csm_nimbusvalidator is a valid installed unit" {
+    write_service "$CSM_VALIDATOR_SERVICE_FILE"
+
+    run ./ethpillar.sh logs csm_nimbusvalidator
+    [ "$status" -eq 0 ]
+    grep -q "journalctl -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
+}
+
+@test "logs: unknown name after a valid unit does not start journalctl" {
+    write_service "$EXEC_SERVICE_FILE"
+
+    run ./ethpillar.sh logs execution leftover
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unknown target: leftover"* ]]
+    ! grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
 }
 
 @test "status: no clients installed exits 0" {
@@ -442,6 +549,62 @@ set_unit_state() {
     run ./ethpillar.sh upgrade execution
     [ "$status" -eq 1 ]
     [[ "$output" == *"not installed"* ]]
+}
+
+@test "update: alias of upgrade (same reject for not-installed target)" {
+    run ./ethpillar.sh update execution
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not installed"* ]]
+}
+
+@test "update: alias of upgrade (same skip when already on LATEST)" {
+    install_mock_clients
+    set_unit_state charon active
+
+    run ./ethpillar.sh update charon
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"charon: already up to date (1.11.0) — skipping"* ]]
+    [ ! -s "$UPDATE_LOG" ]
+    ! grep -q "systemctl stop" "$COMMAND_LOG"
+    ! grep -q "update_charon.sh" "$COMMAND_LOG"
+}
+
+@test "update: alias of upgrade (same update script when behind)" {
+    install_mock_clients
+    set_unit_state charon active
+    export MOCK_CHARON_LATEST=v1.12.0
+
+    run ./ethpillar.sh update charon
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "update_charon.sh --auto" "$UPDATE_LOG"
+    ! grep -q "skipping" <<< "$output"
+}
+
+@test "update and upgrade: same targets and exit codes when all current" {
+    install_mock_clients
+
+    run ./ethpillar.sh upgrade all
+    upgrade_status=$status
+    upgrade_output=$output
+    [ "$upgrade_status" -eq 0 ]
+
+    : > "$UPDATE_LOG"
+    run ./ethpillar.sh update all
+    [ "$status" -eq "$upgrade_status" ]
+    [[ "$output" == *"execution: already up to date"* ]]
+    [[ "$output" == *"consensus: already up to date"* ]]
+    [[ "$output" == *"validator: already up to date"* ]]
+    [[ "$output" == *"mevboost: already up to date"* ]]
+    [[ "$output" == *"charon: already up to date"* ]]
+    [[ "$output" == *"ethpillar: already up to date"* ]]
+    [ ! -s "$UPDATE_LOG" ]
+    # Both verbs print the same per-target skip lines.
+    while IFS= read -r line; do
+        [[ "$line" == *": already up to date"* ]] || continue
+        [[ "$upgrade_output" == *"$line"* ]]
+    done <<< "$output"
 }
 
 @test "upgrade: skips charon when already on LATEST (no update script / no stop)" {

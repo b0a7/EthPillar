@@ -3,6 +3,11 @@
 Prepares canonicalized installed vs default trees, launches ``tmeld`` for
 side-by-side review/merge, and applies saved left-pane edits back to
 ``/etc/systemd/system/`` with optional ``.bak`` backups.
+
+``prepare-prune-suggest`` is a thin sibling of ``prepare``: it copies the
+installed ``execution.service`` to the left pane and merges suggested prune
+flags into ExecStart only on the right. It does **not** regenerate EthPillar
+defaults.
 """
 
 from __future__ import annotations
@@ -541,8 +546,174 @@ def find_tmeld() -> Optional[str]:
     return None
 
 
+def _run_history_expiry(fn: str, *args: str) -> str:
+    """Call a function from helpers/history_expiry_suggestions.sh."""
+    helper = os.path.join(_repo_root(), "helpers", "history_expiry_suggestions.sh")
+    completed = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1" && shift && fn="$1" && shift && "$fn" "$@"',
+            "bash",
+            helper,
+            fn,
+            *args,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        err = (completed.stderr or completed.stdout or f"{fn} failed").strip()
+        raise RuntimeError(err)
+    return completed.stdout
+
+
+def _detect_el_client(unit_text: str) -> str:
+    """Detect the execution client using the history-expiry helper."""
+    parsed = parse_unit(unit_text)
+    execstart = " ".join(parsed.exec_args)
+    return _run_history_expiry(
+        "history_expiry_detect_client", parsed.description, execstart
+    ).strip()
+
+
+def merge_prune_flags_into_unit(unit_text: str, flags: str) -> str:
+    """Merge *flags* into ExecStart only via the history-expiry helper."""
+    with tempfile.NamedTemporaryFile(
+        "w",
+        suffix=".service",
+        prefix="ethpillar-prune-",
+        delete=False,
+        encoding="utf-8",
+    ) as handle:
+        handle.write(unit_text)
+        path = handle.name
+    try:
+        return _run_history_expiry("history_expiry_merge_unit_file", path, flags)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def prepare_prune_suggest_workdir(
+    workdir: Path,
+    *,
+    unit_path: Optional[str] = None,
+    level: str = "recommended",
+    flags: str = "",
+) -> Tuple[List[str], Dict[str, object]]:
+    """Write execution.service left=installed, right=ExecStart prune merge.
+
+    Unlike :func:`prepare_workdir`, this does not generate EthPillar defaults.
+    Left is an exact copy of the installed unit (the apply contract).
+    """
+    path = (
+        unit_path
+        or os.environ.get("EXEC_SERVICE_FILE")
+        or SERVICE_FILES["execution"]
+    )
+    raw = read_text_file(path)
+    if raw is None:
+        raise RuntimeError(f"Cannot read execution unit at {path}")
+
+    merge_flags = (flags or "").strip()
+    if not merge_flags:
+        client = _detect_el_client(raw)
+        if not client:
+            raise RuntimeError("Could not detect the installed execution client")
+        merge_flags = _run_history_expiry(
+            "history_expiry_flags_for_level", client, level
+        ).strip()
+    if not merge_flags:
+        raise RuntimeError("No prune flags to merge for this client/level")
+
+    merged = merge_prune_flags_into_unit(raw, merge_flags)
+    workdir.mkdir(parents=True, exist_ok=True)
+    installed_dir = workdir / "installed"
+    default_dir = workdir / "default"
+    installed_dir.mkdir(parents=True, exist_ok=True)
+    default_dir.mkdir(parents=True, exist_ok=True)
+
+    if merged == raw or merged.rstrip("\n") == raw.rstrip("\n"):
+        meta: Dict[str, object] = {
+            "differing": [],
+            "pre_hashes": {},
+            "system_paths": {},
+            "mode": "prune-suggest",
+        }
+        (workdir / _META_NAME).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        return [], meta
+
+    dest = installed_dir / "execution.service"
+    dest.write_text(raw, encoding="utf-8")
+    (default_dir / "execution.service").write_text(merged, encoding="utf-8")
+    meta = {
+        "differing": ["execution"],
+        "pre_hashes": {"execution": _sha256(raw)},
+        "system_paths": {"execution": path},
+        "mode": "prune-suggest",
+        "left_label": "installed unit (this is what gets applied)",
+        "right_label": "same unit with suggested prune flags on ExecStart",
+    }
+    (workdir / _META_NAME).write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return ["execution"], meta
+
+
+def cmd_prepare_prune_suggest(args: argparse.Namespace) -> int:
+    workdir = Path(args.workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    differing, _meta = prepare_prune_suggest_workdir(
+        workdir,
+        unit_path=args.unit or None,
+        level=args.level,
+        flags=args.flags or "",
+    )
+    if not differing:
+        print("Selected prune flags are already present on ExecStart.")
+        return EXIT_NO_DIFF
+    print("Differing units: " + ", ".join(differing))
+    print(f"Workdir: {workdir}")
+    return EXIT_OK
+
+
+def tmeld_pane_paths(
+    workdir: Path, meta: Optional[Dict[str, object]] = None
+) -> Tuple[str, str]:
+    """Return left/right paths to pass to tmeld.
+
+    A single differing unit opens the two ``.service`` files so the first
+    screen is the content diff (used by prune-suggest). Multiple units keep
+    the installed/ vs default/ folder compare.
+    """
+    if meta is None:
+        meta = _load_meta(workdir)
+    differing: List[str] = list(meta.get("differing") or [])
+    installed_dir = workdir / "installed"
+    default_dir = workdir / "default"
+    if len(differing) == 1:
+        key = str(differing[0])
+        left = installed_dir / f"{key}.service"
+        right = default_dir / f"{key}.service"
+        if left.is_file() and right.is_file():
+            return str(left), str(right)
+    return str(installed_dir), str(default_dir)
+
+
+def tmeld_command(
+    workdir: Path,
+    tmeld: str,
+    meta: Optional[Dict[str, object]] = None,
+) -> List[str]:
+    """Build the tmeld argv for a prepared workdir (no subprocess)."""
+    left, right = tmeld_pane_paths(workdir, meta)
+    return [tmeld, left, right, "--show-line-numbers"]
+
+
 def launch_tmeld(workdir: Path) -> int:
-    """Open tmeld folder compare: installed (left) vs default (right)."""
+    """Open tmeld: file pair when one unit differs, else folder compare."""
     meta = _load_meta(workdir)
     differing: List[str] = meta.get("differing") or []
     if not differing:
@@ -556,12 +727,11 @@ def launch_tmeld(workdir: Path) -> int:
             "(ensure_python_deps). Install manually with: pip install tmeld"
         )
 
-    installed_dir = workdir / "installed"
-    default_dir = workdir / "default"
-    # Folder compare gives a WinMerge-like multi-file UI with tabs on Enter.
-    cmd = [tmeld, str(installed_dir), str(default_dir), "--show-line-numbers"]
+    left_label = str(meta.get("left_label") or "installed (what gets applied)")
+    right_label = str(meta.get("right_label") or "EthPillar default (reference)")
+    cmd = tmeld_command(workdir, tmeld, meta)
     print(f"Launching: {' '.join(cmd)}")
-    print("Left = installed (what gets applied) | Right = EthPillar default (reference)")
+    print(f"Left = {left_label} | Right = {right_label}")
     print("Stay on LEFT: Alt+Left copies a chunk from right→left, then Ctrl+S.")
     print("Esc / Ctrl+Q to quit. (Saving the right pane is ignored on apply.)")
     return subprocess.call(cmd)
@@ -666,6 +836,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_prep = sub.add_parser("prepare", help="Build installed/ vs default/ trees")
     p_prep.add_argument("--workdir", required=True)
     p_prep.set_defaults(func=cmd_prepare)
+
+    p_prune = sub.add_parser(
+        "prepare-prune-suggest",
+        help="Build installed/ vs ExecStart prune-merge for execution.service only",
+    )
+    p_prune.add_argument("--workdir", required=True)
+    p_prune.add_argument(
+        "--unit",
+        default="",
+        help="execution.service path (default: /etc/systemd/system/execution.service)",
+    )
+    p_prune.add_argument(
+        "--level",
+        choices=("recommended", "further"),
+        default="recommended",
+        help="Which helper flag set to merge when --flags is omitted",
+    )
+    p_prune.add_argument(
+        "--flags",
+        default="",
+        help="Override flags to merge into ExecStart (skips helper lookup)",
+    )
+    p_prune.set_defaults(func=cmd_prepare_prune_suggest)
 
     p_launch = sub.add_parser("launch", help="Open tmeld on a prepared workdir")
     p_launch.add_argument("--workdir", required=True)
