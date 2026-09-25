@@ -401,10 +401,12 @@ EOF
 @test "Suggest pruning radiolist names Recommended as suitable for a ~2TB drive" {
   grep -F -q 'Recommended (suitable for a ~2TB drive)' functions.sh
   grep -F -q 'Recommended is the usual choice for home staking on ~2TB disks' functions.sh
+  grep -F -q 'Further savings (experimental — rolling recent)' functions.sh
   ! grep -F -q 'Recommended (~2TB staking)' functions.sh
   ! grep -F -q 'Recommended is the ~2TB staking default' functions.sh
   grep -F -q 'Recommended `--history.chain=postprague`' docs/history-expiry-suggestions.md
   grep -F -q '--history.chain=recent --history.blocks=1056768' docs/history-expiry-suggestions.md
+  grep -F -q 'Experimental: rolling recent' helpers/history_expiry_suggestions.sh
   ! grep -F -q '300-500' helpers/history_expiry_suggestions.sh
   ! grep -F -q '300–500' docs/history-expiry-suggestions.md
 }

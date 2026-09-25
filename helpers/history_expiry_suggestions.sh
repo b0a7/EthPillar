@@ -298,7 +298,7 @@ history_expiry_optional_flags() {
 history_expiry_optional_why() {
   local client="${1:-}"
   case "$client" in
-    Geth) echo "Rolling recent (~5 months / 1056768 blocks) is newer and still settling." ;;
+    Geth) echo "Experimental: rolling recent (~5 months / 1056768 blocks) is newer and still settling." ;;
     Besu) echo "~5 months rolling. Experimental; skip if you need local receipts/logs." ;;
     Reth) echo "~5 months rolling, or aggressive --minimal. Both drop receipts some protocols need." ;;
     *) echo "" ;;

@@ -3210,7 +3210,7 @@ suggestPruningParameters() {
     local cl_unit="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
     local workdir py rc
     local unit_text="" cl_text="" description execstart client status cl_client
-    local level="recommended" flags warning_tmp
+    local level="recommended" flags warning_tmp further_label
 
     # shellcheck source=helpers/history_expiry_suggestions.sh
     source "$helper"
@@ -3266,6 +3266,10 @@ suggestPruningParameters() {
     esac
 
     if history_expiry_has_further_savings "$client"; then
+        further_label="Further savings (more aggressive)"
+        if [[ "$client" == "Geth" ]]; then
+            further_label="Further savings (experimental — rolling recent)"
+        fi
         level=$(whiptail --title "Suggest pruning parameters" --radiolist \
             "${client}: choose prune level. Recommended is the usual choice for home staking on ~2TB disks.
 
@@ -3276,7 +3280,7 @@ Further savings:
   $(history_expiry_further_savings_flags "$client")" \
             20 78 2 \
             recommended "Recommended (suitable for a ~2TB drive)" ON \
-            further "Further savings (more aggressive)" OFF \
+            further "$further_label" OFF \
             3>&1 1>&2 2>&3) || return 0
     fi
 
