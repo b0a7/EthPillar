@@ -235,7 +235,7 @@ def _resolve_context(env: Dict[str, str], paths: Dict[str, str]) -> Dict[str, ob
     sync_url = _scrape_sync_url(cons_args)
     if not sync_url and "consensus" in contents:
         # Nimbus keeps its checkpoint URL in the trustedNodeSync ExecStartPre.
-        m = re.search(r"--trusted-node-url=([^\s'\"]+)", contents["consensus"])
+        m = re.search(r"--trusted-node-url=\"?([^\s'\"]+)", contents["consensus"])
         sync_url = m.group(1) if m else ""
     if not sync_url:
         sync_urls = getattr(config, f"{network}_sync_urls", [])

@@ -1,4 +1,5 @@
 import os
+import re
 import shlex
 import subprocess
 from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, BASE_DATA_DIR
@@ -27,23 +28,45 @@ def build_checkpoint_sync_exec_start_pre(network_flag: str, sync_url: str) -> st
     next start instead of Nimbus falling back to genesis sync.
     Mirrors resync_nimbus() in resync_consensus.sh.
 
+    Every value is double-quoted inside the script, so URL characters such as
+    ``?&;#`` stay literal and the script contains no single quote. The outer
+    ``shlex.quote`` then yields one single-quoted word, the only quoting form
+    systemd accepts (it rejects concatenated quotes like ``'a'"'"'b'``).
+
     Returns:
         Full ``ExecStartPre=`` value (command only, without the key).
+
+    Raises:
+        ValueError: A value contains characters that cannot be passed safely
+            through systemd and bash (whitespace, quotes, backslash, backtick,
+            ``$`` or ``%``).
     """
-    db = shlex.quote(f"{NIMBUS_DATA_DIR}/db")
-    staging = shlex.quote(f"{NIMBUS_DATA_DIR}/.checkpoint-sync")
-    sync_cmd = " ".join(shlex.quote(a) for a in [
+    db = _dq(f"{NIMBUS_DATA_DIR}/db")
+    staging = _dq(f"{NIMBUS_DATA_DIR}/.checkpoint-sync")
+    sync_cmd = " ".join(_dq(a) for a in [
         f"{INSTALL_DIR}/nimbus_beacon_node", "trustedNodeSync",
         network_flag,
         f"--trusted-node-url={sync_url}",
         f"--data-dir={NIMBUS_DATA_DIR}/.checkpoint-sync",
         "--backfill=false",
     ])
+    staging_db = _dq(f"{NIMBUS_DATA_DIR}/.checkpoint-sync/db")
     script = (
         f"test -d {db} || {{ rm -rf {staging} && {sync_cmd} "
-        f"&& mv {staging}/db {db} && rm -rf {staging}; }}"
+        f"&& mv {staging_db} {db} && rm -rf {staging}; }}"
     )
     return f"/bin/bash -c {shlex.quote(script)}"
+
+
+# systemd expands % (specifiers) and $ (env vars) in Exec lines; bash expands
+# $ and ` inside double quotes; quotes/backslash/whitespace would break quoting.
+_UNSAFE_IN_EXEC = re.compile(r"[\s'\"\\`$%]")
+
+
+def _dq(value: str) -> str:
+    if _UNSAFE_IN_EXEC.search(value):
+        raise ValueError(f"Unsupported character in Nimbus checkpoint-sync argument: {value!r}")
+    return f'"{value}"'
 
 
 def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,

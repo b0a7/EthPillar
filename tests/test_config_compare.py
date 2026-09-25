@@ -299,7 +299,7 @@ def test_nimbus_custom_checkpoint_url_round_trips(monkeypatch, tmp_path):
     import deploy.nimbus as nimbus
     from manage.config_compare import _resolve_context
 
-    url = "https://checkpointz.pietjepuk.net"
+    url = "https://checkpointz.pietjepuk.net/?key=a&b=c"
     unit = nimbus.generate_nimbus_bn_service(
         "mainnet", "/secrets/jwtsecret", "5052", "9000", "9001", "100", sync_url=url,
     )
