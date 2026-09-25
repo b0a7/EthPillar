@@ -185,7 +185,7 @@ Commands:
   version                         Print installed client and EthPillar versions (alias: --version)
 
 Targets on this node:
-  status|start|stop|restart:  ${clients:-none}
+  logs|restart|start|status|stop:  ${clients:-none}
   check-updates|update|upgrade:  ${upgradable}
 
 EOF

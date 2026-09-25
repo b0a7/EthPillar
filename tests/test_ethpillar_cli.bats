@@ -291,7 +291,7 @@ set_unit_state() {
     [[ "$output" == *"Not installed:"* ]]
     [[ "$output" == *"validator"* ]]
     [[ "$output" == *"mevboost"* ]]
-    [[ "$output" == *"status|start|stop|restart:"* ]]
+    [[ "$output" == *"logs|restart|start|status|stop:"* ]]
     [[ "$output" == *"check-updates|update|upgrade:"* ]]
     [[ "$output" == *"logs [unit"* ]]
     [[ "$output" == *"ethpillar logs execution"* ]]
