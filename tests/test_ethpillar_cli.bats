@@ -291,6 +291,9 @@ set_unit_state() {
     [[ "$output" == *"Not installed:"* ]]
     [[ "$output" == *"validator"* ]]
     [[ "$output" == *"mevboost"* ]]
+    [[ "$output" == *"status|start|stop|restart:"* ]]
+    [[ "$output" == *"check-updates|update|upgrade:"* ]]
+    ! [[ "$output" == *$'\n  clients:'* ]]
     ! grep -q whiptail "$COMMAND_LOG"
 }
 

@@ -141,8 +141,8 @@ Commands:
   version                         Print installed client and EthPillar versions (alias: --version)
 
 Targets on this node:
-  clients:  ${clients:-none}
-  upgrade:  ${upgradable}
+  status|start|stop|restart:  ${clients:-none}
+  check-updates|update|upgrade:  ${upgradable}
 
 EOF
     if [[ -n "$missing" ]]; then
