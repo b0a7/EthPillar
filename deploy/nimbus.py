@@ -1,14 +1,56 @@
 import os
+import shlex
 import subprocess
 from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, BASE_DATA_DIR
 from client_requirements import validate_version_for_network
 from typing import List, Tuple, Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
+NIMBUS_DATA_DIR = f"{BASE_DATA_DIR}/nimbus"
+
+
+def _nimbus_network_flag(eth_network: str) -> str:
+    if eth_network == "ephemery":
+        return "--network=/opt/ethpillar/testnet/config.yaml"
+    return f"--network={eth_network}"
+
+
+def build_checkpoint_sync_exec_start_pre(network_flag: str, sync_url: str) -> str:
+    """Build ``ExecStartPre`` that checkpoint-syncs Nimbus on first start.
+
+    Nimbus has no checkpoint-sync flag on the beacon node itself; its database
+    must be initialised once with ``trustedNodeSync``. Runs only while no
+    database exists, so it is a no-op on later starts and after datadir
+    migrations (e.g. CDVN). The sync writes to a staging dir and the finished
+    ``db`` is moved into place atomically, so an interrupted sync (provider
+    down, start timeout) leaves no half-built ``db`` and is retried on the
+    next start instead of Nimbus falling back to genesis sync.
+    Mirrors resync_nimbus() in resync_consensus.sh.
+
+    Returns:
+        Full ``ExecStartPre=`` value (command only, without the key).
+    """
+    db = shlex.quote(f"{NIMBUS_DATA_DIR}/db")
+    staging = shlex.quote(f"{NIMBUS_DATA_DIR}/.checkpoint-sync")
+    sync_cmd = " ".join(shlex.quote(a) for a in [
+        f"{INSTALL_DIR}/nimbus_beacon_node", "trustedNodeSync",
+        network_flag,
+        f"--trusted-node-url={sync_url}",
+        f"--data-dir={NIMBUS_DATA_DIR}/.checkpoint-sync",
+        "--backfill=false",
+    ])
+    script = (
+        f"test -d {db} || {{ rm -rf {staging} && {sync_cmd} "
+        f"&& mv {staging}/db {db} && rm -rf {staging}; }}"
+    )
+    return f"/bin/bash -c {shlex.quote(script)}"
+
+
 def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
                                cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
                                fee_parameters: str = '', mev_parameters: str = '',
-                               network_override: Optional[str] = None) -> str:
+                               network_override: Optional[str] = None,
+                               sync_url: str = '') -> str:
     """Generate Nimbus beacon node systemd service file content.
 
     Args:
@@ -21,21 +63,17 @@ def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
         fee_parameters: Optional fee recipient parameters
         mev_parameters: Optional MEV relay parameters
         network_override: Optional network flag override
+        sync_url: Optional checkpoint sync URL (trustedNodeSync on first start)
 
     Returns:
         Service file content as a string
     """
-    if network_override:
-        _network = network_override
-    elif eth_network == "ephemery":
-        _network = "--network=/opt/ethpillar/testnet/config.yaml"
-    else:
-        _network = f'--network={eth_network}'
+    _network = network_override or _nimbus_network_flag(eth_network)
 
     _args = [
         f"{INSTALL_DIR}/nimbus_beacon_node",
         _network,
-        f"--data-dir={BASE_DATA_DIR}/nimbus",
+        f"--data-dir={NIMBUS_DATA_DIR}",
         f"--tcp-port={cl_p2p_port}",
         f"--udp-port={cl_p2p_port}",
         f"--quic-port={cl_p2p_port_2}",
@@ -64,7 +102,10 @@ def generate_nimbus_bn_service(eth_network: str, jwtsecret_path: str,
         extra_env=None,
         working_dir=None,
         timeout_stop_sec=900,
-        limit_nofile=None
+        limit_nofile=None,
+        exec_start_pre=[build_checkpoint_sync_exec_start_pre(_network, sync_url)] if sync_url else None,
+        # trustedNodeSync downloads a full state; the systemd default of 90 s is too short.
+        timeout_start_sec=1800 if sync_url else None,
     )
 
 def generate_nimbus_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
@@ -178,7 +219,7 @@ def download_nimbus(eth_network: str) -> str:
 
 def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
                      cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
-                     fee_parameters: str = '', mev_parameters: str = '') -> str:
+                     fee_parameters: str = '', mev_parameters: str = '', sync_url: str = '') -> str:
     """Generate and write Nimbus beacon node service file.
 
     Args:
@@ -190,6 +231,7 @@ def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
         cl_max_peer_count: Consensus client max peer count.
         fee_parameters: Optional fee recipient parameters.
         mev_parameters: Optional MEV relay parameters.
+        sync_url: Optional checkpoint sync URL (trustedNodeSync on first start).
 
     Returns:
         The path to the created service file.
@@ -197,7 +239,7 @@ def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
     service_content = generate_nimbus_bn_service(
         eth_network, jwtsecret_path,
         cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peer_count,
-        fee_parameters, mev_parameters
+        fee_parameters, mev_parameters, sync_url=sync_url
     )
     service_file_path = '/etc/systemd/system/consensus.service'
     write_service_file(service_content, service_file_path, 'consensus_temp.service')

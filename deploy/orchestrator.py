@@ -294,7 +294,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             mev_params = '--payload-builder=true --payload-builder-url=http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = nimbus.download_nimbus(network)
-            cl_path = nimbus.install_nimbus_bn(network, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params)
+            cl_path = nimbus.install_nimbus_bn(network, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params, sync_url=sync_url)
         elif cc_name == 'Teku':
             fee_params = f'--validators-proposer-default-fee-recipient={fee_recipient}'
             if flags.get('charon'):
