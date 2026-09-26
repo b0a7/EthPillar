@@ -42,11 +42,22 @@ teardown() {
 
 write_consensus() {
 	local name="$1"
+	local qport="${2:-${CL_P2P_PORT_2:-9001}}"
 	cat > "$CONSENSUS_SERVICE_FILE" <<EOF
 [Unit]
 Description=${name} Beacon Node Consensus Client service for MAINNET
 [Service]
-ExecStart=/usr/local/bin/${name,,} --quic-port=9001
+ExecStart=/usr/local/bin/${name,,} --quic-port=${qport}
+EOF
+}
+
+write_consensus_no_quic_flag() {
+	local name="$1"
+	cat > "$CONSENSUS_SERVICE_FILE" <<EOF
+[Unit]
+Description=${name} Beacon Node Consensus Client service for MAINNET
+[Service]
+ExecStart=/usr/local/bin/${name,,} --p2p-port=9000
 EOF
 }
 
@@ -130,11 +141,18 @@ EOF
 	[ "$output" = "9001" ]
 }
 
-@test "CL_P2P_PORT_2 override is used for QUIC UDP" {
-	write_consensus Lighthouse
+@test "CL_P2P_PORT_2 override is used for QUIC UDP when unit has no flag" {
+	write_consensus_no_quic_flag Lighthouse
 	CL_P2P_PORT_2=19001
 	run expected_cl_quic_udp_ports
 	[ "$output" = "19001" ]
+}
+
+@test "consensus.service --quic-port wins over CL_P2P_PORT_2" {
+	write_consensus Lighthouse 19002
+	CL_P2P_PORT_2=9001
+	run expected_cl_quic_udp_ports
+	[ "$output" = "19002" ]
 }
 
 # ── udp_check_ports vs expected-4 listen accounting ───────────────────────────

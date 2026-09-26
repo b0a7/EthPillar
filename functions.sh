@@ -965,6 +965,128 @@ ufwAllowCharonP2p(){
     sudo ufw allow "${port}/tcp" comment 'Allow Charon P2P port'
 }
 
+# First word of Description= — same heuristic as getClient / node-checker.
+unitClientName(){
+    local path="$1"
+    [[ -f "$path" ]] || return 0
+    grep "Description=" "$path" 2>/dev/null | awk -F'=' '{print $2}' | awk '{print $1}'
+}
+
+# Caplin is integrated into execution.service; no QUIC by default.
+isCaplinNode(){
+    local exec_svc el cl consensus_svc
+    exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    el="$(unitClientName "$exec_svc")"
+    if [[ "$el" == "Erigon-Caplin" || "$el" == "Caplin" ]]; then
+        return 0
+    fi
+    if [[ -f "$exec_svc" ]] && grep -qiE 'caplin' "$exec_svc" 2>/dev/null; then
+        return 0
+    fi
+    consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    cl="$(unitClientName "$consensus_svc")"
+    if [[ "$cl" == "Caplin" || "$cl" == "Erigon-Caplin" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# True when a local consensus.service exists and the CL is not Caplin.
+clExpectsQuic(){
+    isCaplinNode && return 1
+    local cl
+    cl="$(unitClientName "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}")"
+    [[ -n "$cl" ]]
+}
+
+# QUIC UDP from consensus.service (--quic-port / --quicPort / --p2p-quic-port).
+parseClQuicPortFromUnit(){
+    local svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local val=""
+    [[ -f "$svc" ]] || return 0
+    val=$(grep -oE -- '--(p2p-quic-port|quic-port|quicPort)[= ][0-9]+' "$svc" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
+    if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 1 && val <= 65535 )); then
+        echo "$val"
+    fi
+}
+
+# Space-separated UDP ports. Empty when QUIC is not expected (Caplin / no CL).
+# Prefer the live unit flag, then CL_P2P_PORT_2, then 9001. Teku also needs IPv6 QUIC.
+getExpectedClQuicUdpPorts(){
+    clExpectsQuic || return 0
+    local cl quic_port ipv6_port from_unit
+    cl="$(unitClientName "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}")"
+    from_unit="$(parseClQuicPortFromUnit)"
+    quic_port="${from_unit:-${CL_P2P_PORT_2:-9001}}"
+    if [[ "$cl" == "Teku" ]]; then
+        ipv6_port="${TEKU_QUIC_IPV6_PORT:-$(( ${CL_P2P_PORT:-9000} + 91 ))}"
+        echo "${quic_port} ${ipv6_port}"
+    else
+        echo "${quic_port}"
+    fi
+}
+
+# Allow inbound UDP on expected CL QUIC port(s). No-op when QUIC is not expected.
+ufwAllowClQuic(){
+    local port ports
+    ports="$(getExpectedClQuicUdpPorts)"
+    if [[ -z "$ports" ]]; then
+        if command -v whiptail >/dev/null 2>&1; then
+            whiptail --title "CL QUIC" --msgbox \
+                "No consensus QUIC port to allow (no consensus.service, or Caplin which has no QUIC by default).\nUse the generic Allow option to open a UDP port manually." 12 70 \
+                || true
+        fi
+        return 0
+    fi
+    for port in $ports; do
+        sudo ufw allow "${port}/udp" comment 'Allow consensus client QUIC port'
+    done
+}
+
+# Append one numbered UFW menu row. Used by ufwBuildFirewallMenu.
+_ufw_menu_add_pair(){
+    local action="$1" label="$2"
+    UFW_MENU_PAIRS+=("${UFW_MENU_NEXT}" "$label")
+    UFW_MENU_ACTIONS["${UFW_MENU_NEXT}"]="$action"
+    UFW_MENU_NEXT=$((UFW_MENU_NEXT + 1))
+}
+
+# Build UFW Firewall menu pairs (numbered tags) and action map.
+# Charon P2P is omitted when charon.service is not installed.
+# Sets UFW_MENU_PAIRS and UFW_MENU_ACTIONS.
+ufwBuildFirewallMenu(){
+    UFW_MENU_NEXT=1
+    UFW_MENU_PAIRS=()
+    unset UFW_MENU_ACTIONS 2>/dev/null || true
+    declare -gA UFW_MENU_ACTIONS=()
+
+    _ufw_menu_add_pair view "View ufw status"
+    _ufw_menu_add_pair allow_port "Allow incoming traffic on a port"
+    _ufw_menu_add_pair deny_port "Deny incoming traffic on a port"
+    _ufw_menu_add_pair delete_rule "Delete a rule"
+    UFW_MENU_PAIRS+=("-" "")
+    _ufw_menu_add_pair enable_defaults "Enable firewall with default settings"
+    _ufw_menu_add_pair ec_rpc "EC RPC Node: Allow local network access to RPC port 8545"
+    _ufw_menu_add_pair cc_rpc "CC RPC Node: Allow local network access to RPC port 5052"
+    _ufw_menu_add_pair grafana "Monitoring: Allow local network access to Grafana port 3000"
+    _ufw_menu_add_pair cl_quic "CL QUIC: Allow UDP (from consensus / expected QUIC port)"
+    if isCharonEnabled; then
+        _ufw_menu_add_pair charon "${OBOL_CHARON}: Allow P2P port (from charon.service)"
+    fi
+    _ufw_menu_add_pair disable "Disable firewall"
+    _ufw_menu_add_pair reset "Reset firewall rules: Delete all rules"
+    UFW_MENU_PAIRS+=("-" "")
+    _ufw_menu_add_pair whitelist "Whitelist an IP address: Allow full access to this node"
+    UFW_MENU_PAIRS+=("-" "")
+    UFW_MENU_PAIRS+=("99" "Back to main menu")
+    UFW_MENU_ACTIONS["99"]="back"
+}
+
+ufwFirewallMenuAction(){
+    local choice="$1"
+    echo "${UFW_MENU_ACTIONS[$choice]:-}"
+}
+
 # Classify how this node runs validator duties.
 # Returns: none | separate | integrated_grandine
 getValidatorMode(){

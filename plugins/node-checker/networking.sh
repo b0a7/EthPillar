@@ -127,7 +127,12 @@ cl_expects_quic() {
 }
 
 # Prints space-separated UDP ports. Empty when QUIC is not expected (Caplin / no CL).
+# Delegates to functions.sh so the UFW TUI and node-checker share one resolver.
 expected_cl_quic_udp_ports() {
+    if declare -F getExpectedClQuicUdpPorts >/dev/null; then
+        getExpectedClQuicUdpPorts
+        return
+    fi
     cl_expects_quic || return 0
     local cl quic_port ipv6_port
     cl="$(node_checker_cl_name)"
