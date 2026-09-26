@@ -33,9 +33,29 @@ cli_is_client_installed() {
 CLI_CLIENT_START_ORDER=(execution consensus mevboost charon validator)
 # Stop order: reverse dependency (validator before charon).
 CLI_CLIENT_STOP_ORDER=(validator charon mevboost consensus execution)
+# TUI-only extras after the CLI stack on start/restart; reversed on stop.
+TUI_EXTRA_SERVICES=(csm_nimbusvalidator dora)
 # Units accepted by `ethpillar logs [unit ...]`. Same set as the rolling
 # consolidated journalctl stream. Named units are followed in argv order.
 CLI_LOG_UNITS=(validator consensus execution mevboost charon csm_nimbusvalidator)
+
+# Print systemd unit names in TUI start/stop/restart-all order (one per line).
+# Start/restart: CLI start order, then TUI extras. Stop: extras reversed, then
+# CLI stop order. Shared by the TUI "all clients" actions and tests.
+tui_all_service_order() {
+    local action="${1:-start}"
+    local -a order=()
+    local i
+    if [[ "$action" == "stop" ]]; then
+        for (( i=${#TUI_EXTRA_SERVICES[@]}-1; i>=0; i-- )); do
+            order+=("${TUI_EXTRA_SERVICES[i]}")
+        done
+        order+=("${CLI_CLIENT_STOP_ORDER[@]}")
+    else
+        order=("${CLI_CLIENT_START_ORDER[@]}" "${TUI_EXTRA_SERVICES[@]}")
+    fi
+    printf '%s\n' "${order[@]}"
+}
 
 # Print space-separated client targets installed on this host (no ethpillar).
 # Default listing follows start order.
