@@ -8,7 +8,10 @@
 # Approach adapted from ethstaker/eth-docker `port-check` (Apache-2.0): Beacon
 # API inbound vs outbound, QUIC multiaddrs, CGNAT honesty, and operator
 # guidance that does not leak ENR. EthPillar is systemd/bare-metal — no
-# Docker/compose probes, no discv5/quicmap containers.
+# Docker/compose discv5 containers. Active inbound QUIC uses an optional
+# aioquic probe adapted from bojanisc/quicmap (Apache-2.0); see
+# NOTICE-quicmap.txt and quic_inbound_probe.py. Peer-direction inbound QUIC
+# stays complementary.
 #
 # Made for home and solo stakers 🏠🥩
 
@@ -16,7 +19,7 @@
 # Do not execute this file directly.
 #
 # Troubleshoot vs default vs debug (Plugins menu has no CLI flags):
-# - Default: PASS/FAIL/WARN for local listen, TCP inbound, and CL peer direction.
+# - Default: PASS/FAIL/WARN for local listen, TCP inbound, active QUIC, and CL peer direction.
 # - Troubleshoot: extra firewall/NAT/port-forward steps when inbound looks broken.
 #   The menu/default path auto-prints that guidance when a useful signal fires
 #   (missing UFW allow, TCP checker closed/unreachable, zero/unknown inbound,
@@ -31,6 +34,13 @@ NODE_CHECKER_TROUBLESHOOT_PRINTED="${NODE_CHECKER_TROUBLESHOOT_PRINTED:-0}"
 NODE_CHECKER_TROUBLESHOOT_INBOUND="${NODE_CHECKER_TROUBLESHOOT_INBOUND:-?}"
 NODE_CHECKER_TROUBLESHOOT_OUTBOUND="${NODE_CHECKER_TROUBLESHOOT_OUTBOUND:-?}"
 TCP_PORT_CHECKER_URL="${TCP_PORT_CHECKER_URL:-https://eth2-client-port-checker.vercel.app/api/checker?ports=}"
+# Public IPv4 from the TCP checker (requester_ip). Cached for the QUIC probe.
+NODE_CHECKER_PUBLIC_IPV4="${NODE_CHECKER_PUBLIC_IPV4:-}"
+# Optional aioquic venv — not the default EthPillar .venv (aioquic is heavy).
+NODE_CHECKER_QUIC_VENV="${NODE_CHECKER_QUIC_VENV:-}"
+NODE_CHECKER_QUIC_PYTHON="${NODE_CHECKER_QUIC_PYTHON:-}"
+NODE_CHECKER_QUIC_TIMEOUT="${NODE_CHECKER_QUIC_TIMEOUT:-5}"
+NODE_CHECKER_QUIC_AUTO_INSTALL="${NODE_CHECKER_QUIC_AUTO_INSTALL:-0}"
 
 # Request the troubleshoot block for the menu/default path. Never enables ENR.
 node_checker_request_troubleshoot() {
@@ -140,6 +150,11 @@ expected_cl_quic_udp_ports() {
     fi
 }
 
+# IPv4 QUIC UDP port (first expected port). Teku's second port is IPv6-only.
+cl_quic_ipv4_udp_port() {
+    expected_cl_quic_udp_ports | awk '{print $1}'
+}
+
 csv_has_item() {
     local csv="$1" item="$2"
     [[ ",${csv}," == *",${item},"* ]]
@@ -225,7 +240,7 @@ check_cl_quic() {
     fi
     check_cl_quic_ufw_rules
     check_cl_quic_listening
-    print_check_result "INFO" "QUIC listen/UFW is local. Inbound QUIC is inferred from peers that dialed you (peer-direction section)."
+    print_check_result "INFO" "QUIC listen/UFW is local. An active inbound QUIC probe runs after the public TCP checker; peer-direction inbound QUIC stays complementary."
 }
 
 # RFC1918 / loopback / link-local / this-host. Returns 0 when not Internet-routable.
@@ -438,6 +453,8 @@ print_port_troubleshoot_guidance() {
     echo "  The consensus layer needs UDP for transport. A TCP-only forward will not do."
     echo "  No website can test a UDP port — checkers that offer a green result only speak TCP."
     echo "  A green TCP result for ${cl_p2p} or ${el_p2p} proves nothing about QUIC ${cl_quic}/udp."
+    echo "  Node-checker can actively probe QUIC (quicmap-style aioquic handshake) when the optional venv is installed."
+    echo "  Peer-direction inbound QUIC is complementary — it is not a replacement for the active probe."
     echo "  If your public IPv4 is CGNAT (100.64.0.0/10), no IPv4 port-forward can work; use IPv6 or ask the ISP for a public IPv4."
     echo "  UFW (when active) should allow ${cl_p2p}/tcp, ${cl_p2p}/udp, ${cl_quic}/udp, ${el_p2p}/tcp, ${el_p2p}/udp."
     if [[ "$(node_checker_cl_name)" == "Teku" ]]; then
@@ -551,7 +568,7 @@ check_open_ports() {
     udp_ports="$udp_check_ports"
 
     print_check_result "INFO" "TCP inbound (public checker) vs local listen: a process bound on ss is not proof the Internet can dial you."
-    print_check_result "INFO" "UDP inbound cannot be tested by a web checker (they only speak TCP). Expected UDP: ${udp_ports}."
+    print_check_result "INFO" "UDP inbound cannot be tested by a web checker (they only speak TCP). Expected UDP: ${udp_ports}. An active QUIC probe follows for CL QUIC."
 
     tcp_json="$(fetch_tcp_port_checker "$tcp_ports")"
     if ! jq -e 'type == "object"' <<< "$tcp_json" >/dev/null 2>&1; then
@@ -563,6 +580,7 @@ check_open_ports() {
     fi
 
     requester="$(tcp_checker_requester_ip "$tcp_json")"
+    NODE_CHECKER_PUBLIC_IPV4="$requester"
     if [[ -n "$requester" ]]; then
         print_check_result "INFO" "Public TCP checker sees this host as ${requester}"
         case "$(classify_ipv4 "$requester")" in
@@ -599,6 +617,198 @@ check_open_ports() {
     fi
 }
 
+# Echo public IPv4 from the TCP checker path (cached after check_open_ports).
+node_checker_resolve_public_ipv4() {
+    if [[ -n "${NODE_CHECKER_PUBLIC_IPV4:-}" ]]; then
+        echo "$NODE_CHECKER_PUBLIC_IPV4"
+        return 0
+    fi
+    local json ports
+    ports="${1:-${tcp_check_ports:-9000,30303}}"
+    json="$(fetch_tcp_port_checker "$ports")"
+    NODE_CHECKER_PUBLIC_IPV4="$(tcp_checker_requester_ip "$json")"
+    echo "${NODE_CHECKER_PUBLIC_IPV4}"
+    [[ -n "${NODE_CHECKER_PUBLIC_IPV4}" ]]
+}
+
+node_checker_quic_root() {
+    echo "${ETHPILLAR_ROOT:-${BASE_DIR:-.}}"
+}
+
+node_checker_quic_default_venv() {
+    echo "${NODE_CHECKER_QUIC_VENV:-$(node_checker_quic_root)/.venv-quic}"
+}
+
+node_checker_quic_probe_script() {
+    echo "${NODE_CHECKER_QUIC_PROBE_SCRIPT:-$(node_checker_quic_root)/plugins/node-checker/quic_inbound_probe.py}"
+}
+
+# True when python can import aioquic. Echo the interpreter path.
+node_checker_quic_python() {
+    local py default_venv
+    default_venv="$(node_checker_quic_default_venv)"
+    local -a candidates=()
+    [[ -n "${NODE_CHECKER_QUIC_PYTHON:-}" ]] && candidates+=("${NODE_CHECKER_QUIC_PYTHON}")
+    [[ -x "${default_venv}/bin/python3" ]] && candidates+=("${default_venv}/bin/python3")
+    [[ -n "${ETHPILLAR_PYTHON:-}" ]] && candidates+=("${ETHPILLAR_PYTHON}")
+    candidates+=("python3")
+    for py in "${candidates[@]}"; do
+        [[ -n "$py" ]] || continue
+        if "$py" -c "import aioquic" >/dev/null 2>&1; then
+            echo "$py"
+            return 0
+        fi
+    done
+    return 1
+}
+
+quic_probe_install_hint() {
+    local root venv req
+    root="$(node_checker_quic_root)"
+    venv="$(node_checker_quic_default_venv)"
+    req="${root}/plugins/node-checker/requirements-quic.txt"
+    echo "  Optional one-time setup (aioquic is not part of the default EthPillar venv):"
+    echo "    python3 -m venv \"${venv}\""
+    echo "    \"${venv}/bin/pip\" install -r \"${req}\""
+    echo "  Or rerun with NODE_CHECKER_QUIC_AUTO_INSTALL=1. Adapted from https://github.com/bojanisc/quicmap (Apache-2.0)."
+}
+
+# Best-effort optional venv. Never used unless NODE_CHECKER_QUIC_AUTO_INSTALL=1.
+maybe_install_quic_probe_deps() {
+    [[ "${NODE_CHECKER_QUIC_AUTO_INSTALL:-0}" -eq 1 ]] || return 1
+    local venv req
+    venv="$(node_checker_quic_default_venv)"
+    req="$(node_checker_quic_root)/plugins/node-checker/requirements-quic.txt"
+    [[ -f "$req" ]] || return 1
+    python3 -m venv "$venv" || return 1
+    "${venv}/bin/pip" install -q -r "$req" || return 1
+    NODE_CHECKER_QUIC_VENV="$venv"
+    node_checker_quic_python >/dev/null
+}
+
+# True when this IPv4 is assigned to a local interface (no NAT hairpin).
+ipv4_is_on_local_interface() {
+    local ip="$1"
+    [[ -n "$ip" ]] || return 1
+    if command -v ip >/dev/null 2>&1; then
+        ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qx "$ip" && return 0
+    fi
+    if command -v hostname >/dev/null 2>&1; then
+        hostname -I 2>/dev/null | tr ' ' '\n' | grep -qx "$ip" && return 0
+    fi
+    return 1
+}
+
+# Overridable in bats. Echo probe JSON on stdout. Return 0 if invoked.
+invoke_quic_inbound_probe() {
+    local host="$1" port="$2"
+    local py script timeout
+    py="$(node_checker_quic_python)" || return 1
+    script="$(node_checker_quic_probe_script)"
+    timeout="${NODE_CHECKER_QUIC_TIMEOUT:-5}"
+    [[ -f "$script" ]] || return 1
+    "$py" "$script" --host "$host" --port "$port" --timeout "$timeout"
+}
+
+# Active inbound QUIC: can the Internet complete a QUIC/libp2p handshake to host:port?
+# Missing tools → WARN (never a false FAIL). Peer-direction stays complementary.
+check_inbound_quic_probe() {
+    local host port json reason versions alpn
+
+    print_check_result "INFO" "Active inbound QUIC (quicmap-style). Local listen is not proof the Internet can complete a QUIC handshake."
+
+    if is_caplin_node || ! cl_expects_quic; then
+        return 0
+    fi
+
+    host="$(node_checker_resolve_public_ipv4)"
+    if [[ -z "$host" ]]; then
+        total_checks=$((total_checks + 1))
+        print_check_result "WARN" "Could not resolve public IPv4 via the TCP port checker; skipping active QUIC probe."
+        warning_checks=$((warning_checks + 1))
+        node_checker_request_troubleshoot
+        return 0
+    fi
+
+    print_check_result "INFO" "QUIC probe target ${host} (same requester_ip path as the public TCP checker)"
+
+    case "$(classify_ipv4 "$host")" in
+        cgnat)
+            total_checks=$((total_checks + 1))
+            print_check_result "WARN" "Public address ${host} is CGNAT. Active IPv4 QUIC probe cannot succeed."
+            warning_checks=$((warning_checks + 1))
+            node_checker_request_troubleshoot
+            return 0
+            ;;
+        private)
+            total_checks=$((total_checks + 1))
+            print_check_result "WARN" "TCP checker reported a non-public IPv4 (${host}). Active inbound QUIC probe skipped."
+            warning_checks=$((warning_checks + 1))
+            node_checker_request_troubleshoot
+            return 0
+            ;;
+    esac
+
+    port="$(cl_quic_ipv4_udp_port)"
+    if [[ -z "$port" ]]; then
+        return 0
+    fi
+    if [[ "$(node_checker_cl_name)" == "Teku" ]]; then
+        print_check_result "INFO" "Probing Teku IPv4 QUIC ${port}/udp. IPv6 QUIC is not probed over IPv4."
+    fi
+
+    if ! node_checker_quic_python >/dev/null 2>&1; then
+        maybe_install_quic_probe_deps || true
+    fi
+    if ! node_checker_quic_python >/dev/null 2>&1; then
+        total_checks=$((total_checks + 1))
+        print_check_result "WARN" "Inbound QUIC probe tools missing (aioquic). Not a FAIL — optional install:"
+        quic_probe_install_hint
+        warning_checks=$((warning_checks + 1))
+        return 0
+    fi
+
+    json="$(invoke_quic_inbound_probe "$host" "$port" 2>/dev/null)" || json=""
+    if ! jq -e 'type == "object"' <<< "$json" >/dev/null 2>&1; then
+        total_checks=$((total_checks + 1))
+        print_check_result "WARN" "QUIC probe did not return usable JSON for ${host}:${port}. Not a FAIL."
+        warning_checks=$((warning_checks + 1))
+        return 0
+    fi
+
+    reason="$(jq -r '.reason // empty' <<< "$json" 2>/dev/null || true)"
+    if [[ "$reason" == "aioquic_missing" ]]; then
+        total_checks=$((total_checks + 1))
+        print_check_result "WARN" "Inbound QUIC probe tools missing (aioquic). Not a FAIL — optional install:"
+        quic_probe_install_hint
+        warning_checks=$((warning_checks + 1))
+        return 0
+    fi
+
+    versions="$(jq -r '(.server_versions // []) | join(", ")' <<< "$json" 2>/dev/null || true)"
+    alpn="$(jq -r '(.alpn // []) | join(", ")' <<< "$json" 2>/dev/null || true)"
+
+    total_checks=$((total_checks + 1))
+    if jq -e '.ok == true' <<< "$json" >/dev/null 2>&1; then
+        print_check_result "PASS" "Inbound QUIC open on ${host}:${port}/udp — Internet can complete a QUIC handshake${versions:+ (${versions})}"
+        if [[ -n "$alpn" ]]; then
+            print_check_result "INFO" "QUIC probe ALPN: ${alpn}"
+        fi
+    elif ipv4_is_on_local_interface "$host"; then
+        print_check_result "FAIL" "Inbound QUIC closed on ${host}:${port}/udp. Forward ${port}/udp on the router and allow it in UFW."
+        failed_checks=$((failed_checks + 1))
+        node_checker_request_troubleshoot
+    else
+        print_check_result "WARN" "Active QUIC probe got no handshake from ${host}:${port}/udp. This host is behind NAT, so a same-host probe can miss a working forward (hairpin). Peer-direction inbound QUIC remains complementary."
+        warning_checks=$((warning_checks + 1))
+        node_checker_request_troubleshoot
+    fi
+
+    if [[ "${NODE_CHECKER_DEBUG:-0}" -eq 1 ]]; then
+        print_check_result "INFO" "QUIC probe JSON (no ENR): $(printf '%s' "$json" | tr -d '\n')"
+    fi
+}
+
 check_peer_count() {
     local identity_json peers_json peer_count_json el_json
     local cl_connected el_connected
@@ -614,7 +824,7 @@ check_peer_count() {
     cl_connected="$(jq -r '.data.connected // empty' <<< "$peer_count_json" 2>/dev/null || true)"
     el_connected="$(jq -r '.result // empty' <<< "$el_json" 2>/dev/null | awk '{printf "%d\n", $1}')"
 
-    print_check_result "INFO" "Peer direction (Beacon API). Local listen is necessary; inbound peers prove the Internet can dial you."
+    print_check_result "INFO" "Peer direction (Beacon API). Complementary to the active QUIC probe — inbound peers also prove the Internet can dial you."
 
     inbound="?"
     outbound="?"

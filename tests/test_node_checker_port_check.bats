@@ -36,6 +36,8 @@ setup() {
 	NODE_CHECKER_TROUBLESHOOT_PRINTED=0
 	NODE_CHECKER_TROUBLESHOOT_INBOUND="?"
 	NODE_CHECKER_TROUBLESHOOT_OUTBOUND="?"
+	NODE_CHECKER_PUBLIC_IPV4=""
+	NODE_CHECKER_QUIC_AUTO_INSTALL=0
 	unset TEKU_QUIC_IPV6_PORT || true
 }
 
@@ -94,6 +96,7 @@ EOF
 	[ -f plugins/node-checker/networking.sh ]
 	[ "$(type -t check_open_ports)" = "function" ]
 	[ "$(type -t expected_cl_quic_udp_ports)" = "function" ]
+	[ "$(type -t check_inbound_quic_probe)" = "function" ]
 	[ "$(type -t print_port_troubleshoot_guidance)" = "function" ]
 	grep -q 'source "${SOURCE_DIR}/networking.sh"' plugins/node-checker/run.sh
 }
@@ -196,6 +199,8 @@ EOF
 	[[ "$(cat "$TEST_DIR/guide.out")" == *"UDP 9001"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" == *"TCP+UDP 30303"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" == *"only speak TCP"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"quicmap-style"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"complementary"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" != *"Plugins menu"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" != *"No ENR"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" != *"--debug"* ]]

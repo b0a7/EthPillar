@@ -33,6 +33,8 @@ setup() {
 	NODE_CHECKER_DEBUG=0
 	NODE_CHECKER_AUTO_TROUBLESHOOT=0
 	NODE_CHECKER_TROUBLESHOOT_PRINTED=0
+	NODE_CHECKER_PUBLIC_IPV4=""
+	NODE_CHECKER_QUIC_AUTO_INSTALL=0
 	unset TEKU_QUIC_IPV6_PORT || true
 }
 
@@ -278,4 +280,153 @@ check_cl_quic_capture() {
 	[[ "$(cat "$TEST_DIR/quic.out")" == *"UFW allows CL QUIC 9001/udp"* ]]
 	[[ "$(cat "$TEST_DIR/quic.out")" == *"missing allow rule for CL QUIC 9091/udp"* ]]
 	[ "$failed_checks" -eq 1 ]
+}
+
+# ── active inbound QUIC probe (quicmap-style, mocked) ─────────────────────────
+
+check_inbound_quic_probe_capture() {
+	check_inbound_quic_probe > "$TEST_DIR/qprobe.out" 2>&1
+	cat "$TEST_DIR/qprobe.out"
+}
+
+@test "cl_quic_ipv4_udp_port is the first expected port (Teku IPv6 stays off IPv4)" {
+	write_consensus Lighthouse
+	[ "$(cl_quic_ipv4_udp_port)" = "9001" ]
+	write_consensus Teku
+	[ "$(cl_quic_ipv4_udp_port)" = "9001" ]
+}
+
+@test "node_checker_resolve_public_ipv4 uses the TCP checker requester_ip path" {
+	fetch_tcp_port_checker() { echo '{"requester_ip":"203.0.113.50","open_ports":[9000]}'; }
+	[ "$(node_checker_resolve_public_ipv4)" = "203.0.113.50" ]
+	[ "$NODE_CHECKER_PUBLIC_IPV4" = "203.0.113.50" ]
+	# Cached — checker is not called again.
+	fetch_tcp_port_checker() { echo '{"requester_ip":"198.51.100.1","open_ports":[]}'; }
+	[ "$(node_checker_resolve_public_ipv4)" = "203.0.113.50" ]
+}
+
+@test "check_inbound_quic_probe WARNs when aioquic is missing and does not FAIL" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	node_checker_quic_python() { return 1; }
+	maybe_install_quic_probe_deps() { return 1; }
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"probe tools missing"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"optional install"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *".venv-quic"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"quicmap"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
+}
+
+@test "check_inbound_quic_probe PASSes when the handshake JSON is ok" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	node_checker_quic_python() { echo "/mock/python"; }
+	invoke_quic_inbound_probe() {
+		echo '{"ok":true,"reason":"server_versions","host":"203.0.113.50","port":9001,"server_versions":["0x1"],"alpn":["libp2p"]}'
+	}
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 203.0.113.50:9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Internet can complete a QUIC handshake"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"0x1"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"libp2p"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 0 ]
+}
+
+@test "check_inbound_quic_probe FAILs when the probe is closed and the public IP is local" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	node_checker_quic_python() { echo "/mock/python"; }
+	invoke_quic_inbound_probe() {
+		echo '{"ok":false,"reason":"no_quic_response","host":"203.0.113.50","port":9001,"server_versions":[],"alpn":[]}'
+	}
+	ipv4_is_on_local_interface() { return 0; }
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC closed on 203.0.113.50:9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:"* ]]
+	[ "$failed_checks" -eq 1 ]
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 1 ]
+}
+
+@test "check_inbound_quic_probe WARNs on NAT hairpin miss instead of false FAIL" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	node_checker_quic_python() { echo "/mock/python"; }
+	invoke_quic_inbound_probe() {
+		echo '{"ok":false,"reason":"no_quic_response","host":"203.0.113.50","port":9001,"server_versions":[],"alpn":[]}'
+	}
+	ipv4_is_on_local_interface() { return 1; }
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"behind NAT"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"complementary"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
+}
+
+@test "check_inbound_quic_probe WARNs when public IPv4 cannot be resolved" {
+	write_consensus Lighthouse
+	fetch_tcp_port_checker() { echo ''; }
+	node_checker_quic_python() { echo "/mock/python"; }
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Could not resolve public IPv4"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
+}
+
+@test "check_inbound_quic_probe WARNs on CGNAT requester IP" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="100.64.1.8"
+	node_checker_quic_python() { echo "/mock/python"; }
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"CGNAT"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
+}
+
+@test "check_inbound_quic_probe skips Caplin without FAIL" {
+	write_caplin_execution
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Active inbound QUIC"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[PASS]"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 0 ]
+}
+
+@test "check_inbound_quic_probe --debug prints JSON and never an ENR" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	NODE_CHECKER_DEBUG=1
+	node_checker_quic_python() { echo "/mock/python"; }
+	invoke_quic_inbound_probe() {
+		echo '{"ok":true,"reason":"server_versions","host":"203.0.113.50","port":9001,"server_versions":["0x1"],"alpn":[]}'
+	}
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe JSON (no ENR)"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"server_versions"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:-"* ]]
+}
+
+@test "check_open_ports caches requester_ip for the QUIC probe" {
+	write_consensus Lighthouse
+	fetch_tcp_port_checker() { echo '{"requester_ip":"198.51.100.77","open_ports":[9000,30303]}'; }
+	check_open_ports > "$TEST_DIR/open.out" 2>&1
+	[ "$NODE_CHECKER_PUBLIC_IPV4" = "198.51.100.77" ]
 }

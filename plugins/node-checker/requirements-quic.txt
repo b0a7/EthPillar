@@ -1,0 +1,9 @@
+# Optional inbound QUIC probe (aioquic). Not installed by ensure_python_deps.
+# Used only by plugins/node-checker/quic_inbound_probe.py.
+#
+# One-time setup:
+#   python3 -m venv .venv-quic
+#   .venv-quic/bin/pip install -r plugins/node-checker/requirements-quic.txt
+#
+# Or: NODE_CHECKER_QUIC_AUTO_INSTALL=1 on a node-checker run.
+aioquic

@@ -152,8 +152,10 @@ Usage: run.sh [--troubleshoot] [--debug]
   --debug         Troubleshoot plus ENR/identity diagnostics (redact before sharing)
 
 The Plugins menu has no flags. Default path auto-prints the same troubleshoot
-guidance when inbound looks broken (UFW, TCP checker, zero inbound, missing QUIC).
-Local listen (ss/UFW) is not the same as inbound reachability. ENR is debug-only.
+guidance when inbound looks broken (UFW, TCP checker, QUIC probe, zero inbound,
+missing QUIC). Local listen (ss/UFW) is not the same as inbound reachability.
+Active QUIC needs the optional aioquic venv; missing tools WARN, they do not FAIL.
+ENR is debug-only.
 EOF
 }
 
@@ -873,6 +875,8 @@ node_checker_main() {
     check_cl_quic
     echo
     check_open_ports
+    echo
+    check_inbound_quic_probe
     echo
     check_peer_count
     echo
