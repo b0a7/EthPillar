@@ -716,16 +716,13 @@ node_checker_join_paths() {
     printf '%s' "$out"
 }
 
-# fstab is informational only when no EL/CL datadir could be resolved.
-# Never FAIL here — Proxmox bind-mounts often omit noatime from guest fstab.
+# VC-only / remote CL: no local EL+CL datadir. Never FAIL or WARN on fstab.
 node_checker_noatime_unresolved_fallback() {
     local fstab="${NODE_CHECKER_FSTAB:-/etc/fstab}"
+    print_check_result "INFO" "noatime check skipped: no local EL/CL datadir"
     if [[ -f "$fstab" ]] && grep -q "noatime" "$fstab"; then
-        print_check_result "INFO" "noatime in fstab (EL/CL datadir not resolved; live mount not verified)"
-        return
+        print_check_result "INFO" "fstab mentions noatime (not used as a gate)"
     fi
-    print_check_result "WARN" "Could not resolve EL/CL datadir; live noatime not verified. To set noatime, use Toolbox."
-    warning_checks=$((warning_checks + 1))
 }
 
 # Require noatime on live mounts of EL/CL chaindata (not guest fstab alone).
