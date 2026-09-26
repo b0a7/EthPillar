@@ -60,12 +60,6 @@ variations = [
     "--network SEPOLIA --config 'Full Node Only'",
 ]
 
-# Skip only this combo×network cell. Other HOODI rows stay; Nimbus-Nethermind
-# SEPOLIA still covers the client pair without HOODI trustedNodeSync (~226 MB).
-_SKIP_COMBO_NETWORKS = {
-    ("Nimbus-Nethermind", "HOODI"),
-}
-
 custom_tests = [
     ("Geth-Lighthouse-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"),
     ("Nethermind-Grandine-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Nethermind --cc Grandine --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"),
@@ -237,8 +231,6 @@ def generate_tests():
                 
             match = re.search(r'--network\s+(\S+)', actual_var)
             local_network = match.group(1) if match else ""
-            if (combo, local_network) in _SKIP_COMBO_NETWORKS:
-                continue
 
             cmd = f"{RUN_TEST} deploy/deploy-node.py --combo \"{combo}\" {actual_var}"
             tests.append(TestTask(combo, cmd, actual_var, local_network))

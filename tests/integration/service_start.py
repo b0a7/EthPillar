@@ -27,7 +27,13 @@ NIMBUS_UNIT_TIMEOUT_START_SEC = 1800
 # 2×33.3s = 66.6s, rounded up to 90s. Capped at :data:`NIMBUS_UNIT_TIMEOUT_START_SEC`.
 NIMBUS_CHECKPOINT_SYNC_START_TIMEOUT_SEC = 90
 
+# Integration-only: cap unit stop so RPC expose/revoke ``service restart`` does
+# not wait the production TimeoutStopSec=900 for a slow Nimbus SIGTERM.
+# Production generators stay at 900; the harness rewrites installed units.
+INTEGRATION_TIMEOUT_STOP_SEC = 90
+
 _TIMEOUT_START_RE = re.compile(r"^TimeoutStartSec=(.+)$", re.MULTILINE)
+_TIMEOUT_STOP_RE = re.compile(r"^TimeoutStopSec=\S+", re.MULTILINE)
 
 
 def _unit_assignments(unit_text: str) -> Dict[str, List[str]]:
@@ -92,3 +98,24 @@ def systemctl_start_timeout_sec(service_name: str, unit_text: str) -> int:
     if cap is None:
         cap = NIMBUS_UNIT_TIMEOUT_START_SEC
     return min(NIMBUS_CHECKPOINT_SYNC_START_TIMEOUT_SEC, cap)
+
+
+def rewrite_timeout_stop_sec(
+    unit_text: str, seconds: int = INTEGRATION_TIMEOUT_STOP_SEC
+) -> str:
+    """Return unit text with ``TimeoutStopSec`` set to *seconds*.
+
+    Replaces an existing ``TimeoutStopSec=`` line. If the key is missing,
+    inserts it immediately after the ``[Service]`` header. Production
+    generators keep ``TimeoutStopSec=900``; Integration applies this
+    rewrite before RPC expose/revoke restarts.
+    """
+    replacement = f"TimeoutStopSec={seconds}"
+    if _TIMEOUT_STOP_RE.search(unit_text):
+        return _TIMEOUT_STOP_RE.sub(replacement, unit_text, count=1)
+    return re.sub(
+        r"(?m)^(\[Service\][ \t]*\n)",
+        rf"\1{replacement}\n",
+        unit_text,
+        count=1,
+    )

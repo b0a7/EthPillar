@@ -3,9 +3,11 @@ from unittest.mock import patch
 
 from tests.integration.service_start import (
     DEFAULT_SYSTEMCTL_START_TIMEOUT_SEC,
+    INTEGRATION_TIMEOUT_STOP_SEC,
     NIMBUS_CHECKPOINT_SYNC_START_TIMEOUT_SEC,
     NIMBUS_UNIT_TIMEOUT_START_SEC,
     parse_timeout_start_sec,
+    rewrite_timeout_stop_sec,
     systemctl_start_timeout_sec,
     unit_has_nimbus_checkpoint_sync,
 )
@@ -114,4 +116,20 @@ def test_parse_timeout_start_sec_skips_infinity():
     assert unit_has_nimbus_checkpoint_sync(nimbus_infinity)
     assert systemctl_start_timeout_sec("consensus", nimbus_infinity) == min(
         NIMBUS_CHECKPOINT_SYNC_START_TIMEOUT_SEC, NIMBUS_UNIT_TIMEOUT_START_SEC
+    )
+
+
+def test_rewrite_timeout_stop_sec_replaces_production_900():
+    rewritten = rewrite_timeout_stop_sec(NIMBUS_SYNC_UNIT)
+    assert f"TimeoutStopSec={INTEGRATION_TIMEOUT_STOP_SEC}" in rewritten
+    assert "TimeoutStopSec=900" not in rewritten
+    assert rewritten.count("TimeoutStopSec=") == 1
+
+
+def test_rewrite_timeout_stop_sec_inserts_when_missing():
+    unit = "[Unit]\nDescription=x\n\n[Service]\nUser=consensus\nExecStart=/bin/true\n"
+    rewritten = rewrite_timeout_stop_sec(unit)
+    assert (
+        f"[Service]\nTimeoutStopSec={INTEGRATION_TIMEOUT_STOP_SEC}\nUser=consensus"
+        in rewritten
     )
