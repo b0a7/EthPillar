@@ -191,11 +191,14 @@ EOF
 @test "print_port_troubleshoot_guidance never prints an ENR value" {
 	write_consensus Lighthouse
 	print_port_troubleshoot_guidance 0 4 > "$TEST_DIR/guide.out"
-	[[ "$(cat "$TEST_DIR/guide.out")" == *"Inbound troubleshoot (no ENR"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"Inbound firewall, NAT, and port-forward tips"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" == *"UDP 9000"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" == *"UDP 9001"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" == *"TCP+UDP 30303"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" == *"only speak TCP"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"Plugins menu"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"No ENR"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"--debug"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" != *"enr:-"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" != *"SECRET_DO_NOT_PRINT"* ]]
 }
@@ -293,8 +296,9 @@ stub_healthy_node_apis() {
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"public IPv4"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 5"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"enr:-SECRET"* ]]
-	[[ "$(cat "$TEST_DIR/peers.out")" != *"Inbound troubleshoot"* ]]
-	[[ "$(cat "$TEST_DIR/peers.out")" != *"Auto-printing inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"Inbound firewall, NAT, and port-forward tips"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"Plugins menu"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"has no flags"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 0 ]
 }
@@ -312,7 +316,7 @@ stub_healthy_node_apis() {
 	fetch_el_rpc() { echo '{"result":"0x2"}'; }
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"No inbound CL peers"* ]]
-	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound firewall, NAT, and port-forward tips"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"UDP 9001"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"enr:-HIDDEN"* ]]
 	[ "$warning_checks" -ge 1 ]
@@ -333,7 +337,7 @@ stub_healthy_node_apis() {
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Consensus client has no peers"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 0"* ]]
-	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound firewall, NAT, and port-forward tips"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"enr:-HIDDEN"* ]]
 	[ "$failed_checks" -ge 2 ]
 }
@@ -352,7 +356,7 @@ stub_healthy_node_apis() {
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound working"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Peers dialed you over TCP only"* ]]
-	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound firewall, NAT, and port-forward tips"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$warning_checks" -ge 1 ]
 }
@@ -364,7 +368,7 @@ stub_healthy_node_apis() {
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"enr:-SECRET_DO_NOT_PRINT_IN_DEFAULT"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Redact before sharing"* ]]
-	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound firewall, NAT, and port-forward tips"* ]]
 }
 
 @test "check_peer_count FAILs when Beacon peers API is unreachable" {
@@ -398,9 +402,12 @@ stub_healthy_node_apis() {
 	check_cl_quic > "$TEST_DIR/quic.out" 2>&1
 	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 1 ]
 	maybe_print_port_troubleshoot "?" "?" > "$TEST_DIR/guide.out" 2>&1
-	[[ "$(cat "$TEST_DIR/guide.out")" == *"Auto-printing inbound troubleshoot"* ]]
-	[[ "$(cat "$TEST_DIR/guide.out")" == *"Inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"Inbound firewall, NAT, and port-forward tips"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" == *"Forward UDP 9000"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"Plugins menu"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"has no flags"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"No ENR"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"--troubleshoot"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" != *"enr:-"* ]]
 	[[ "$(cat "$TEST_DIR/guide.out")" != *"SECRET"* ]]
 }
@@ -410,8 +417,10 @@ stub_healthy_node_apis() {
 	NODE_CHECKER_TROUBLESHOOT=1
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound working"* ]]
-	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound troubleshoot"* ]]
-	[[ "$(cat "$TEST_DIR/peers.out")" == *"you asked for it"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound firewall, NAT, and port-forward tips"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"reachability is still in doubt"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"--troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"Plugins menu"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"enr:-SECRET"* ]]
 	[ "$NODE_CHECKER_DEBUG" -eq 0 ]
 }

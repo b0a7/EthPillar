@@ -48,11 +48,6 @@ maybe_print_port_troubleshoot() {
     node_checker_should_print_troubleshoot || return 0
     [[ "${NODE_CHECKER_TROUBLESHOOT_PRINTED:-0}" -eq 1 ]] && return 0
     NODE_CHECKER_TROUBLESHOOT_PRINTED=1
-    if [[ "${NODE_CHECKER_TROUBLESHOOT:-0}" -eq 1 && "${NODE_CHECKER_AUTO_TROUBLESHOOT:-0}" -eq 0 ]]; then
-        print_check_result "INFO" "Troubleshoot guidance (--troubleshoot): firewall/NAT/forward steps. No ENR."
-    else
-        print_check_result "INFO" "Auto-printing inbound troubleshoot (Plugins menu has no flags): firewall/NAT/forward steps. No ENR."
-    fi
     print_port_troubleshoot_guidance "$inbound" "$outbound"
 }
 
@@ -420,13 +415,13 @@ print_port_troubleshoot_guidance() {
     local el_p2p="${EL_P2P_PORT:-30303}"
     local teku_extra=""
 
-    print_check_result "INFO" "Inbound troubleshoot (no ENR in this section):"
-    echo "  This is extra guidance vs the PASS/FAIL lines: what to change on the firewall, router, or ISP when inbound looks broken."
+    print_check_result "INFO" "Inbound firewall, NAT, and port-forward tips:"
+    echo "  When peers cannot reach this node from the Internet, check the firewall, router port-forwards, and ISP."
     if [[ "$(inbound_status_kind "$inbound")" == "working" ]]; then
         if [[ "${NODE_CHECKER_AUTO_TROUBLESHOOT:-0}" -eq 1 ]]; then
-            echo "  Inbound peering is working; this still prints because another port/NAT/UFW signal looked wrong."
+            echo "  Inbound peering looks fine; another port, NAT, or firewall check still looked wrong."
         else
-            echo "  Inbound peering is working. This guidance prints because you asked for it (--troubleshoot)."
+            echo "  Inbound peering looks fine. Review these tips if reachability is still in doubt."
         fi
     elif [[ "$inbound" == "?" ]]; then
         echo "  This consensus client does not report peer direction, so inbound cannot be measured here."
@@ -449,8 +444,6 @@ print_port_troubleshoot_guidance() {
         teku_extra="${TEKU_QUIC_IPV6_PORT:-$(( cl_p2p + 91 ))}"
         echo "  Teku also needs UFW allow ${teku_extra}/udp (IPv6 QUIC)."
     fi
-    echo "  Do not share your ENR when asking for help — it contains your IP. Share peer ID and these steps instead."
-    echo "  Re-run with --debug only on this host if you need the ENR/identity dump; redact before pasting."
 }
 
 # ENR and identity live only here (NODE_CHECKER_DEBUG / --debug).
@@ -602,7 +595,7 @@ check_open_ports() {
     done
 
     if [[ "$missing" -eq 1 ]]; then
-        print_check_result "INFO" "TCP inbound miss is not a UDP/QUIC result. See the inbound troubleshoot notes after the peer-direction check."
+        print_check_result "INFO" "TCP inbound miss is not a UDP/QUIC result. See the inbound firewall, NAT, and port-forward tips after the peer-direction check."
     fi
 }
 
