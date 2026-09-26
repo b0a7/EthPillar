@@ -52,6 +52,10 @@ from port_bindings import (  # noqa: E402
     verify_port_expectations,
     wait_for_port_scope,
 )
+from service_start import (  # noqa: E402
+    systemctl_start_timeout_sec,
+    unit_has_nimbus_checkpoint_sync,
+)
 
 # Import INSTALL_DIR from common so the path is maintained centrally
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -581,10 +585,40 @@ def check_service_start(
             return False
         print(f"  ✅ daemon-reload succeeded (service file syntax OK)", flush=True)
 
-        # Step 2: start the service
-        result = subprocess.run(
-            _systemctl_cmd("start", service_name),
-            capture_output=True, text=True, timeout=30
+        # Step 2: start the service. Keep a blocking start so ExecStartPre
+        # (Nimbus trustedNodeSync) finishes before we poll ActiveState/ports.
+        # --no-block would return while MainPID is still 0 (start-pre).
+        with open(service_path, encoding="utf-8") as unit_fh:
+            unit_text = unit_fh.read()
+        start_timeout = systemctl_start_timeout_sec(service_name, unit_text)
+        nimbus_pre = (
+            service_name == "consensus" and unit_has_nimbus_checkpoint_sync(unit_text)
+        )
+        pre_note = "; Nimbus trustedNodeSync ExecStartPre" if nimbus_pre else ""
+        print(
+            f"  [systemd] Starting {service_name} "
+            f"(blocking systemctl start, timeout={start_timeout}s{pre_note})...",
+            flush=True,
+        )
+        start_t0 = time.monotonic()
+        try:
+            result = subprocess.run(
+                _systemctl_cmd("start", service_name),
+                capture_output=True, text=True, timeout=start_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            elapsed = time.monotonic() - start_t0
+            print(
+                f"  ❌ systemctl start {service_name} timed out after "
+                f"{elapsed:.1f}s (limit {start_timeout}s)",
+                flush=True,
+            )
+            subprocess.run(["journalctl", "-u", service_name, "--no-pager", "-n", "40"])
+            return False
+        elapsed = time.monotonic() - start_t0
+        print(
+            f"  [systemd] systemctl start {service_name} returned after {elapsed:.1f}s",
+            flush=True,
         )
         if result.returncode != 0:
             print(f"  ❌ systemctl start {service_name} failed:\n{result.stderr}", flush=True)
