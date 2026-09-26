@@ -169,8 +169,7 @@ EOF
 
 	check_noatime_capture
 	[[ "$(cat "$TEST_DIR/noatime.out")" == *"[PASS]"* ]]
-	[[ "$(cat "$TEST_DIR/noatime.out")" == *"$EL_DIR"* ]]
-	[[ "$(cat "$TEST_DIR/noatime.out")" == *"$CL_DIR"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"noatime on EL/CL data: ${EL_DIR}, ${CL_DIR}"* ]]
 	[[ "$(cat "$TEST_DIR/noatime.out")" != *"[FAIL]"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$warning_checks" -eq 0 ]

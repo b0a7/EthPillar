@@ -708,8 +708,12 @@ node_checker_options_has_noatime() {
 
 # Join path arguments with ", " for operator-facing messages.
 node_checker_join_paths() {
-    local IFS=', '
-    printf '%s' "$*"
+    local out="" p
+    for p in "$@"; do
+        [[ -n "$out" ]] && out+=", "
+        out+="$p"
+    done
+    printf '%s' "$out"
 }
 
 # fstab is informational only when no EL/CL datadir could be resolved.
@@ -721,12 +725,12 @@ node_checker_noatime_unresolved_fallback() {
         return
     fi
     print_check_result "WARN" "Could not resolve EL/CL datadir; live noatime not verified. To set noatime, use Toolbox."
-    ((warning_checks++))
+    warning_checks=$((warning_checks + 1))
 }
 
 # Require noatime on live mounts of EL/CL chaindata (not guest fstab alone).
 check_noatime() {
-    ((total_checks++))
+    total_checks=$((total_checks + 1))
     local -a paths=() passed=() failed=() unchecked=()
     local path opts
 
@@ -761,23 +765,23 @@ check_noatime() {
         fi
         msg+=". To change, use Toolbox."
         print_check_result "FAIL" "$msg"
-        ((failed_checks++))
-        return
+        failed_checks=$((failed_checks + 1))
+        return 0
     fi
 
     if [[ ${#passed[@]} -gt 0 && ${#unchecked[@]} -eq 0 ]]; then
         print_check_result "PASS" "noatime on EL/CL data: $(node_checker_join_paths "${passed[@]}")"
-        return
+        return 0
     fi
 
     if [[ ${#passed[@]} -gt 0 ]]; then
         print_check_result "WARN" "noatime on $(node_checker_join_paths "${passed[@]}"); could not read mount options for $(node_checker_join_paths "${unchecked[@]}")"
-        ((warning_checks++))
-        return
+        warning_checks=$((warning_checks + 1))
+        return 0
     fi
 
     print_check_result "WARN" "Could not read live mount options for $(node_checker_join_paths "${unchecked[@]}")"
-    ((warning_checks++))
+    warning_checks=$((warning_checks + 1))
 }
 
 check_swappiness() {
