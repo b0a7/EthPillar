@@ -33,7 +33,8 @@ def _teku_download_from_release(data: dict) -> tuple[str, str]:
 
 def generate_teku_bn_service(eth_network: str, sync_url: str, jwtsecret_path: str,
                              cl_rest_port: str, cl_p2p_port: str, cl_max_peer_count: str,
-                             fee_parameters: str = '', mev_parameters: str = '') -> str:
+                             fee_parameters: str = '', mev_parameters: str = '',
+                             network_override: Optional[str] = None) -> str:
     """Generate Teku beacon node systemd service file content.
 
     Args:
@@ -49,9 +50,10 @@ def generate_teku_bn_service(eth_network: str, sync_url: str, jwtsecret_path: st
     Returns:
         Service file content as a string
     """
+    _network = network_override or f"--network={eth_network}"
     _args = [
         f"{INSTALL_DIR}/teku/bin/teku",
-        f"--network={eth_network}",
+        _network,
         f"--data-path={BASE_DATA_DIR}/teku",
         "--data-storage-mode=minimal",
         f"--checkpoint-sync-url={sync_url}",
@@ -83,6 +85,7 @@ def generate_teku_bn_service(eth_network: str, sync_url: str, jwtsecret_path: st
 
 def generate_teku_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
                              fee_parameters: str = '', extra_parameters: str = '',
+                             network_override: Optional[str] = None,
                              unit_after: Optional[List[str]] = None) -> str:
     """Generate Teku validator client systemd service file content.
 
@@ -98,9 +101,10 @@ def generate_teku_vc_service(eth_network: str, graffiti: str, beacon_node_addres
     Returns:
         Service file content as a string
     """
+    _network = network_override or f"--network={eth_network}"
     _args = [
         f"{INSTALL_DIR}/teku/bin/teku validator-client",
-        f"--network={eth_network}",
+        _network,
         f"--data-path={BASE_DATA_DIR}/teku_validator",
         f"--validator-keys={BASE_DATA_DIR}/teku_validator/validator_keys:{BASE_DATA_DIR}/teku_validator/validator_keys",
         "--metrics-enabled=true",
@@ -185,7 +189,8 @@ def download_teku(eth_network: str) -> str:
 
 def install_teku_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path: str,
                    cl_rest_port: str, cl_p2p_port: str, cl_max_peer_count: str,
-                   fee_parameters: str = '', mev_parameters: str = '') -> str:
+                   fee_parameters: str = '', mev_parameters: str = '',
+                   network_override: Optional[str] = None) -> str:
     """Generate and write Teku beacon node service file.
 
     Args:
@@ -205,7 +210,7 @@ def install_teku_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path: 
     service_content = generate_teku_bn_service(
         eth_network, checkpoint_sync_url, jwtsecret_path,
         cl_rest_port, cl_p2p_port, cl_max_peer_count,
-        fee_parameters, mev_parameters
+        fee_parameters, mev_parameters, network_override=network_override
     )
     service_file_path = '/etc/systemd/system/consensus.service'
     write_service_file(service_content, service_file_path, 'consensus_temp.service')
@@ -213,7 +218,8 @@ def install_teku_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path: 
 
 def install_teku_vc(teku_version: str, eth_network: str, cl_rest_port: str, graffiti: str, bn_addr_flag: str,
                    fee_parameters: str = '', extra_parameters: str = '',
-                   unit_after: Optional[List[str]] = None) -> str:
+                   unit_after: Optional[List[str]] = None,
+                   network_override: Optional[str] = None) -> str:
     """Generate and write Teku validator client service file.
 
     Args:
@@ -231,7 +237,8 @@ def install_teku_vc(teku_version: str, eth_network: str, cl_rest_port: str, graf
     """
     service_content = generate_teku_vc_service(
         eth_network, graffiti, bn_addr_flag,
-        fee_parameters, extra_parameters, unit_after=unit_after,
+        fee_parameters, extra_parameters, network_override=network_override,
+        unit_after=unit_after,
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')

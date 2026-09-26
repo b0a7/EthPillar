@@ -156,11 +156,13 @@ def download_grandine(eth_network: str) -> str:
 
 def install_grandine_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path: str,
                          cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
-                         fee_parameters: str = '', mev_parameters: str = '', is_integrated_vc: bool = False) -> str:
+                         fee_parameters: str = '', mev_parameters: str = '', is_integrated_vc: bool = False,
+                         network_override: Optional[str] = None) -> str:
     service_content = generate_grandine_bn_service(
         eth_network, checkpoint_sync_url, jwtsecret_path,
         cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peer_count,
-        fee_parameters, mev_parameters, is_integrated_vc=is_integrated_vc
+        fee_parameters, mev_parameters, network_override=network_override,
+        is_integrated_vc=is_integrated_vc
     )
     
     if is_integrated_vc:

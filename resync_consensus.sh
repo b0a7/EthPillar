@@ -79,7 +79,8 @@ CL="${CL:-${CLIENT:-}}"
 NETWORK="${NETWORK:-}"
 CHECKPOINT_SYNC_URL="${CHECKPOINT_SYNC_URL:-}"
 ASSUME_YES=0
-EPHEMERY_NETWORK_PATH="/opt/ethpillar/testnet"
+# Keep in sync with deploy.nimbus.EPHEMERY_NETWORK_PATH (config.yaml, not the dir).
+EPHEMERY_NETWORK_PATH="/opt/ethpillar/testnet/config.yaml"
 
 # ---------------------------------------------------------------------------
 # Help

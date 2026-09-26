@@ -230,11 +230,12 @@ def download_prysm(eth_network: str) -> str:
 
 def install_prysm_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path: str,
                      cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
-                     fee_parameters: str = '', mev_parameters: str = '') -> str:
+                     fee_parameters: str = '', mev_parameters: str = '',
+                     network_override: Optional[str] = None) -> str:
     service_content = generate_prysm_bn_service(
         eth_network, checkpoint_sync_url, jwtsecret_path,
         cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peer_count,
-        fee_parameters, mev_parameters
+        fee_parameters, mev_parameters, network_override=network_override
     )
     service_file_path = '/etc/systemd/system/consensus.service'
     write_service_file(service_content, service_file_path, 'consensus_temp.service')
@@ -250,6 +251,7 @@ def install_prysm_vc(
     extra_parameters: str = '',
     beacon_rpc_provider: Optional[str] = "127.0.0.1:4000",
     unit_after: Optional[List[str]] = None,
+    network_override: Optional[str] = None,
 ) -> str:
     """Generate and write Prysm validator client service file.
 
@@ -262,6 +264,7 @@ def install_prysm_vc(
         beacon_node_address,
         fee_parameters,
         extra_parameters,
+        network_override=network_override,
         beacon_rpc_provider=beacon_rpc_provider,
         unit_after=unit_after,
     )
