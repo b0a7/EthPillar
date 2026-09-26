@@ -1234,13 +1234,7 @@ while true; do
             fi
           done
         fi
-        sudo ufw allow 30303 comment 'Allow execution client port'
-        sudo ufw allow 9000 comment 'Allow consensus client port'
-        getClient
-        ufwAllowClQuic
-        [[ $EL == "Reth" ]] && sudo ufw allow 30304/udp comment 'Allow reth discv5 port'
-        [[ $EL =~ "Erigon" ]] && sudo ufw allow 42069 comment 'Allow erigon torrent port'
-        [[ $EL =~ "Erigon" ]] && sudo ufw allow 30304 comment 'Allow erigon p2p port'
+        ufwAllowExpectedP2pPorts
         ufwAllowCharonP2p
         sudo ufw enable
         sudo ufw status numbered
@@ -1262,12 +1256,9 @@ while true; do
         ohai "Local network ${network_current} can access RPC port 3000"
         sleep 2
         ;;
-      cl_quic)
-        _quic_ports="$(getExpectedClQuicUdpPorts)"
-        ufwAllowClQuic
-        if [[ -n "$_quic_ports" ]]; then
-            ohai "CL QUIC UDP allowed: ${_quic_ports// /, }/udp (from consensus / expected QUIC port)."
-        fi
+      elcl_p2p)
+        ufwAllowExpectedP2pPorts
+        ohai "EL/CL P2P allowed: $(describeExpectedP2pUfwRules) (TCP/UDP, incl. QUIC)."
         sleep 2
         ;;
       charon)

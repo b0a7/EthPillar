@@ -1027,11 +1027,12 @@ getExpectedClQuicUdpPorts(){
 }
 
 # Allow inbound UDP on expected CL QUIC port(s). No-op when QUIC is not expected.
+# Pass "quiet" to skip the no-QUIC dialog (used by the full EL/CL P2P helper).
 ufwAllowClQuic(){
-    local port ports
+    local port ports quiet="${1:-}"
     ports="$(getExpectedClQuicUdpPorts)"
     if [[ -z "$ports" ]]; then
-        if command -v whiptail >/dev/null 2>&1; then
+        if [[ "$quiet" != "quiet" ]] && command -v whiptail >/dev/null 2>&1; then
             whiptail --title "CL QUIC" --msgbox \
                 "No consensus QUIC port to allow (no consensus.service, or Caplin which has no QUIC by default).\nUse the generic Allow option to open a UDP port manually." 12 70 \
                 || true
@@ -1041,6 +1042,94 @@ ufwAllowClQuic(){
     for port in $ports; do
         sudo ufw allow "${port}/udp" comment 'Allow consensus client QUIC port'
     done
+}
+
+# First matching --flag=N / --flag N in a systemd unit. Avoids matching longer
+# flags (e.g. --http-port when asking for --port). Dots in flag names are literal.
+parseUnitFlagPort(){
+    local file="$1" flag="$2" val="" escaped=""
+    [[ -f "$file" ]] || return 0
+    escaped="$(printf '%s' "$flag" | sed 's/[].[*^$()+?{|]/\\&/g')"
+    val=$(grep -oE -- "(^|[[:space:]\\\\])${escaped}[= ][0-9]+" "$file" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
+    if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 1 && val <= 65535 )); then
+        echo "$val"
+    fi
+}
+
+# EL libp2p / discovery port. Unit flag, then EL_P2P_PORT, then 30303.
+getExpectedElP2pPort(){
+    local svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    local from_unit=""
+    from_unit="$(parseUnitFlagPort "$svc" '--p2p-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--p2p.port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--Network.P2PPort')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--port')"
+    echo "${from_unit:-${EL_P2P_PORT:-30303}}"
+}
+
+# CL discv5 / libp2p port. Unit flag, then CL_P2P_PORT, then 9000.
+# Caplin has no consensus.service — read --caplin.discovery.port from execution.
+getExpectedClP2pPort(){
+    local svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    local from_unit=""
+    from_unit="$(parseUnitFlagPort "$svc" '--p2p-tcp-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--p2p-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--libp2p-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--tcp-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--port')"
+    if [[ -z "$from_unit" ]] && isCaplinNode; then
+        from_unit="$(parseUnitFlagPort "$exec_svc" '--caplin.discovery.port')"
+    fi
+    echo "${from_unit:-${CL_P2P_PORT:-9000}}"
+}
+
+# Extra EL discovery / torrent rules (port/proto). Same extras enable-defaults opened.
+getExpectedElExtraUfwPorts(){
+    local el exec_svc from_unit
+    exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    el="$(unitClientName "$exec_svc")"
+    case "$el" in
+        Reth)
+            from_unit="$(parseUnitFlagPort "$exec_svc" '--discovery.v5.port')"
+            echo "${from_unit:-${EL_P2P_PORT_2:-30304}}/udp"
+            ;;
+        Erigon|Erigon-Caplin)
+            echo "30304/tcp 30304/udp 42069/tcp 42069/udp"
+            ;;
+    esac
+}
+
+# One-line summary of rules ufwAllowExpectedP2pPorts will add (no Charon).
+describeExpectedP2pUfwRules(){
+    local el_port cl_port extra spec
+    el_port="$(getExpectedElP2pPort)"
+    cl_port="$(getExpectedClP2pPort)"
+    echo -n "${el_port}/tcp ${el_port}/udp ${cl_port}/tcp ${cl_port}/udp"
+    extra="$(getExpectedElExtraUfwPorts)"
+    for spec in $extra; do
+        echo -n " ${spec}"
+    done
+    for spec in $(getExpectedClQuicUdpPorts); do
+        echo -n " ${spec}/udp"
+    done
+    echo
+}
+
+# Allow EL + CL P2P TCP/UDP (and QUIC UDP when expected). Charon stays separate.
+ufwAllowExpectedP2pPorts(){
+    local el_port cl_port extra spec
+    el_port="$(getExpectedElP2pPort)"
+    cl_port="$(getExpectedClP2pPort)"
+    sudo ufw allow "${el_port}/tcp" comment 'Allow execution client P2P'
+    sudo ufw allow "${el_port}/udp" comment 'Allow execution client P2P'
+    sudo ufw allow "${cl_port}/tcp" comment 'Allow consensus client P2P'
+    sudo ufw allow "${cl_port}/udp" comment 'Allow consensus client P2P'
+    extra="$(getExpectedElExtraUfwPorts)"
+    for spec in $extra; do
+        sudo ufw allow "${spec}" comment 'Allow execution client extra P2P/discovery'
+    done
+    ufwAllowClQuic quiet
 }
 
 # Append one numbered UFW menu row. Used by ufwBuildFirewallMenu.
@@ -1069,7 +1158,7 @@ ufwBuildFirewallMenu(){
     _ufw_menu_add_pair ec_rpc "EC RPC Node: Allow local network access to RPC port 8545"
     _ufw_menu_add_pair cc_rpc "CC RPC Node: Allow local network access to RPC port 5052"
     _ufw_menu_add_pair grafana "Monitoring: Allow local network access to Grafana port 3000"
-    _ufw_menu_add_pair cl_quic "CL QUIC: Allow UDP (from consensus / expected QUIC port)"
+    _ufw_menu_add_pair elcl_p2p "EL/CL P2P: Allow TCP/UDP (from execution & consensus, incl. QUIC)"
     if isCharonEnabled; then
         _ufw_menu_add_pair charon "${OBOL_CHARON}: Allow P2P port (from charon.service)"
     fi
