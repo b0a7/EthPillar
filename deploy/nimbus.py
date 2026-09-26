@@ -9,10 +9,14 @@ from deploy.service_generators import form_exec_start, generate_systemd_template
 
 NIMBUS_DATA_DIR = f"{BASE_DATA_DIR}/nimbus"
 
+# Keep in sync with resync_consensus.sh EPHEMERY_NETWORK_PATH and
+# deploy.common.EPHEMERY_NIMBUS_NETWORK.
+EPHEMERY_NETWORK_PATH = "/opt/ethpillar/testnet/config.yaml"
+
 
 def _nimbus_network_flag(eth_network: str) -> str:
     if eth_network == "ephemery":
-        return "--network=/opt/ethpillar/testnet/config.yaml"
+        return f"--network={EPHEMERY_NETWORK_PATH}"
     return f"--network={eth_network}"
 
 
@@ -242,7 +246,8 @@ def download_nimbus(eth_network: str) -> str:
 
 def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
                      cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
-                     fee_parameters: str = '', mev_parameters: str = '', sync_url: str = '') -> str:
+                     fee_parameters: str = '', mev_parameters: str = '', sync_url: str = '',
+                     network_override: Optional[str] = None) -> str:
     """Generate and write Nimbus beacon node service file.
 
     Args:
@@ -262,7 +267,7 @@ def install_nimbus_bn(eth_network: str, jwtsecret_path: str,
     service_content = generate_nimbus_bn_service(
         eth_network, jwtsecret_path,
         cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peer_count,
-        fee_parameters, mev_parameters, sync_url=sync_url
+        fee_parameters, mev_parameters, network_override=network_override, sync_url=sync_url
     )
     service_file_path = '/etc/systemd/system/consensus.service'
     write_service_file(service_content, service_file_path, 'consensus_temp.service')

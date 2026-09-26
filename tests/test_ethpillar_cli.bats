@@ -533,6 +533,26 @@ cli_help_command_names() {
     [ "$stop_validator_line" -lt "$stop_charon_line" ]
 }
 
+@test "tui_all_service_order start is CLI start then extras; stop is extras reversed then CLI stop" {
+    source ./cli.sh
+    mapfile -t start_order < <(tui_all_service_order start)
+    mapfile -t stop_order < <(tui_all_service_order stop)
+    [ "${start_order[0]}" = "execution" ]
+    [ "${start_order[1]}" = "consensus" ]
+    [ "${start_order[2]}" = "mevboost" ]
+    [ "${start_order[3]}" = "charon" ]
+    [ "${start_order[4]}" = "validator" ]
+    [ "${start_order[5]}" = "csm_nimbusvalidator" ]
+    [ "${start_order[6]}" = "dora" ]
+    [ "${stop_order[0]}" = "dora" ]
+    [ "${stop_order[1]}" = "csm_nimbusvalidator" ]
+    [ "${stop_order[2]}" = "validator" ]
+    [ "${stop_order[3]}" = "charon" ]
+    [ "${stop_order[4]}" = "mevboost" ]
+    [ "${stop_order[5]}" = "consensus" ]
+    [ "${stop_order[6]}" = "execution" ]
+}
+
 @test "start: rejects unknown or not-installed target" {
     write_service "$EXEC_SERVICE_FILE"
 

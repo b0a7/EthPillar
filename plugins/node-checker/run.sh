@@ -641,7 +641,16 @@ check_client_version() {
     return
   fi
 
-  if [[ "$name" =~ "Consensus" || "$name" =~ "Validator" ]]; then
+  if [[ "$name" =~ "Validator" ]]; then
+    # VC version from the validator binary (not BN REST). Mixed CL/VC stacks
+    # otherwise compare the beacon node's version to the VC GitHub latest.
+    getClient
+    getValidatorClient >/dev/null 2>&1 || true
+    local vc_name="${VALIDATOR_CLIENT:-${VAL:-$VC}}"
+    VERSION=""
+    getClVcCurrentVersion "$vc_name" vc 2>/dev/null || true
+    version=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "${VERSION:-}" | head -1 || true)
+  elif [[ "$name" =~ "Consensus" ]]; then
     version=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/version" \
       -H "accept: application/json" \
       | jq -r '.data.version' \

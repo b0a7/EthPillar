@@ -164,7 +164,8 @@ def download_lodestar(eth_network: str) -> str:
 
 def install_lodestar_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path: str,
                        cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
-                       fee_parameters: str = '', mev_parameters: str = '') -> str:
+                       fee_parameters: str = '', mev_parameters: str = '',
+                       network_override: Optional[str] = None) -> str:
     """Generate and write Lodestar beacon node service file.
 
     Args:
@@ -184,7 +185,7 @@ def install_lodestar_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_pa
     service_content = generate_lodestar_bn_service(
         eth_network, checkpoint_sync_url, jwtsecret_path,
         cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peer_count,
-        fee_parameters, mev_parameters
+        fee_parameters, mev_parameters, network_override=network_override
     )
     service_file_path = '/etc/systemd/system/consensus.service'
     write_service_file(service_content, service_file_path, 'consensus_temp.service')
@@ -192,7 +193,8 @@ def install_lodestar_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_pa
 
 def install_lodestar_vc(lodestar_version: str, eth_network: str, cl_rest_port: str, graffiti: str, bn_addr_flag: str,
                        fee_parameters: str = '', extra_parameters: str = '',
-                       unit_after: Optional[List[str]] = None) -> str:
+                       unit_after: Optional[List[str]] = None,
+                       network_override: Optional[str] = None) -> str:
     """Generate and write Lodestar validator client service file.
 
     Args:
@@ -210,7 +212,8 @@ def install_lodestar_vc(lodestar_version: str, eth_network: str, cl_rest_port: s
     """
     service_content = generate_lodestar_vc_service(
         eth_network, graffiti, bn_addr_flag,
-        fee_parameters, extra_parameters, unit_after=unit_after,
+        fee_parameters, extra_parameters, network_override=network_override,
+        unit_after=unit_after,
     )
     service_file_path = '/etc/systemd/system/validator.service'
     write_service_file(service_content, service_file_path, 'validator_temp.service')

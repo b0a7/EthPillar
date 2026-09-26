@@ -112,6 +112,10 @@ else:
     flags = resolve_role_flags(role, eth_network)
 
 flags["charon"] = bool(args.with_charon)
+# Consensus switch: apply Teku/Nimbus companion flags when Charon is already installed.
+if args.switch_client == "consensus" and not flags["charon"]:
+    if os.path.isfile("/etc/systemd/system/charon.service"):
+        flags["charon"] = True
 if args.with_mevboost:
     flags["mevboost"] = True
 # Builder API can be on without a local mevboost.service (external MEV / CDVN).

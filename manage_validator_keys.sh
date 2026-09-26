@@ -320,7 +320,7 @@ function _setKeystorePassword(){
                 whiptail --title "Error" --msgbox "Passwords not the same. Try again." 8 78
             fi
         else
-            whiptail --msgbox "The keystore password must be at least 8 characters long." 8 78
+            whiptail --msgbox "The keystore password must be at least 12 characters long." 8 78
         fi
     done
 }
@@ -427,8 +427,8 @@ function loadKeys(){
 
    case $VC in
       Lighthouse)
-        [[ -d /var/lib/lighthouse_validator ]] && vc_path="/var/lib/lighthouse_validator" || vc_path="/var/lib/lighthouse/validators"
-        LH_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lighthouse")
+        vc_path=$(lighthouseValidatorDatadir)
+        LH_BIN=$(get_systemd_exec_path "${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}" "/usr/local/bin/lighthouse")
         sudo "$LH_BIN" account validator import \
           --datadir "$vc_path" \
           --directory="$KEYFOLDER" \
@@ -442,7 +442,7 @@ function loadKeys(){
         echo "$_KEYSTOREPASSWORD" > "$HOME"/validators-password.txt
 
         [[ -d /var/lib/lodestar_validator ]] && vc_path="/var/lib/lodestar_validator" || vc_path="/var/lib/lodestar/validators"
-        LODESTAR_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lodestar")
+        LODESTAR_BIN=$(get_systemd_exec_path "${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}" "/usr/local/bin/lodestar")
 
         sudo "$LODESTAR_BIN" validator import \
             --dataDir="$vc_path" \
@@ -476,7 +476,12 @@ function loadKeys(){
             sudo chown -R "${__SERVICE_USER}":"${__SERVICE_USER}" "${__DATA_DIR}"
             sudo chmod -R 700 "${__DATA_DIR}"
         else
-            NIMBUS_BIN=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/nimbus_beacon_node")
+            local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+            local nimbus_vc
+            nimbus_vc=$(get_systemd_exec_path "$validator_svc" "/usr/local/bin/nimbus_validator_client")
+            # deposits import is a beacon-node subcommand; use the VC install dir.
+            NIMBUS_BIN="$(dirname "$nimbus_vc")/nimbus_beacon_node"
+            [[ -x "$NIMBUS_BIN" ]] || NIMBUS_BIN="/usr/local/bin/nimbus_beacon_node"
             sudo "$NIMBUS_BIN" deposits import \
                 --data-dir=/var/lib/nimbus_validator "$KEYFOLDER"
             sudo chown -R validator:validator /var/lib/nimbus_validator
@@ -623,14 +628,9 @@ function queryEntryQueue(){
 }
 
 function getClientVC(){
-    if [ -f /etc/systemd/system/validator.service ]; then
-        VC=$(grep "Description=" /etc/systemd/system/validator.service | awk -F'=' '{print $2}' | awk '{print $1}')
-    else
-        # VC is integrated into Grandine BN. So check for Grandine.
-        if grep -q "Grandine" /etc/systemd/system/consensus.service 2>/dev/null; then
-            VC="Grandine"
-        fi
-    fi
+    # Wrapper around getValidatorClient / getValidatorMode (requires keystore-dir
+    # for integrated Grandine; a BN-only Grandine full node is not a VC).
+    getValidatorClient >/dev/null 2>&1 || true
 }
 
 function promptViewLogs(){

@@ -864,9 +864,7 @@ getClient(){
     if [ -f "$consensus_svc" ]; then
         CL=$(grep Description= "$consensus_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
-    if [ -f "$validator_svc" ]; then
-        VC=$(grep Description= "$validator_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
-    fi
+    getValidatorClient >/dev/null || true
     if [ -f "$csm_svc" ]; then
         CSM_VC=$(grep Description= "$csm_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
@@ -998,6 +996,28 @@ getValidatorClient(){
     echo "$VALIDATOR_CLIENT"
 }
 
+# Lighthouse --datadir for import/list: prefer the EthPillar VC path, then the
+# legacy BN datadir (not …/validators; Lighthouse would look for …/validators/validators).
+lighthouseValidatorDatadir(){
+    if [[ -d /var/lib/lighthouse_validator ]]; then
+        echo "/var/lib/lighthouse_validator"
+    elif [[ -d /var/lib/lighthouse ]]; then
+        echo "/var/lib/lighthouse"
+    else
+        echo "/var/lib/lighthouse_validator"
+    fi
+}
+
+# Prysm --wallet-dir: scrape validator.service, else the EthPillar install path.
+prysmValidatorWalletDir(){
+    local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    local wallet=""
+    if [[ -f "$validator_svc" ]]; then
+        wallet=$(grep -oE -- '--wallet-dir=[^[:space:]\\]+' "$validator_svc" 2>/dev/null | head -1 | cut -d= -f2- || true)
+    fi
+    echo "${wallet:-/var/lib/prysm_validator/validator_keys}"
+}
+
 # True when Charon has shipped Gloas/ePBS support (version gate).
 # Stub: always false until Obol publishes a stable ePBS release —
 # https://github.com/ObolNetwork/charon/releases
@@ -1063,6 +1083,38 @@ epbsRemoteVcMode() {
     [[ -f "$mev_svc" && ! -f "$validator_svc" ]]
 }
 
+# Per-client CL REST bind-address flag (shared by exposeRpcCL + getBeaconNodeEndpoint).
+clRestBindFlag(){
+    local client="${1:-${CL:-}}"
+    case "$client" in
+        Nimbus)     echo "--rest-address" ;;
+        Lodestar)   echo "--rest.address" ;;
+        Lighthouse|Grandine) echo "--http-address" ;;
+        Prysm)      echo "--http-host" ;;
+        Teku)       echo "--rest-api-interface" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# Per-client CL REST port flag (shared by exposeRpcCL + getBeaconNodeEndpoint).
+clRestPortFlag(){
+    local client="${1:-${CL:-}}"
+    case "$client" in
+        Nimbus)     echo "--rest-port" ;;
+        Lodestar)   echo "--rest.port" ;;
+        Lighthouse|Grandine|Prysm) echo "--http-port" ;;
+        Teku)       echo "--rest-api-port" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# Resolve CL name from consensus.service Description when getClient has not run.
+_clNameFromConsensusUnit(){
+    local consensus_svc="${1:-${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}}"
+    [[ -f "$consensus_svc" ]] || return 0
+    grep -m1 '^Description=' "$consensus_svc" 2>/dev/null | awk -F'=' '{print $2}' | awk '{print $1}'
+}
+
 # Build the beacon node REST URL that a separate VC should target.
 # Prefers environment variables, then falls back to scraping the consensus.service.
 # Sets BEACON_NODE_ENDPOINT.
@@ -1070,17 +1122,36 @@ getBeaconNodeEndpoint(){
     local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
     local cl_ip="${CL_IP_ADDRESS:-127.0.0.1}"
     local cl_port="${CL_REST_PORT:-}"
+    local client="${CL:-}"
+    local bind_flag="" port_flag="" scraped_ip="" scraped_port=""
+
+    if [[ -z "$client" && -f "$consensus_svc" ]]; then
+        client=$(_clNameFromConsensusUnit "$consensus_svc")
+    fi
+    bind_flag=$(clRestBindFlag "$client")
+    port_flag=$(clRestPortFlag "$client")
 
     if [[ -f "$consensus_svc" ]]; then
-        # Try to scrape port from common flags if not set via env
         if [[ -z "$cl_port" ]]; then
-            cl_port=$(grep -oE '(--http-port=|--rest-port=|--rest-api-port=|--rest\.port=)[0-9]+' \
-                "$consensus_svc" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)
+            if [[ -n "$port_flag" ]]; then
+                scraped_port=$(grep -oE -- "${port_flag}=[0-9]+" \
+                    "$consensus_svc" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)
+                cl_port="$scraped_port"
+            fi
+            if [[ -z "$cl_port" ]]; then
+                cl_port=$(grep -oE -- '(--http-port=|--rest-port=|--rest-api-port=|--rest\.port=)[0-9]+' \
+                    "$consensus_svc" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)
+            fi
         fi
 
-        # Try to scrape IP address
-        local scraped_ip
-        scraped_ip=$(grep -oE '(--http-address=)[^ ]+' "$consensus_svc" 2>/dev/null | head -1 | cut -d= -f2- || true)
+        if [[ -n "$bind_flag" ]]; then
+            scraped_ip=$(grep -oE -- "${bind_flag}=[^[:space:]\\]+" \
+                "$consensus_svc" 2>/dev/null | head -1 | cut -d= -f2- || true)
+        fi
+        if [[ -z "$scraped_ip" ]]; then
+            scraped_ip=$(grep -oE -- '(--http-address=|--rest-address=|--rest\.address=|--http-host=|--rest-api-interface=)[^[:space:]\\]+' \
+                "$consensus_svc" 2>/dev/null | head -1 | cut -d= -f2- || true)
+        fi
         [[ -n "$scraped_ip" ]] && cl_ip="$scraped_ip"
     fi
 
@@ -1653,13 +1724,9 @@ PY
     case "$client" in
         Lighthouse)
             local vc_path
-            if [[ -d /var/lib/lighthouse_validator ]]; then
-                vc_path="/var/lib/lighthouse_validator"
-            else
-                vc_path="/var/lib/lighthouse"
-            fi
+            vc_path=$(lighthouseValidatorDatadir)
             local LH_BIN
-            LH_BIN=$(get_systemd_exec_path "/etc/systemd/system/validator.service" "/usr/local/bin/lighthouse")
+            LH_BIN=$(get_systemd_exec_path "${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}" "/usr/local/bin/lighthouse")
             TEMP=$(sudo -u validator "$LH_BIN" account validator list --datadir "$vc_path" 2>/dev/null | grep -Eo '0x[a-fA-F0-9]{96}' || true)
             convertLIST
             ;;
@@ -1713,9 +1780,10 @@ PY
             ;;
 
         Prysm)
-            local PRYSM_VC
-            PRYSM_VC=$(get_systemd_exec_path "/etc/systemd/system/validator.service" "/usr/local/bin/prysm-validator")
-            TEMP=$(sudo -u validator "$PRYSM_VC" accounts list --wallet-dir=/var/lib/prysm/validators 2>/dev/null | grep -Eo '0x[a-fA-F0-9]{96}' || true)
+            local PRYSM_VC prysm_wallet
+            PRYSM_VC=$(get_systemd_exec_path "${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}" "/usr/local/bin/prysm-validator")
+            prysm_wallet=$(prysmValidatorWalletDir)
+            TEMP=$(sudo -u validator "$PRYSM_VC" accounts list --wallet-dir="$prysm_wallet" 2>/dev/null | grep -Eo '0x[a-fA-F0-9]{96}' || true)
             convertLIST
             ;;
 
@@ -2354,15 +2422,11 @@ exposeRpcCL(){
     _file="/etc/systemd/system/${_service}.service"
     getNetworkConfig
 
-    case "${CL}" in
-        Nimbus     ) _flag='--rest-address';;
-        Lodestar   ) _flag='--rest.address';;
-        Lighthouse ) _flag='--http-address';;
-        Grandine   ) _flag='--http-address';;
-        Prysm      ) _flag='--http-host';;
-        Teku       ) _flag='--rest-api-interface';;
-        * ) echo "Consensus client not detected."; return 0;;
-    esac
+    _flag=$(clRestBindFlag "${CL}")
+    if [[ -z "$_flag" ]]; then
+        echo "Consensus client not detected."
+        return 0
+    fi
 
     clear
     echo "###########################################################################"

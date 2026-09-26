@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from deploy.charon import (
     VC_COPY_KEY_DIRS,
     VC_IMPORT_DATA_DIRS,
+    align_vc_beacon_to_charon_api,
     charon_cluster_copy_only,
     copy_charon_cluster,
     count_charon_keystores,
@@ -916,8 +917,11 @@ def plan_cdvn_migration(
     # Orphan data warnings
     for rel, kind in _ORPHAN_DATA_HINTS.items():
         full = os.path.join(root, rel.replace("/", os.sep))
-        if not _dir_nonempty(full):
-            continue
+        try:
+            if not _dir_nonempty(full):
+                continue
+        except OSError:
+            warnings.append(f"Unable to list {rel}; treating as present.")
         if kind == "EL" and el_none:
             label = el_raw or "unset"
             hint = "el-none" if _is_none_profile(el_raw, "el") else "external/unmapped EL"
@@ -1273,11 +1277,15 @@ def run_migration(
 
     _apply_charon_cluster_overlay(plan, skip=skip_charon_overlay, force=fresh)
     if plan.env_path and not skip_charon_overlay:
-        import_cdvn_env_to_service(
+        env_plan = import_cdvn_env_to_service(
             plan.env_path,
             apply=True,
             preserve_beacon_endpoints=bool(plan.cc_name),
         )
+        # Import may rewrite Charon --validator-api-address; keep VC pointed at it.
+        api = getattr(env_plan, "validator_api_address", "") or ""
+        if plan.vc_name and api:
+            align_vc_beacon_to_charon_api(api, plan.vc_name)
 
     if plan.vc_name and plan.has_keyshares and not skip_charon_overlay:
         sync = sync_charon_keyshares_to_vc(plan.vc_name, force=fresh)
