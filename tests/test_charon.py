@@ -12,15 +12,21 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from deploy.charon import (
+    DirectoryListingError,
+    align_vc_beacon_to_charon_api,
     generate_charon_service,
     import_cdvn_env_to_service,
+    list_dir_basenames,
     parse_dotenv,
     parse_monitoring_port,
     parse_p2p_tcp_port,
     patch_beacon_endpoints,
+    patch_json_requests_feature,
     plan_cdvn_env_import,
     rewrite_docker_url,
     scrape_beacon_endpoints,
+    scrape_validator_api_address,
+    validator_api_url,
 )
 
 CHARON_UNIT = generate_charon_service("mainnet", "http://127.0.0.1:5052", builder_api=True)
@@ -188,6 +194,82 @@ def test_import_cdvn_env_apply(tmp_path):
     assert "SEPOLIA" in content
     assert "--beacon-node-endpoints=http://192.168.1.50:5052" in content
     assert "--builder-api" not in content
+
+
+def test_plan_cdvn_env_import_accepts_charon_p2p_port_alias():
+    plan = plan_cdvn_env_import(
+        {"NETWORK": "mainnet", "CHARON_P2P_PORT": "3812"}
+    )
+    assert plan.p2p_tcp_address == "0.0.0.0:3812"
+    unit = plan.service_content()
+    assert "--p2p-tcp-address=0.0.0.0:3812" in unit
+
+
+def test_list_dir_basenames_readable(tmp_path):
+    (tmp_path / "a").write_text("x")
+    assert "a" in list_dir_basenames(str(tmp_path))
+
+
+def test_list_dir_basenames_sudo_failure_raises(monkeypatch):
+    monkeypatch.setattr(
+        "deploy.charon.os.listdir",
+        lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    monkeypatch.setattr("deploy.charon.path_exists", lambda _path, directory=False: True)
+
+    class _Result:
+        returncode = 1
+        stderr = "permission denied"
+        stdout = ""
+
+    monkeypatch.setattr("deploy.charon.subprocess.run", lambda *_a, **_k: _Result())
+    with pytest.raises(DirectoryListingError, match="Unable to list"):
+        list_dir_basenames("/var/lib/secret")
+
+
+def test_list_dir_basenames_missing_path_is_empty():
+    assert list_dir_basenames("/tmp/ethpillar-missing-dir-does-not-exist") == []
+
+
+def test_scrape_and_url_validator_api():
+    unit = generate_charon_service(
+        "mainnet",
+        "http://127.0.0.1:5052",
+        validator_api_address="127.0.0.1:3700",
+    )
+    assert scrape_validator_api_address(unit) == "127.0.0.1:3700"
+    assert validator_api_url("127.0.0.1:3700") == "http://127.0.0.1:3700"
+    assert validator_api_url("http://127.0.0.1:3700") == "http://127.0.0.1:3700"
+
+
+def test_patch_json_requests_enable_and_clear(tmp_path):
+    service_path = tmp_path / "charon.service"
+    service_path.write_text(CHARON_UNIT, encoding="utf-8")
+    assert patch_json_requests_feature(str(service_path), enable=True)
+    enabled = service_path.read_text(encoding="utf-8")
+    assert "--feature-set-enable=json_requests" in enabled
+    assert patch_json_requests_feature(str(service_path), enable=True) is False
+    assert patch_json_requests_feature(str(service_path), enable=False)
+    cleared = service_path.read_text(encoding="utf-8")
+    assert "--feature-set-enable=json_requests" not in cleared
+
+
+def test_align_vc_beacon_to_charon_api(tmp_path):
+    from deploy.lodestar import generate_lodestar_vc_service
+
+    vc_path = tmp_path / "validator.service"
+    vc_path.write_text(
+        generate_lodestar_vc_service(
+            "mainnet",
+            "g",
+            "--beaconNodes=http://127.0.0.1:3600",
+            "--suggestedFeeRecipient=0xabc",
+            "",
+        ),
+        encoding="utf-8",
+    )
+    assert align_vc_beacon_to_charon_api("127.0.0.1:3700", "Lodestar", str(vc_path))
+    assert "--beaconNodes=http://127.0.0.1:3700" in vc_path.read_text(encoding="utf-8")
 
 
 def test_plan_derives_bn_from_cl_when_unset():

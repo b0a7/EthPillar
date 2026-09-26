@@ -256,3 +256,16 @@ def test_ensure_jemalloc_returns_false_on_apt_failure(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(common.subprocess, "run", fake_run)
     assert common.ensure_jemalloc() is False
+
+
+def test_ephemery_network_override_matches_known_shapes():
+    """Centralized Ephemery overrides match generators and Nimbus resync path."""
+    from deploy.nimbus import EPHEMERY_NETWORK_PATH
+
+    assert common.EPHEMERY_NIMBUS_NETWORK == EPHEMERY_NETWORK_PATH
+    assert common.ephemery_network_override("Nimbus", "bn") == f"--network={EPHEMERY_NETWORK_PATH}"
+    lodestar = common.ephemery_network_override("Lodestar", "bn")
+    assert "--paramsFile=/opt/ethpillar/testnet/config.yaml" in lodestar
+    assert "--genesisStateFile=/opt/ethpillar/testnet/genesis.ssz" in lodestar
+    assert common.ephemery_network_override("Lighthouse", "vc") == "--testnet-dir=/opt/ethpillar/testnet"
+    assert common.ephemery_network_override("", "bn") is None

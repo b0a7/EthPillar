@@ -534,6 +534,41 @@ def test_run_migration_applies_charon_overlay_with_empty_moves(tmp_path, monkeyp
     assert overlay_calls == [str(root)]
 
 
+def test_run_migration_aligns_vc_to_charon_validator_api(tmp_path, monkeypatch):
+    root = _write_cdvn(
+        tmp_path,
+        "NETWORK=mainnet\n"
+        "EL=el-none\n"
+        "CL=cl-none\n"
+        "VC=vc-lodestar\n"
+        "CHARON_BEACON_NODE_ENDPOINTS=http://127.0.0.1:5052\n"
+        "CHARON_VALIDATOR_API_ADDRESS=127.0.0.1:3700\n",
+    )
+    aligned: list[tuple] = []
+
+    class _Plan:
+        validator_api_address = "127.0.0.1:3700"
+
+    monkeypatch.setattr("deploy.cdvn_migrate.run_deploy", lambda *a, **k: 0)
+    monkeypatch.setattr("deploy.cdvn_migrate.apply_datadir_moves", lambda *a, **k: [])
+    monkeypatch.setattr("deploy.cdvn_migrate._apply_charon_cluster_overlay", lambda *a, **k: None)
+    monkeypatch.setattr("deploy.cdvn_migrate.import_cdvn_env_to_service", lambda *a, **k: _Plan())
+    monkeypatch.setattr(
+        "deploy.cdvn_migrate.align_vc_beacon_to_charon_api",
+        lambda api, vc, service_path="/etc/systemd/system/validator.service": aligned.append((api, vc)),
+    )
+    monkeypatch.setattr(
+        "deploy.cdvn_migrate.sync_charon_keyshares_to_vc",
+        lambda *a, **k: {"status": "skipped", "reason": "destination already has keystores"},
+    )
+    monkeypatch.setattr("deploy.cdvn_migrate.enable_migrated_units", lambda _plan: None)
+
+    from deploy.cdvn_migrate import run_migration
+
+    run_migration(str(root), skip_deploy=True, apply_moves=[])
+    assert aligned == [("127.0.0.1:3700", "Lodestar")]
+
+
 def test_runtime_path_exists_uses_sudo_for_root_owned_file(tmp_path, monkeypatch):
     target = tmp_path / "cluster-lock.json"
     target.write_text("{}", encoding="utf-8")
