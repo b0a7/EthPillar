@@ -235,6 +235,8 @@ check_open_ports_capture() {
 	[[ "$(cat "$TEST_DIR/open.out")" == *"TCP inbound open on 9000"* ]]
 	[[ "$(cat "$TEST_DIR/open.out")" == *"TCP inbound open on 30303"* ]]
 	[[ "$(cat "$TEST_DIR/open.out")" == *"UDP inbound cannot be tested"* ]]
+	[[ "$(cat "$TEST_DIR/open.out")" != *"203.0.113.50"* ]]
+	[[ "$(cat "$TEST_DIR/open.out")" != *"Public TCP checker sees this host"* ]]
 	[[ "$(cat "$TEST_DIR/open.out")" != *"[FAIL]"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 0 ]
@@ -252,8 +254,33 @@ check_open_ports_capture() {
 @test "check_open_ports WARNs on CGNAT requester IP" {
 	fetch_tcp_port_checker() { echo '{"requester_ip":"100.64.1.8","open_ports":[9000,30303]}'; }
 	check_open_ports_capture
-	[[ "$(cat "$TEST_DIR/open.out")" == *"CGNAT"* ]]
+	[[ "$(cat "$TEST_DIR/open.out")" == *"Reported address is CGNAT"* ]]
+	[[ "$(cat "$TEST_DIR/open.out")" != *"100.64.1.8"* ]]
 	[ "$warning_checks" -ge 1 ]
+}
+
+@test "check_open_ports WARNs on private requester IP without naming it" {
+	fetch_tcp_port_checker() { echo '{"requester_ip":"192.168.1.20","open_ports":[9000,30303]}'; }
+	check_open_ports_capture
+	[[ "$(cat "$TEST_DIR/open.out")" == *"Checker reported a non-public IPv4"* ]]
+	[[ "$(cat "$TEST_DIR/open.out")" != *"192.168.1.20"* ]]
+	[ "$warning_checks" -ge 1 ]
+}
+
+@test "check_open_ports --debug names the requester IP" {
+	NODE_CHECKER_DEBUG=1
+	fetch_tcp_port_checker() { echo '{"requester_ip":"203.0.113.50","open_ports":[9000,30303]}'; }
+	check_open_ports_capture
+	[[ "$(cat "$TEST_DIR/open.out")" == *"Public TCP checker sees this host as 203.0.113.50"* ]]
+	[[ "$(cat "$TEST_DIR/open.out")" == *"TCP inbound open on 9000"* ]]
+}
+
+@test "check_open_ports --debug names a CGNAT requester IP" {
+	NODE_CHECKER_DEBUG=1
+	fetch_tcp_port_checker() { echo '{"requester_ip":"100.64.1.8","open_ports":[9000,30303]}'; }
+	check_open_ports_capture
+	[[ "$(cat "$TEST_DIR/open.out")" == *"Reported address 100.64.1.8 is CGNAT"* ]]
+	[[ "$(cat "$TEST_DIR/open.out")" == *"Public TCP checker sees this host as 100.64.1.8"* ]]
 }
 
 @test "check_open_ports WARNs when checker JSON is unusable" {

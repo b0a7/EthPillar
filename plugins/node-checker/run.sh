@@ -148,14 +148,14 @@ node_checker_usage() {
     cat <<'EOF'
 Usage: run.sh [--troubleshoot] [--debug]
 
-  --troubleshoot  Force inbound firewall/NAT/forward guidance even when checks are green (no ENR)
-  --debug         Troubleshoot plus ENR/identity diagnostics (redact before sharing)
+  --troubleshoot  Force inbound firewall/NAT/forward guidance even when checks are green (no ENR or public IP)
+  --debug         Troubleshoot plus ENR/identity/public-IP diagnostics (redact before sharing)
 
 The Plugins menu has no flags. Default path auto-prints the same troubleshoot
 guidance when inbound looks broken (UFW, TCP checker, QUIC probe, zero inbound,
 missing QUIC). Local listen (ss/UFW) is not the same as inbound reachability.
 First QUIC probe auto-installs aioquic into .venv-quic (NODE_CHECKER_QUIC_AUTO_INSTALL=0 to skip).
-Missing tools after that WARN, they do not FAIL. ENR is debug-only.
+Missing tools after that WARN, they do not FAIL. ENR and public IPv4 are debug-only.
 EOF
 }
 

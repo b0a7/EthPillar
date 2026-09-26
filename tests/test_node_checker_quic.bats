@@ -338,7 +338,9 @@ check_inbound_quic_probe_capture() {
 	check_inbound_quic_probe_capture
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Installing aioquic once"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *".venv-quic"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 203.0.113.50:9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"203.0.113.50"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"QUIC probe target"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"probe tools missing"* ]]
 	[ "$failed_checks" -eq 0 ]
@@ -388,10 +390,12 @@ check_inbound_quic_probe_capture() {
 	}
 
 	check_inbound_quic_probe_capture
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 203.0.113.50:9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Internet can complete a QUIC handshake"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"0x1"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"libp2p"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"203.0.113.50"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"QUIC probe target"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:"* ]]
 	[ "$failed_checks" -eq 0 ]
@@ -408,7 +412,8 @@ check_inbound_quic_probe_capture() {
 	ipv4_is_on_local_interface() { return 0; }
 
 	check_inbound_quic_probe_capture
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC closed on 203.0.113.50:9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC closed on 9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"203.0.113.50"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:"* ]]
 	[ "$failed_checks" -eq 1 ]
 	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 1 ]
@@ -426,6 +431,8 @@ check_inbound_quic_probe_capture() {
 	check_inbound_quic_probe_capture
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"behind NAT"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"complementary"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"no handshake on 9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"203.0.113.50"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$warning_checks" -eq 1 ]
@@ -443,13 +450,48 @@ check_inbound_quic_probe_capture() {
 	[ "$warning_checks" -eq 1 ]
 }
 
+@test "check_inbound_quic_probe WARNs on private requester IP without naming it" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="192.168.1.20"
+	node_checker_quic_python() { echo "/mock/python"; }
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"non-public IPv4"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"192.168.1.20"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
+}
+
+@test "check_inbound_quic_probe WARNs on unusable probe JSON without naming the host" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	node_checker_quic_python() { echo "/mock/python"; }
+	invoke_quic_inbound_probe() { echo 'not-json'; }
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"did not return usable JSON for 9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"203.0.113.50"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
+}
+
+@test "node_checker_debug_ipv4 is empty by default and names the IP under --debug" {
+	NODE_CHECKER_DEBUG=0
+	[ -z "$(node_checker_debug_ipv4 "203.0.113.50")" ]
+	NODE_CHECKER_DEBUG=1
+	[ "$(node_checker_debug_ipv4 "203.0.113.50")" = "203.0.113.50" ]
+}
+
 @test "check_inbound_quic_probe WARNs on CGNAT requester IP" {
 	write_consensus Lighthouse
 	NODE_CHECKER_PUBLIC_IPV4="100.64.1.8"
 	node_checker_quic_python() { echo "/mock/python"; }
 
 	check_inbound_quic_probe_capture
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"CGNAT"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Reported address is CGNAT"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"100.64.1.8"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$warning_checks" -eq 1 ]
@@ -476,6 +518,8 @@ check_inbound_quic_probe_capture() {
 	}
 
 	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe target 203.0.113.50"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe JSON (no ENR)"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"server_versions"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:-"* ]]
@@ -486,4 +530,5 @@ check_inbound_quic_probe_capture() {
 	fetch_tcp_port_checker() { echo '{"requester_ip":"198.51.100.77","open_ports":[9000,30303]}'; }
 	check_open_ports > "$TEST_DIR/open.out" 2>&1
 	[ "$NODE_CHECKER_PUBLIC_IPV4" = "198.51.100.77" ]
+	[[ "$(cat "$TEST_DIR/open.out")" != *"198.51.100.77"* ]]
 }

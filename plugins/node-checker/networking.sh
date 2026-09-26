@@ -20,12 +20,13 @@
 #
 # Troubleshoot vs default vs debug (Plugins menu has no CLI flags):
 # - Default: PASS/FAIL/WARN for local listen, TCP inbound, active QUIC, and CL peer direction.
+#   Paste-safe: no ENR and no operator public IPv4 (ports and PASS/FAIL/WARN stay).
 # - Troubleshoot: extra firewall/NAT/port-forward steps when inbound looks broken.
 #   The menu/default path auto-prints that guidance when a useful signal fires
 #   (missing UFW allow, TCP checker closed/unreachable, zero/unknown inbound,
 #   QUIC expected but not advertised or no inbound QUIC). CLI --troubleshoot or
 #   NODE_CHECKER_TROUBLESHOOT=1 still forces the same text even when all-green.
-# - Debug (--debug / NODE_CHECKER_DEBUG=1) is the only path that may print ENR.
+# - Debug (--debug / NODE_CHECKER_DEBUG=1) may print ENR and public IPv4.
 
 NODE_CHECKER_TROUBLESHOOT="${NODE_CHECKER_TROUBLESHOOT:-0}"
 NODE_CHECKER_DEBUG="${NODE_CHECKER_DEBUG:-0}"
@@ -52,7 +53,19 @@ node_checker_should_print_troubleshoot() {
     [[ "${NODE_CHECKER_TROUBLESHOOT:-0}" -eq 1 || "${NODE_CHECKER_AUTO_TROUBLESHOOT:-0}" -eq 1 ]]
 }
 
-# Print firewall/NAT/forward guidance at most once. ENR stays in --debug only.
+# True when --debug / NODE_CHECKER_DEBUG=1 may name ENR or public IPv4.
+node_checker_debug_enabled() {
+    [[ "${NODE_CHECKER_DEBUG:-0}" -eq 1 ]]
+}
+
+# Echo $1 only on the debug path. Default output stays paste-safe (no public IP).
+node_checker_debug_ipv4() {
+    node_checker_debug_enabled || return 0
+    [[ -n "${1:-}" ]] || return 0
+    printf '%s' "$1"
+}
+
+# Print firewall/NAT/forward guidance at most once. ENR and public IPv4 stay in --debug only.
 maybe_print_port_troubleshoot() {
     local inbound="${1:-${NODE_CHECKER_TROUBLESHOOT_INBOUND:-?}}"
     local outbound="${2:-${NODE_CHECKER_TROUBLESHOOT_OUTBOUND:-?}}"
@@ -562,7 +575,7 @@ check_elcl_listening_ports() {
 }
 
 check_open_ports() {
-    local tcp_ports udp_ports tcp_json requester open_list port missing=0
+    local tcp_ports udp_ports tcp_json requester named_ip open_list port missing=0
 
     configure_cl_quic_udp_check_ports
     tcp_ports="$tcp_check_ports"
@@ -583,17 +596,20 @@ check_open_ports() {
     requester="$(tcp_checker_requester_ip "$tcp_json")"
     NODE_CHECKER_PUBLIC_IPV4="$requester"
     if [[ -n "$requester" ]]; then
-        print_check_result "INFO" "Public TCP checker sees this host as ${requester}"
+        named_ip="$(node_checker_debug_ipv4 "$requester")"
+        if [[ -n "$named_ip" ]]; then
+            print_check_result "INFO" "Public TCP checker sees this host as ${named_ip}"
+        fi
         case "$(classify_ipv4 "$requester")" in
             cgnat)
                 total_checks=$((total_checks + 1))
-                print_check_result "WARN" "Public address ${requester} is CGNAT (100.64.0.0/10). No IPv4 port-forward can work."
+                print_check_result "WARN" "Reported address${named_ip:+ ${named_ip}} is CGNAT (100.64.0.0/10). No IPv4 port-forward can work."
                 warning_checks=$((warning_checks + 1))
                 node_checker_request_troubleshoot
                 ;;
             private)
                 total_checks=$((total_checks + 1))
-                print_check_result "WARN" "Checker reported a non-public IPv4 (${requester}). Inbound IPv4 peers cannot dial that."
+                print_check_result "WARN" "Checker reported a non-public IPv4${named_ip:+ (${named_ip})}. Inbound IPv4 peers cannot dial that."
                 warning_checks=$((warning_checks + 1))
                 node_checker_request_troubleshoot
                 ;;
@@ -717,7 +733,7 @@ invoke_quic_inbound_probe() {
 # Active inbound QUIC: can the Internet complete a QUIC/libp2p handshake to host:port?
 # Missing tools → WARN (never a false FAIL). Peer-direction stays complementary.
 check_inbound_quic_probe() {
-    local host port json reason versions alpn
+    local host port json reason versions alpn named_ip
 
     print_check_result "INFO" "Active inbound QUIC (quicmap-style). Local listen is not proof the Internet can complete a QUIC handshake."
 
@@ -735,19 +751,22 @@ check_inbound_quic_probe() {
         return 0
     fi
 
-    print_check_result "INFO" "QUIC probe target ${host} (same requester_ip path as the public TCP checker)"
+    named_ip="$(node_checker_debug_ipv4 "$host")"
+    if [[ -n "$named_ip" ]]; then
+        print_check_result "INFO" "QUIC probe target ${named_ip} (same requester_ip path as the public TCP checker)"
+    fi
 
     case "$(classify_ipv4 "$host")" in
         cgnat)
             total_checks=$((total_checks + 1))
-            print_check_result "WARN" "Public address ${host} is CGNAT. Active IPv4 QUIC probe cannot succeed."
+            print_check_result "WARN" "Reported address${named_ip:+ ${named_ip}} is CGNAT. Active IPv4 QUIC probe cannot succeed."
             warning_checks=$((warning_checks + 1))
             node_checker_request_troubleshoot
             return 0
             ;;
         private)
             total_checks=$((total_checks + 1))
-            print_check_result "WARN" "TCP checker reported a non-public IPv4 (${host}). Active inbound QUIC probe skipped."
+            print_check_result "WARN" "TCP checker reported a non-public IPv4${named_ip:+ (${named_ip})}. Active inbound QUIC probe skipped."
             warning_checks=$((warning_checks + 1))
             node_checker_request_troubleshoot
             return 0
@@ -779,7 +798,7 @@ check_inbound_quic_probe() {
     json="$(invoke_quic_inbound_probe "$host" "$port" 2>/dev/null)" || json=""
     if ! jq -e 'type == "object"' <<< "$json" >/dev/null 2>&1; then
         total_checks=$((total_checks + 1))
-        print_check_result "WARN" "QUIC probe did not return usable JSON for ${host}:${port}. Not a FAIL."
+        print_check_result "WARN" "QUIC probe did not return usable JSON for ${port}/udp. Not a FAIL."
         warning_checks=$((warning_checks + 1))
         return 0
     fi
@@ -798,16 +817,16 @@ check_inbound_quic_probe() {
 
     total_checks=$((total_checks + 1))
     if jq -e '.ok == true' <<< "$json" >/dev/null 2>&1; then
-        print_check_result "PASS" "Inbound QUIC open on ${host}:${port}/udp — Internet can complete a QUIC handshake${versions:+ (${versions})}"
+        print_check_result "PASS" "Inbound QUIC open on ${port}/udp — Internet can complete a QUIC handshake${versions:+ (${versions})}"
         if [[ -n "$alpn" ]]; then
             print_check_result "INFO" "QUIC probe ALPN: ${alpn}"
         fi
     elif ipv4_is_on_local_interface "$host"; then
-        print_check_result "FAIL" "Inbound QUIC closed on ${host}:${port}/udp. Forward ${port}/udp on the router and allow it in UFW."
+        print_check_result "FAIL" "Inbound QUIC closed on ${port}/udp. Forward ${port}/udp on the router and allow it in UFW."
         failed_checks=$((failed_checks + 1))
         node_checker_request_troubleshoot
     else
-        print_check_result "WARN" "Active QUIC probe got no handshake from ${host}:${port}/udp. This host is behind NAT, so a same-host probe can miss a working forward (hairpin). Peer-direction inbound QUIC remains complementary."
+        print_check_result "WARN" "Active QUIC probe got no handshake on ${port}/udp. This host is behind NAT, so a same-host probe can miss a working forward (hairpin). Peer-direction inbound QUIC remains complementary."
         warning_checks=$((warning_checks + 1))
         node_checker_request_troubleshoot
     fi
