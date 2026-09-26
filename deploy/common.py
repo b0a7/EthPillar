@@ -450,6 +450,145 @@ def setup_ephemery_network(genesis_repository: str) -> None:
         print(f"Failed to retrieve genesis release for {genesis_repository}")
 
 
+EPHEMERY_TESTNET_DIR = "/opt/ethpillar/testnet"
+EPHEMERY_CONFIG_YAML = f"{EPHEMERY_TESTNET_DIR}/config.yaml"
+EPHEMERY_GENESIS_SSZ = f"{EPHEMERY_TESTNET_DIR}/genesis.ssz"
+EPHEMERY_GENESIS_JSON = f"{EPHEMERY_TESTNET_DIR}/genesis.json"
+# Nimbus --network value (file). Shared with resync_consensus.sh EPHEMERY_NETWORK_PATH.
+EPHEMERY_NIMBUS_NETWORK = EPHEMERY_CONFIG_YAML
+
+
+def ephemery_chain_id() -> Optional[str]:
+    """Read Ephemery chain id from genesis.json or config.yaml when present."""
+    if os.path.isfile(EPHEMERY_GENESIS_JSON):
+        try:
+            with open(EPHEMERY_GENESIS_JSON, encoding="utf-8") as handle:
+                data = json.load(handle)
+            chain_id = (data.get("config") or {}).get("chainId")
+            if chain_id is not None:
+                return str(chain_id)
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
+    if os.path.isfile(EPHEMERY_CONFIG_YAML):
+        try:
+            with open(EPHEMERY_CONFIG_YAML, encoding="utf-8") as handle:
+                text = handle.read()
+            match = re.search(r"DEPOSIT_CHAIN_ID:\s*(\d+)", text)
+            if match:
+                return match.group(1)
+        except OSError:
+            pass
+    return None
+
+
+def ephemery_bootnodes() -> str:
+    """Return comma-separated ENRs from the downloaded Ephemery testnet dir."""
+    for name in ("bootstrap_nodes.txt", "boot_enr.txt", "bootnodes.txt"):
+        path = os.path.join(EPHEMERY_TESTNET_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        nodes: List[str] = []
+        try:
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        nodes.append(line)
+        except OSError:
+            continue
+        if nodes:
+            return ",".join(nodes)
+    return ""
+
+
+def ephemery_network_override(client: str, role: str = "bn") -> Optional[str]:
+    """Per-client flags that replace ``--network=ephemery`` (or equivalent).
+
+    Matches the shapes already exercised in ``tests/test_service_generators.py``.
+    Bootnode flags are included only when the genesis tarball provided ENRs.
+
+    Args:
+        client: Client name (e.g. ``Lodestar``, ``Geth``).
+        role: ``bn``, ``vc``, or ``el``.
+
+    Returns:
+        Override string, or None when *client* is empty.
+    """
+    if not client:
+        return None
+    key = client.split()[0].lower()
+    boot = ephemery_bootnodes()
+    role = (role or "bn").lower()
+
+    if key == "nimbus":
+        return f"--network={EPHEMERY_NIMBUS_NETWORK}"
+    if key == "lighthouse":
+        flags = f"--testnet-dir={EPHEMERY_TESTNET_DIR}"
+        if boot and role != "vc":
+            flags = f"{flags} --boot-nodes={boot}"
+        return flags
+    if key == "lodestar":
+        flags = (
+            f"--paramsFile={EPHEMERY_CONFIG_YAML} "
+            f"--genesisStateFile={EPHEMERY_GENESIS_SSZ} "
+            "--network.connectToDiscv5Bootnodes --ignoreWeakSubjectivityCheck"
+        )
+        if boot:
+            flags = f"{flags} --bootnodes={boot}"
+        return flags
+    if key == "teku":
+        flags = f"--network={EPHEMERY_TESTNET_DIR}"
+        if boot:
+            flags = f"{flags} --p2p-discovery-bootnodes={boot}"
+        return flags
+    if key == "grandine":
+        flags = f"--network-dir={EPHEMERY_TESTNET_DIR}"
+        if boot:
+            flags = f"{flags} --boot-nodes={boot}"
+        return flags
+    if key == "prysm":
+        return (
+            f"--chain-config-file={EPHEMERY_CONFIG_YAML} "
+            f"--genesis-state={EPHEMERY_GENESIS_SSZ}"
+        )
+    if key == "besu":
+        genesis = (
+            f"{EPHEMERY_TESTNET_DIR}/besu.json"
+            if os.path.isfile(f"{EPHEMERY_TESTNET_DIR}/besu.json")
+            else EPHEMERY_GENESIS_JSON
+        )
+        flags = f"--genesis-file={genesis}"
+        if boot:
+            flags = f"{flags} --bootnodes={boot}"
+        return flags
+    if key == "geth":
+        # Avoid the invalid ``--ephemery`` fallback; chain id lives in genesis.
+        chain_id = ephemery_chain_id() or "39438135"
+        flags = f"--networkid {chain_id}"
+        if boot:
+            flags = f"{flags} --bootnodes {boot}"
+        return flags
+    if key == "ethrex":
+        return f"--network {EPHEMERY_GENESIS_JSON}"
+    if key == "nethermind":
+        chainspec = f"{EPHEMERY_TESTNET_DIR}/chainspec.json"
+        flags = f"--config none --Init.ChainSpecPath={chainspec}"
+        if boot:
+            flags = f"{flags} --Discovery.Bootnodes={boot}"
+        return flags
+    if key == "reth":
+        flags = f"--chain {EPHEMERY_GENESIS_JSON}"
+        if boot:
+            flags = f"{flags} --bootnodes {boot}"
+        return flags
+    if key == "erigon":
+        flags = f"--chain {EPHEMERY_GENESIS_JSON}"
+        if boot:
+            flags = f"{flags} --bootnodes {boot}"
+        return flags
+    return None
+
+
 def setup_node(jwt_secret_path: str, validator_only: bool = False) -> None:
     """Setup node dependencies and JWT secret.
 
