@@ -20,13 +20,14 @@
 #
 # Troubleshoot vs default vs debug (Plugins menu has no CLI flags):
 # - Default: PASS/FAIL/WARN for local listen, TCP inbound, active QUIC, and CL peer direction.
-#   Paste-safe: no ENR and no operator public IPv4 (ports and PASS/FAIL/WARN stay).
+#   Paste-safe: no ENR, no operator public IPv4, no QUIC version/ALPN lists
+#   (ports and PASS/FAIL/WARN stay).
 # - Troubleshoot: extra firewall/NAT/port-forward steps when inbound looks broken.
 #   The menu/default path auto-prints that guidance when a useful signal fires
 #   (missing UFW allow, TCP checker closed/unreachable, zero/unknown inbound,
 #   QUIC expected but not advertised or no inbound QUIC). CLI --troubleshoot or
 #   NODE_CHECKER_TROUBLESHOOT=1 still forces the same text even when all-green.
-# - Debug (--debug / NODE_CHECKER_DEBUG=1) may print ENR and public IPv4.
+# - Debug (--debug / NODE_CHECKER_DEBUG=1) may print ENR, public IPv4, and probe versions/ALPN.
 
 NODE_CHECKER_TROUBLESHOOT="${NODE_CHECKER_TROUBLESHOOT:-0}"
 NODE_CHECKER_DEBUG="${NODE_CHECKER_DEBUG:-0}"
@@ -733,7 +734,7 @@ invoke_quic_inbound_probe() {
 # Active inbound QUIC: can the Internet complete a QUIC/libp2p handshake to host:port?
 # Missing tools → WARN (never a false FAIL). Peer-direction stays complementary.
 check_inbound_quic_probe() {
-    local host port json reason versions alpn named_ip
+    local host port json reason versions alpn named_ip version_suffix
 
     print_check_result "INFO" "Active inbound QUIC (quicmap-style). Local listen is not proof the Internet can complete a QUIC handshake."
 
@@ -817,8 +818,12 @@ check_inbound_quic_probe() {
 
     total_checks=$((total_checks + 1))
     if jq -e '.ok == true' <<< "$json" >/dev/null 2>&1; then
-        print_check_result "PASS" "Inbound QUIC open on ${port}/udp — Internet can complete a QUIC handshake${versions:+ (${versions})}"
-        if [[ -n "$alpn" ]]; then
+        version_suffix=""
+        if node_checker_debug_enabled && [[ -n "$versions" ]]; then
+            version_suffix=" (${versions})"
+        fi
+        print_check_result "PASS" "Inbound QUIC open on ${port}/udp — Internet can complete a QUIC handshake${version_suffix}"
+        if node_checker_debug_enabled && [[ -n "$alpn" ]]; then
             print_check_result "INFO" "QUIC probe ALPN: ${alpn}"
         fi
     elif ipv4_is_on_local_interface "$host"; then

@@ -339,6 +339,10 @@ check_inbound_quic_probe_capture() {
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Installing aioquic once"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *".venv-quic"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"handshake ("* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"0x1"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"libp2p"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"QUIC probe ALPN"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"203.0.113.50"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"QUIC probe target"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
@@ -392,8 +396,10 @@ check_inbound_quic_probe_capture() {
 	check_inbound_quic_probe_capture
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Internet can complete a QUIC handshake"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"0x1"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"libp2p"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"handshake ("* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"0x1"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"libp2p"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"QUIC probe ALPN"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"203.0.113.50"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"QUIC probe target"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
@@ -514,11 +520,13 @@ check_inbound_quic_probe_capture() {
 	NODE_CHECKER_DEBUG=1
 	node_checker_quic_python() { echo "/mock/python"; }
 	invoke_quic_inbound_probe() {
-		echo '{"ok":true,"reason":"server_versions","host":"203.0.113.50","port":9001,"server_versions":["0x1"],"alpn":[]}'
+		echo '{"ok":true,"reason":"server_versions","host":"203.0.113.50","port":9001,"server_versions":["0x1"],"alpn":["libp2p"]}'
 	}
 
 	check_inbound_quic_probe_capture
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"handshake (0x1)"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe ALPN: libp2p"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe target 203.0.113.50"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe JSON (no ENR)"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"server_versions"* ]]
