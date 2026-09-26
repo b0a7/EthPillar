@@ -618,6 +618,7 @@ check_open_ports() {
 }
 
 # Echo public IPv4 from the TCP checker path (cached after check_open_ports).
+# Always returns 0 so callers under `set -e` can test for an empty address.
 node_checker_resolve_public_ipv4() {
     if [[ -n "${NODE_CHECKER_PUBLIC_IPV4:-}" ]]; then
         echo "$NODE_CHECKER_PUBLIC_IPV4"
@@ -626,9 +627,7 @@ node_checker_resolve_public_ipv4() {
     local json ports
     ports="${1:-${tcp_check_ports:-9000,30303}}"
     json="$(fetch_tcp_port_checker "$ports")"
-    NODE_CHECKER_PUBLIC_IPV4="$(tcp_checker_requester_ip "$json")"
-    echo "${NODE_CHECKER_PUBLIC_IPV4}"
-    [[ -n "${NODE_CHECKER_PUBLIC_IPV4}" ]]
+    tcp_checker_requester_ip "$json"
 }
 
 node_checker_quic_root() {
@@ -722,6 +721,7 @@ check_inbound_quic_probe() {
     fi
 
     host="$(node_checker_resolve_public_ipv4)"
+    [[ -n "$host" ]] && NODE_CHECKER_PUBLIC_IPV4="$host"
     if [[ -z "$host" ]]; then
         total_checks=$((total_checks + 1))
         print_check_result "WARN" "Could not resolve public IPv4 via the TCP port checker; skipping active QUIC probe."

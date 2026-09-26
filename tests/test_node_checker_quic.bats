@@ -298,9 +298,10 @@ check_inbound_quic_probe_capture() {
 
 @test "node_checker_resolve_public_ipv4 uses the TCP checker requester_ip path" {
 	fetch_tcp_port_checker() { echo '{"requester_ip":"203.0.113.50","open_ports":[9000]}'; }
-	[ "$(node_checker_resolve_public_ipv4)" = "203.0.113.50" ]
-	[ "$NODE_CHECKER_PUBLIC_IPV4" = "203.0.113.50" ]
-	# Cached — checker is not called again.
+	# Call in this shell so a later cache write is visible ( $() is a subshell ).
+	node_checker_resolve_public_ipv4 > "$TEST_DIR/ip.out"
+	[ "$(cat "$TEST_DIR/ip.out")" = "203.0.113.50" ]
+	NODE_CHECKER_PUBLIC_IPV4="$(cat "$TEST_DIR/ip.out")"
 	fetch_tcp_port_checker() { echo '{"requester_ip":"198.51.100.1","open_ports":[]}'; }
 	[ "$(node_checker_resolve_public_ipv4)" = "203.0.113.50" ]
 }
