@@ -47,13 +47,11 @@ PREDEFINED_COMBOS = {
 }
 
 # Matrices
-# Predefined combos crossed with both HOODI Solo Staking and SEPOLIA Full Node Only.
-# Nimbus-Nethermind is SEPOLIA-only (see sepolia_only_combos); a HOODI row is
-# not defined — Sepolia covers the same client pair without HOODI trustedNodeSync.
 combos = [
     "Caplin-Erigon",
     "Lighthouse-Reth",
     "Lodestar-Besu",
+    "Nimbus-Nethermind",
     "Teku-Besu",
 ]
 
@@ -62,9 +60,11 @@ variations = [
     "--network SEPOLIA --config 'Full Node Only'",
 ]
 
-sepolia_only_combos = [
-    "Nimbus-Nethermind",
-]
+# Skip only this combo×network cell. Other HOODI rows stay; Nimbus-Nethermind
+# SEPOLIA still covers the client pair without HOODI trustedNodeSync (~226 MB).
+_SKIP_COMBO_NETWORKS = {
+    ("Nimbus-Nethermind", "HOODI"),
+}
 
 custom_tests = [
     ("Geth-Lighthouse-Custom-Setup-SEPOLIA", f"{RUN_TEST} deploy/deploy-node.py --ec Geth --cc Lighthouse --vc Lighthouse --network SEPOLIA --mev --config 'Custom Setup'"),
@@ -231,19 +231,17 @@ def generate_tests():
     """Build the full integration matrix as :class:`TestTask` instances."""
     tests = []
     import re
-
-    def add_combo_case(combo: str, var: str) -> None:
-        match = re.search(r"--network\s+(\S+)", var)
-        local_network = match.group(1) if match else ""
-        cmd = f"{RUN_TEST} deploy/deploy-node.py --combo \"{combo}\" {var}"
-        tests.append(TestTask(combo, cmd, var, local_network))
-
     for combo in combos:
         for var in variations:
-            add_combo_case(combo, var)
-    sepolia_var = next(var for var in variations if "SEPOLIA" in var)
-    for combo in sepolia_only_combos:
-        add_combo_case(combo, sepolia_var)
+            actual_var = var
+                
+            match = re.search(r'--network\s+(\S+)', actual_var)
+            local_network = match.group(1) if match else ""
+            if (combo, local_network) in _SKIP_COMBO_NETWORKS:
+                continue
+
+            cmd = f"{RUN_TEST} deploy/deploy-node.py --combo \"{combo}\" {actual_var}"
+            tests.append(TestTask(combo, cmd, actual_var, local_network))
 
     for label, cmd in custom_tests:
         tests.append(TestTask(label, cmd, "Custom"))
