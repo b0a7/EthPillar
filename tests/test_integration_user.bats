@@ -36,6 +36,11 @@ setup() {
   ! grep -E 'systemctl.*start.*timeout=30|_systemctl_cmd\("start".*timeout=30' tests/integration/run_inside_docker.py
 }
 
+@test "integration harness does not invoke systemctl start --no-block" {
+  # Comments may mention --no-block; the start argv must stay blocking.
+  ! grep -E '_systemctl_cmd\("start", "--no-block"|systemctl start --no-block' tests/integration/run_inside_docker.py
+}
+
 @test "manual docker entry drops to integration user" {
   test -x tests/integration/docker/manual_shell.sh
   test -x tests/integration/docker/start_manual_container.sh
