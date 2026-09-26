@@ -775,6 +775,9 @@ def apply_changes(workdir: Path, backup: bool = True) -> List[str]:
         write_service_file(content, dest, temp_filename=f"{key}_compare_temp.service")
         print(f"Applied {key} → {dest}")
         applied.append(key)
+    if applied:
+        subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
+        print("Ran systemctl daemon-reload so systemd picks up applied units.")
     return applied
 
 

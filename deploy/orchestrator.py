@@ -15,6 +15,7 @@ import deploy.grandine as grandine
 import deploy.mevboost as mevboost
 import deploy.charon as charon
 import deploy.prysm as prysm
+from deploy.common import ephemery_network_override
 
 CHARON_VC_LABEL = "Obol Charon DV"
 OBOL_CHARON = "Obol Charon"
@@ -251,6 +252,10 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
     if network == "ephemery":
         common.setup_ephemery_network("ephemery-testnet/ephemery-genesis")
 
+    el_override = ephemery_network_override(ec_name or "", "el") if network == "ephemery" else None
+    cl_override = ephemery_network_override(cc_name or "", "bn") if network == "ephemery" else None
+    vc_override = ephemery_network_override(vc_name or "", "vc") if network == "ephemery" else None
+
     mev_ver, mev_path = "", ""
     if flags['mevboost'] and not flags['validator_only'] and not flags.get('switch_client'):
         # Need to load config properly or pass it
@@ -261,40 +266,42 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
     el_ver, el_path = "", ""
     if not flags['validator_only'] and ec_name:
         if ec_name == 'Besu':
-            el_ver, el_path = besu.download_and_install_besu(network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path)
+            el_ver, el_path = besu.download_and_install_besu(network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path, network_override=el_override)
         elif ec_name == 'Nethermind':
             import config
             sync_params = getattr(config, f"{network}_nethermind_sync_parameters", '')
-            el_ver, el_path = nethermind.download_and_install_nethermind(network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path, sync_parameters=sync_params)
+            el_ver, el_path = nethermind.download_and_install_nethermind(network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path, network_override=el_override, sync_parameters=sync_params)
         elif ec_name == 'Reth':
-            el_ver, el_path = reth.download_and_install_reth(network, el_p2p_port, el_p2p_port_2, el_rpc_port, el_max_peers, jwtsecret_path)
+            el_ver, el_path = reth.download_and_install_reth(network, el_p2p_port, el_p2p_port_2, el_rpc_port, el_max_peers, jwtsecret_path, network_override=el_override)
         elif ec_name == 'Erigon':
             if cc_name == 'Caplin' or cc_name == 'Caplin (integrated)':
                 mev_params = f'--caplin.mev-relay-url=http://127.0.0.1:18550' if flags['mevboost'] else ''
                 el_ver, el_path = erigon.download_and_install_erigon(
                     network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path,
-                    cl_p2p_port, cl_rest_port, cl_max_peers, sync_url, mev_parameters=mev_params
+                    cl_p2p_port, cl_rest_port, cl_max_peers, sync_url, mev_parameters=mev_params,
+                    network_override=el_override,
                 )
             else:
                 el_ver, el_path = erigon.download_and_install_erigon_standalone(
-                    network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path
+                    network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path,
+                    network_override=el_override,
                 )
         elif ec_name == 'Geth':
-            el_ver, el_path = geth.download_and_install_geth(network, str(el_p2p_port), str(el_rpc_port), str(el_max_peers), jwtsecret_path)
+            el_ver, el_path = geth.download_and_install_geth(network, str(el_p2p_port), str(el_rpc_port), str(el_max_peers), jwtsecret_path, network_override=el_override)
         elif ec_name == 'Ethrex':
-            el_ver, el_path = ethrex.download_and_install_ethrex(network, str(el_p2p_port), str(el_rpc_port), str(el_max_peers), jwtsecret_path)
+            el_ver, el_path = ethrex.download_and_install_ethrex(network, str(el_p2p_port), str(el_rpc_port), str(el_max_peers), jwtsecret_path, network_override=el_override)
 
     cl_ver, cl_path = "", ""
     if not flags['validator_only'] and cc_name and cc_name not in ['Caplin', 'Caplin (integrated)']:
         if cc_name == 'Lighthouse':
             mev_params = f'--builder http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = lighthouse.download_lighthouse(network)
-            cl_path = lighthouse.install_lighthouse_bn(network, sync_url, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peers, mev_parameters=mev_params)
+            cl_path = lighthouse.install_lighthouse_bn(network, sync_url, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peers, mev_parameters=mev_params, network_override=cl_override)
         elif cc_name == 'Nimbus':
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             mev_params = '--payload-builder=true --payload-builder-url=http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = nimbus.download_nimbus(network)
-            cl_path = nimbus.install_nimbus_bn(network, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params, sync_url=sync_url)
+            cl_path = nimbus.install_nimbus_bn(network, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params, sync_url=sync_url, network_override=cl_override)
         elif cc_name == 'Teku':
             fee_params = f'--validators-proposer-default-fee-recipient={fee_recipient}'
             if flags.get('charon'):
@@ -303,29 +310,39 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 )
             mev_params = '--validators-builder-registration-default-enabled=true --builder-endpoint=http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = teku.download_teku(network)
-            cl_path = teku.install_teku_bn(network, sync_url, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params)
+            cl_path = teku.install_teku_bn(network, sync_url, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params, network_override=cl_override)
         elif cc_name == 'Lodestar':
             fee_params = f'--suggestedFeeRecipient={fee_recipient}'
             mev_params = '--builder --builder.urls http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = lodestar.download_lodestar(network)
-            cl_path = lodestar.install_lodestar_bn(network, sync_url, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params)
+            cl_path = lodestar.install_lodestar_bn(network, sync_url, jwtsecret_path, cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peers, fee_parameters=fee_params, mev_parameters=mev_params, network_override=cl_override)
         elif cc_name == 'Grandine':
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             mev_params = '--builder-url=http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = grandine.download_grandine(network)
             is_integrated_vc = (vc_name == 'Grandine (integrated)' and flags['validator'])
-            cl_path = grandine.install_grandine_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, is_integrated_vc=is_integrated_vc)
+            cl_path = grandine.install_grandine_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, is_integrated_vc=is_integrated_vc, network_override=cl_override)
         elif cc_name == 'Prysm':
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             mev_params = '--http-mev-relay=http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = prysm.download_prysm(network)
-            cl_path = prysm.install_prysm_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params)
+            cl_path = prysm.install_prysm_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, network_override=cl_override)
 
     charon_enabled = bool(flags.get('charon'))
     if charon_enabled and vc_name == "Grandine (integrated)":
         raise ValueError("Obol Charon is incompatible with Grandine (integrated). Select a standalone VC.")
     if charon_enabled and vc_name == CHARON_VC_LABEL:
         raise ValueError("Obol Charon DV requires a signer validator client (e.g. Lodestar).")
+
+    # Existing Charon on a consensus switch: set/clear json_requests for the new BN.
+    if charon_enabled and flags.get('switch_client') == 'consensus':
+        try:
+            charon.patch_json_requests_feature(
+                charon.CHARON_SERVICE_PATH,
+                enable=(cc_name == "Nimbus"),
+            )
+        except FileNotFoundError:
+            pass
 
     charon_ver, charon_path = "", ""
     cl_ip = env_vars.get('CL_IP_ADDRESS', '127.0.0.1')
@@ -338,7 +355,8 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
 
     if charon_enabled and not flags.get('switch_client'):
         charon_api_port = env_vars.get('CHARON_VALIDATOR_API_PORT', '3600')
-        charon_p2p_port = env_vars.get('CHARON_P2P_PORT', '3610')
+        # Canonical EthPillar name is CHARON_P2P_PORT; CDVN uses CHARON_PORT_P2P_TCP.
+        charon_p2p_port = env_vars.get('CHARON_P2P_PORT') or env_vars.get('CHARON_PORT_P2P_TCP') or '3610'
         charon_mon_port = env_vars.get('CHARON_MONITORING_PORT', '3620')
         p2p_external_ip = env_vars.get('CHARON_P2P_EXTERNAL_IP', '')
         charon_ver, charon_path = charon.install_charon(
@@ -379,7 +397,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             bn_arg = f'--beacon-nodes={addr}'
             val_path = lighthouse.install_lighthouse_vc(
                 v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
-                unit_after=vc_unit_after,
+                unit_after=vc_unit_after, network_override=vc_override,
             )
         elif vc_name == 'Nimbus':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else nimbus.download_nimbus(network)
@@ -394,7 +412,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             val_path = nimbus.install_nimbus_vc(
                 v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
                 unit_after=vc_unit_after,
-            )
+            )  # Nimbus VC has no --network flag
         elif vc_name == 'Teku':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else teku.download_teku(network)
             val_ver = v_ver
@@ -407,7 +425,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             bn_arg = f'--beacon-node-api-endpoint={addr}'
             val_path = teku.install_teku_vc(
                 v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
-                unit_after=vc_unit_after,
+                unit_after=vc_unit_after, network_override=vc_override,
             )
         elif vc_name == 'Lodestar':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lodestar.download_lodestar(network)
@@ -421,7 +439,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             bn_arg = f'--beaconNodes={addr}'
             val_path = lodestar.install_lodestar_vc(
                 v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
-                unit_after=vc_unit_after,
+                unit_after=vc_unit_after, network_override=vc_override,
             )
         elif vc_name == 'Prysm':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else prysm.download_prysm(network)
@@ -445,6 +463,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 extra_params,
                 beacon_rpc_provider=beacon_rpc,
                 unit_after=vc_unit_after,
+                network_override=vc_override,
             )
 
     combo_name = role
