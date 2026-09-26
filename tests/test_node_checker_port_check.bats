@@ -32,6 +32,10 @@ setup() {
 	CL_P2P_PORT_2="${CL_P2P_PORT_2:-9001}"
 	NODE_CHECKER_TROUBLESHOOT=0
 	NODE_CHECKER_DEBUG=0
+	NODE_CHECKER_AUTO_TROUBLESHOOT=0
+	NODE_CHECKER_TROUBLESHOOT_PRINTED=0
+	NODE_CHECKER_TROUBLESHOOT_INBOUND="?"
+	NODE_CHECKER_TROUBLESHOOT_OUTBOUND="?"
 	unset TEKU_QUIC_IPV6_PORT || true
 }
 
@@ -224,6 +228,7 @@ check_open_ports_capture() {
 	[[ "$(cat "$TEST_DIR/open.out")" == *"UDP inbound cannot be tested"* ]]
 	[[ "$(cat "$TEST_DIR/open.out")" != *"[FAIL]"* ]]
 	[ "$failed_checks" -eq 0 ]
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 0 ]
 }
 
 @test "check_open_ports FAILs missing TCP inbound and does not treat localhost UDP as inbound" {
@@ -232,6 +237,7 @@ check_open_ports_capture() {
 	[[ "$(cat "$TEST_DIR/open.out")" == *"TCP inbound closed on 30303"* ]]
 	[[ "$(cat "$TEST_DIR/open.out")" != *"localhost"* ]]
 	[ "$failed_checks" -eq 1 ]
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 1 ]
 }
 
 @test "check_open_ports WARNs on CGNAT requester IP" {
@@ -247,6 +253,7 @@ check_open_ports_capture() {
 	[[ "$(cat "$TEST_DIR/open.out")" == *"Could not query the public TCP port checker"* ]]
 	[ "$warning_checks" -eq 1 ]
 	[ "$failed_checks" -eq 0 ]
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 1 ]
 }
 
 @test "check_open_ports includes QUIC UDP in the expected-UDP honesty line" {
@@ -287,7 +294,9 @@ stub_healthy_node_apis() {
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 5"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"enr:-SECRET"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"Inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"Auto-printing inbound troubleshoot"* ]]
 	[ "$failed_checks" -eq 0 ]
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 0 ]
 }
 
 @test "check_peer_count WARNs when outbound exists but inbound is zero and prints troubleshoot" {
@@ -324,6 +333,7 @@ stub_healthy_node_apis() {
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Consensus client has no peers"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 0"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound troubleshoot"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"enr:-HIDDEN"* ]]
 	[ "$failed_checks" -ge 2 ]
 }
@@ -374,4 +384,34 @@ stub_healthy_node_apis() {
 	node_checker_parse_args --debug
 	[ "$NODE_CHECKER_TROUBLESHOOT" -eq 1 ]
 	[ "$NODE_CHECKER_DEBUG" -eq 1 ]
+}
+
+@test "UFW QUIC miss auto-prints troubleshoot without --troubleshoot and without ENR" {
+	write_consensus Lighthouse
+	sudo() { "$@"; }
+	ufw() {
+		echo "Status: active"
+		echo "9000                       ALLOW       Anywhere"
+	}
+	ss() { echo "tcp LISTEN 0 0 0.0.0.0:9000 0.0.0.0:*"; }
+	export -f sudo ufw ss
+	check_cl_quic > "$TEST_DIR/quic.out" 2>&1
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 1 ]
+	maybe_print_port_troubleshoot "?" "?" > "$TEST_DIR/guide.out" 2>&1
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"Auto-printing inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"Inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"Forward UDP 9000"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"enr:-"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"SECRET"* ]]
+}
+
+@test "forced --troubleshoot prints guidance on a green node without ENR" {
+	stub_healthy_node_apis
+	NODE_CHECKER_TROUBLESHOOT=1
+	check_peer_count_capture
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound working"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound troubleshoot"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"you asked for it"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"enr:-SECRET"* ]]
+	[ "$NODE_CHECKER_DEBUG" -eq 0 ]
 }

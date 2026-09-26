@@ -148,11 +148,12 @@ node_checker_usage() {
     cat <<'EOF'
 Usage: run.sh [--troubleshoot] [--debug]
 
-  --troubleshoot  Print inbound port-forward and firewall guidance (no ENR)
+  --troubleshoot  Force inbound firewall/NAT/forward guidance even when checks are green (no ENR)
   --debug         Troubleshoot plus ENR/identity diagnostics (redact before sharing)
 
-Default node-checker still prints a short troubleshoot section when inbound
-looks broken. Local listen (ss/UFW) is not the same as inbound reachability.
+The Plugins menu has no flags. Default path auto-prints the same troubleshoot
+guidance when inbound looks broken (UFW, TCP checker, zero inbound, missing QUIC).
+Local listen (ss/UFW) is not the same as inbound reachability. ENR is debug-only.
 EOF
 }
 

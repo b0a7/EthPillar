@@ -29,6 +29,10 @@ setup() {
 	udp_check_ports_base="9000,30303"
 	CL_P2P_PORT="${CL_P2P_PORT:-9000}"
 	CL_P2P_PORT_2="${CL_P2P_PORT_2:-9001}"
+	NODE_CHECKER_TROUBLESHOOT=0
+	NODE_CHECKER_DEBUG=0
+	NODE_CHECKER_AUTO_TROUBLESHOOT=0
+	NODE_CHECKER_TROUBLESHOOT_PRINTED=0
 	unset TEKU_QUIC_IPV6_PORT || true
 }
 
@@ -185,6 +189,7 @@ check_cl_quic_capture() {
 	[[ "$(cat "$TEST_DIR/quic.out")" != *"[FAIL]"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$warning_checks" -eq 1 ]
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 0 ]
 }
 
 @test "check_cl_quic FAILs UFW allow miss and listen miss for Lighthouse" {
@@ -202,6 +207,7 @@ check_cl_quic_capture() {
 	[[ "$(cat "$TEST_DIR/quic.out")" == *"missing allow rule for CL QUIC 9001/udp"* ]]
 	[[ "$(cat "$TEST_DIR/quic.out")" == *"CL QUIC port 9001/udp not listening"* ]]
 	[ "$failed_checks" -eq 2 ]
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 1 ]
 }
 
 @test "check_cl_quic PASSes UFW and listen when 9001/udp is open" {
@@ -221,6 +227,7 @@ check_cl_quic_capture() {
 	[[ "$(cat "$TEST_DIR/quic.out")" == *"Detected UDP service on CL QUIC port 9001"* ]]
 	[[ "$(cat "$TEST_DIR/quic.out")" != *"[FAIL]"* ]]
 	[ "$failed_checks" -eq 0 ]
+	[ "$NODE_CHECKER_AUTO_TROUBLESHOOT" -eq 0 ]
 }
 
 @test "check_cl_quic skips UFW rule check when firewall is inactive" {

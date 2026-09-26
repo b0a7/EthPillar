@@ -14,12 +14,47 @@
 
 # Sourced by plugins/node-checker/run.sh (and bats via that entrypoint).
 # Do not execute this file directly.
+#
+# Troubleshoot vs default vs debug (Plugins menu has no CLI flags):
+# - Default: PASS/FAIL/WARN for local listen, TCP inbound, and CL peer direction.
+# - Troubleshoot: extra firewall/NAT/port-forward steps when inbound looks broken.
+#   The menu/default path auto-prints that guidance when a useful signal fires
+#   (missing UFW allow, TCP checker closed/unreachable, zero/unknown inbound,
+#   QUIC expected but not advertised or no inbound QUIC). CLI --troubleshoot or
+#   NODE_CHECKER_TROUBLESHOOT=1 still forces the same text even when all-green.
+# - Debug (--debug / NODE_CHECKER_DEBUG=1) is the only path that may print ENR.
 
-# --troubleshoot / --debug (also NODE_CHECKER_TROUBLESHOOT=1, NODE_CHECKER_DEBUG=1).
-# Debug may print ENR; default and troubleshoot paths never do.
 NODE_CHECKER_TROUBLESHOOT="${NODE_CHECKER_TROUBLESHOOT:-0}"
 NODE_CHECKER_DEBUG="${NODE_CHECKER_DEBUG:-0}"
+NODE_CHECKER_AUTO_TROUBLESHOOT="${NODE_CHECKER_AUTO_TROUBLESHOOT:-0}"
+NODE_CHECKER_TROUBLESHOOT_PRINTED="${NODE_CHECKER_TROUBLESHOOT_PRINTED:-0}"
+NODE_CHECKER_TROUBLESHOOT_INBOUND="${NODE_CHECKER_TROUBLESHOOT_INBOUND:-?}"
+NODE_CHECKER_TROUBLESHOOT_OUTBOUND="${NODE_CHECKER_TROUBLESHOOT_OUTBOUND:-?}"
 TCP_PORT_CHECKER_URL="${TCP_PORT_CHECKER_URL:-https://eth2-client-port-checker.vercel.app/api/checker?ports=}"
+
+# Request the troubleshoot block for the menu/default path. Never enables ENR.
+node_checker_request_troubleshoot() {
+    NODE_CHECKER_AUTO_TROUBLESHOOT=1
+}
+
+node_checker_should_print_troubleshoot() {
+    [[ "${NODE_CHECKER_TROUBLESHOOT:-0}" -eq 1 || "${NODE_CHECKER_AUTO_TROUBLESHOOT:-0}" -eq 1 ]]
+}
+
+# Print firewall/NAT/forward guidance at most once. ENR stays in --debug only.
+maybe_print_port_troubleshoot() {
+    local inbound="${1:-${NODE_CHECKER_TROUBLESHOOT_INBOUND:-?}}"
+    local outbound="${2:-${NODE_CHECKER_TROUBLESHOOT_OUTBOUND:-?}}"
+    node_checker_should_print_troubleshoot || return 0
+    [[ "${NODE_CHECKER_TROUBLESHOOT_PRINTED:-0}" -eq 1 ]] && return 0
+    NODE_CHECKER_TROUBLESHOOT_PRINTED=1
+    if [[ "${NODE_CHECKER_TROUBLESHOOT:-0}" -eq 1 && "${NODE_CHECKER_AUTO_TROUBLESHOOT:-0}" -eq 0 ]]; then
+        print_check_result "INFO" "Troubleshoot guidance (--troubleshoot): firewall/NAT/forward steps. No ENR."
+    else
+        print_check_result "INFO" "Auto-printing inbound troubleshoot (Plugins menu has no flags): firewall/NAT/forward steps. No ENR."
+    fi
+    print_port_troubleshoot_guidance "$inbound" "$outbound"
+}
 
 # CL P2P 9000 and EL P2P 30303 (TCP+UDP) are the "expected 4" listen ports.
 # CL QUIC UDP (typically 9001; Teku also 9091) is tracked separately so that
@@ -151,6 +186,7 @@ check_cl_quic_ufw_rules() {
         else
             print_check_result "FAIL" "UFW is active but missing allow rule for CL QUIC ${port}/udp"
             failed_checks=$((failed_checks + 1))
+            node_checker_request_troubleshoot
         fi
     done
 }
@@ -171,6 +207,7 @@ check_cl_quic_listening() {
         else
             print_check_result "FAIL" "CL QUIC port ${port}/udp not listening"
             failed_checks=$((failed_checks + 1))
+            node_checker_request_troubleshoot
         fi
     done
 }
@@ -379,8 +416,13 @@ print_port_troubleshoot_guidance() {
     local teku_extra=""
 
     print_check_result "INFO" "Inbound troubleshoot (no ENR in this section):"
+    echo "  This is extra guidance vs the PASS/FAIL lines: what to change on the firewall, router, or ISP when inbound looks broken."
     if [[ "$(inbound_status_kind "$inbound")" == "working" ]]; then
-        echo "  Inbound peering is working. This guidance prints because you asked for it (--troubleshoot)."
+        if [[ "${NODE_CHECKER_AUTO_TROUBLESHOOT:-0}" -eq 1 ]]; then
+            echo "  Inbound peering is working; this still prints because another port/NAT/UFW signal looked wrong."
+        else
+            echo "  Inbound peering is working. This guidance prints because you asked for it (--troubleshoot)."
+        fi
     elif [[ "$inbound" == "?" ]]; then
         echo "  This consensus client does not report peer direction, so inbound cannot be measured here."
     else
@@ -516,8 +558,9 @@ check_open_ports() {
     tcp_json="$(fetch_tcp_port_checker "$tcp_ports")"
     if ! jq -e 'type == "object"' <<< "$tcp_json" >/dev/null 2>&1; then
         total_checks=$((total_checks + 1))
-        print_check_result "WARN" "Could not query the public TCP port checker. Local listen still applies; re-run later or use --troubleshoot."
+        print_check_result "WARN" "Could not query the public TCP port checker. Local listen still applies."
         warning_checks=$((warning_checks + 1))
+        node_checker_request_troubleshoot
         return 0
     fi
 
@@ -529,11 +572,13 @@ check_open_ports() {
                 total_checks=$((total_checks + 1))
                 print_check_result "WARN" "Public address ${requester} is CGNAT (100.64.0.0/10). No IPv4 port-forward can work."
                 warning_checks=$((warning_checks + 1))
+                node_checker_request_troubleshoot
                 ;;
             private)
                 total_checks=$((total_checks + 1))
                 print_check_result "WARN" "Checker reported a non-public IPv4 (${requester}). Inbound IPv4 peers cannot dial that."
                 warning_checks=$((warning_checks + 1))
+                node_checker_request_troubleshoot
                 ;;
         esac
     fi
@@ -547,6 +592,7 @@ check_open_ports() {
             print_check_result "FAIL" "TCP inbound closed on ${port}. Forward ${port}/tcp on the router and allow it in UFW."
             failed_checks=$((failed_checks + 1))
             missing=1
+            node_checker_request_troubleshoot
         fi
     done
 
@@ -560,7 +606,7 @@ check_peer_count() {
     local cl_connected el_connected
     local inbound outbound inbound_addrs outbound_addrs
     local in_json out_json peer_id disc first_ip kind quic_in=0
-    local need_guide=0 peers_listed=0
+    local peers_listed=0
 
     identity_json="$(fetch_cl_api /eth/v1/node/identity)"
     peers_json="$(fetch_cl_api /eth/v1/node/peers)"
@@ -580,6 +626,7 @@ check_peer_count() {
         total_checks=$((total_checks + 1))
         print_check_result "FAIL" "Unable to list consensus peers. Is consensus.service running and REST reachable at ${API_BN_ENDPOINT}?"
         failed_checks=$((failed_checks + 1))
+        node_checker_request_troubleshoot
     elif ! cl_peers_report_direction "$peers_json"; then
         inbound="?"
         outbound="?"
@@ -610,11 +657,13 @@ check_peer_count() {
             total_checks=$((total_checks + 1))
             print_check_result "WARN" "CL discovery advertises a CGNAT IPv4. IPv6 or a public IPv4 from the ISP is required."
             warning_checks=$((warning_checks + 1))
+            node_checker_request_troubleshoot
             ;;
         private)
             total_checks=$((total_checks + 1))
             print_check_result "WARN" "CL discovery advertises a private IPv4. Peers cannot dial that address."
             warning_checks=$((warning_checks + 1))
+            node_checker_request_troubleshoot
             ;;
         empty)
             print_check_result "INFO" "CL discovery has no IPv4 address yet (node may still be learning its external address)."
@@ -625,6 +674,7 @@ check_peer_count() {
         print_check_result "INFO" "CL discovery addresses include QUIC"
     elif cl_expects_quic; then
         print_check_result "INFO" "CL discovery addresses do not list QUIC yet (listen/UFW still required)"
+        node_checker_request_troubleshoot
     fi
 
     if [[ "$peers_listed" -eq 1 ]]; then
@@ -636,6 +686,7 @@ check_peer_count() {
             unknown)
                 print_check_result "WARN" "CL does not report peer direction, so inbound cannot be measured."
                 warning_checks=$((warning_checks + 1))
+                node_checker_request_troubleshoot
                 ;;
             *)
                 if [[ "$outbound" =~ ^[0-9]+$ && "$outbound" -gt 0 ]]; then
@@ -645,6 +696,7 @@ check_peer_count() {
                     print_check_result "FAIL" "Consensus client has no peers. It may still be starting, or outbound UDP ${CL_P2P_PORT:-9000} is blocked too."
                     failed_checks=$((failed_checks + 1))
                 fi
+                node_checker_request_troubleshoot
                 ;;
         esac
     fi
@@ -659,8 +711,10 @@ check_peer_count() {
             elif [[ "$inbound" =~ ^[0-9]+$ && "$inbound" -gt 0 ]]; then
                 print_check_result "WARN" "Peers dialed you over TCP only. After Glamsterdam, QUIC UDP (typically ${CL_P2P_PORT_2:-9001}/udp) must be forwarded and allowed."
                 warning_checks=$((warning_checks + 1))
+                node_checker_request_troubleshoot
             else
                 print_check_result "INFO" "No inbound QUIC peers yet. Forward and allow UDP ${CL_P2P_PORT_2:-9001} (and discv5 UDP ${CL_P2P_PORT:-9000})."
+                node_checker_request_troubleshoot
             fi
         fi
     fi
@@ -677,17 +731,9 @@ check_peer_count() {
         print_check_result "INFO" "Consensus layer connected peers (API count): ${cl_connected}"
     fi
 
-    if [[ "$NODE_CHECKER_TROUBLESHOOT" -eq 1 ]]; then
-        need_guide=1
-    elif [[ "$inbound" == "0" || "$inbound" == "?" ]]; then
-        need_guide=1
-    elif cl_expects_quic && [[ "$quic_in" -eq 0 ]]; then
-        need_guide=1
-    fi
-
-    if [[ "$need_guide" -eq 1 ]]; then
-        print_port_troubleshoot_guidance "$inbound" "$outbound"
-    fi
+    NODE_CHECKER_TROUBLESHOOT_INBOUND="$inbound"
+    NODE_CHECKER_TROUBLESHOOT_OUTBOUND="$outbound"
+    maybe_print_port_troubleshoot "$inbound" "$outbound"
 
     if [[ "$NODE_CHECKER_DEBUG" -eq 1 ]]; then
         print_port_debug_diagnostics "$identity_json" "$peers_json"
