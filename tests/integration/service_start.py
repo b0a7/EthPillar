@@ -22,10 +22,10 @@ DEFAULT_SYSTEMCTL_START_TIMEOUT_SEC = 30
 NIMBUS_UNIT_TIMEOUT_START_SEC = 1800
 
 # First-boot Nimbus ``trustedNodeSync`` (HOODI Solo Staking, checkpoint cache/proxy).
-# Until a wall-clock measurement is recorded, match the unit TimeoutStartSec so
-# ``systemctl start consensus`` can finish. After measurement this is set to
-# ~2× the observed duration, still capped at :data:`NIMBUS_UNIT_TIMEOUT_START_SEC`.
-NIMBUS_CHECKPOINT_SYNC_START_TIMEOUT_SEC = 1800
+# Measured 2026-09-26 on this cloud agent: blocking ``systemctl start consensus``
+# returned after 33.3s (proxy 200 on HOODI finalized state, 226 MB SSZ).
+# 2×33.3s = 66.6s, rounded up to 90s. Capped at :data:`NIMBUS_UNIT_TIMEOUT_START_SEC`.
+NIMBUS_CHECKPOINT_SYNC_START_TIMEOUT_SEC = 90
 
 _TIMEOUT_START_RE = re.compile(r"^TimeoutStartSec=(.+)$", re.MULTILINE)
 
