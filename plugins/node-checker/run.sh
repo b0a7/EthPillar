@@ -624,14 +624,160 @@ check_history_expiry() {
     fi
 }
 
+# Collapse the first ExecStart= block (backslash continuations) to one line.
+node_checker_unit_execstart() {
+    local unit_file="${1:-}"
+    [[ -f "$unit_file" ]] || return 0
+    local in_exec=0 line payload
+    local -a parts=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ $in_exec -eq 0 ]]; then
+            if [[ "$line" == ExecStart=* ]]; then
+                in_exec=1
+                payload="${line#ExecStart=}"
+            else
+                continue
+            fi
+        else
+            payload="$line"
+        fi
+        if [[ "$payload" == *\\ ]]; then
+            payload="${payload%\\}"
+            parts+=("$payload")
+            continue
+        fi
+        parts+=("$payload")
+        break
+    done < "$unit_file"
+    printf '%s' "${parts[*]}"
+}
+
+# Print datadir flags from a systemd unit. Does not require the path to exist.
+# Matches --datadir, --data-dir, --dataDir, --data.path, --data-path, --db-path,
+# --base-path, and Lodestar --dbDir / --chainDbDir. Skips --datadir.static-files.
+node_checker_extract_datadir_paths() {
+    local unit_file="${1:-}"
+    local execstart path flag_re
+    execstart="$(node_checker_unit_execstart "$unit_file")"
+    [[ -n "$execstart" ]] || return 0
+    # ERE: require '=' or whitespace after the flag so --datadir.static-files
+    # is not treated as --datadir.
+    flag_re='--(datadir|data-dir|dataDir|data\.path|data-path|db-path|base-path|dbDir|chainDbDir)(=|[[:space:]]+)("[^"]+"|'\''[^'\'']+'\''|[^[:space:]\\]+)'
+    while [[ "$execstart" =~ $flag_re ]]; do
+        path="${BASH_REMATCH[3]}"
+        path="${path#\"}"
+        path="${path%\"}"
+        path="${path#\'}"
+        path="${path%\'}"
+        if [[ -n "$path" && "$path" == /* ]]; then
+            printf '%s\n' "$path"
+        fi
+        execstart="${execstart#*"${BASH_REMATCH[0]}"}"
+    done
+}
+
+# Unique existing EL/CL datadirs from execution.service and consensus.service.
+node_checker_resolved_elcl_datadirs() {
+    local unit_file path
+    local -A seen=()
+    for unit_file in "$(node_checker_exec_service)" "$(node_checker_consensus_service)"; do
+        [[ -f "$unit_file" ]] || continue
+        while IFS= read -r path; do
+            [[ -n "$path" && -e "$path" ]] || continue
+            [[ -z "${seen[$path]:-}" ]] || continue
+            seen[$path]=1
+            printf '%s\n' "$path"
+        done < <(node_checker_extract_datadir_paths "$unit_file")
+    done
+}
+
+# Live mount OPTIONS for PATH (findmnt -T). Empty when findmnt is missing/fails.
+node_checker_findmnt_options() {
+    local path="${1:-}"
+    [[ -n "$path" ]] || return 0
+    command -v findmnt >/dev/null 2>&1 || return 0
+    findmnt -T "$path" -no OPTIONS 2>/dev/null || true
+}
+
+# True when OPTIONS contains the comma-delimited noatime flag (not relatime).
+node_checker_options_has_noatime() {
+    local opts="${1:-}"
+    [[ -n "$opts" ]] || return 1
+    [[ ",${opts}," == *",noatime,"* ]]
+}
+
+# Join path arguments with ", " for operator-facing messages.
+node_checker_join_paths() {
+    local IFS=', '
+    printf '%s' "$*"
+}
+
+# fstab is informational only when no EL/CL datadir could be resolved.
+# Never FAIL here — Proxmox bind-mounts often omit noatime from guest fstab.
+node_checker_noatime_unresolved_fallback() {
+    local fstab="${NODE_CHECKER_FSTAB:-/etc/fstab}"
+    if [[ -f "$fstab" ]] && grep -q "noatime" "$fstab"; then
+        print_check_result "INFO" "noatime in fstab (EL/CL datadir not resolved; live mount not verified)"
+        return
+    fi
+    print_check_result "WARN" "Could not resolve EL/CL datadir; live noatime not verified. To set noatime, use Toolbox."
+    ((warning_checks++))
+}
+
+# Require noatime on live mounts of EL/CL chaindata (not guest fstab alone).
 check_noatime() {
     ((total_checks++))
-    if grep -q "noatime" /etc/fstab; then
-        print_check_result "PASS" "noatime is active"
-    else
-        print_check_result "FAIL" "noatime is not active. To change, use Toolbox."
-        ((failed_checks++))
+    local -a paths=() passed=() failed=() unchecked=()
+    local path opts
+
+    while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        paths+=("$path")
+    done < <(node_checker_resolved_elcl_datadirs)
+
+    if [[ ${#paths[@]} -eq 0 ]]; then
+        node_checker_noatime_unresolved_fallback
+        return
     fi
+
+    for path in "${paths[@]}"; do
+        opts="$(node_checker_findmnt_options "$path")"
+        if [[ -z "$opts" ]]; then
+            unchecked+=("$path")
+            continue
+        fi
+        if node_checker_options_has_noatime "$opts"; then
+            passed+=("$path")
+        else
+            failed+=("$path")
+        fi
+    done
+
+    if [[ ${#failed[@]} -gt 0 ]]; then
+        local msg
+        msg="noatime missing on: $(node_checker_join_paths "${failed[@]}")"
+        if [[ ${#passed[@]} -gt 0 ]]; then
+            msg+=" (ok: $(node_checker_join_paths "${passed[@]}"))"
+        fi
+        msg+=". To change, use Toolbox."
+        print_check_result "FAIL" "$msg"
+        ((failed_checks++))
+        return
+    fi
+
+    if [[ ${#passed[@]} -gt 0 && ${#unchecked[@]} -eq 0 ]]; then
+        print_check_result "PASS" "noatime on EL/CL data: $(node_checker_join_paths "${passed[@]}")"
+        return
+    fi
+
+    if [[ ${#passed[@]} -gt 0 ]]; then
+        print_check_result "WARN" "noatime on $(node_checker_join_paths "${passed[@]}"); could not read mount options for $(node_checker_join_paths "${unchecked[@]}")"
+        ((warning_checks++))
+        return
+    fi
+
+    print_check_result "WARN" "Could not read live mount options for $(node_checker_join_paths "${unchecked[@]}")"
+    ((warning_checks++))
 }
 
 check_swappiness() {
