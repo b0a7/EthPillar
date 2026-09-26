@@ -6,8 +6,10 @@
 #
 # Made for home and solo stakers 🏠🥩
 
-BASE_DIR=$(pwd)
-source $BASE_DIR/functions.sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="${BASE_DIR:-$SCRIPT_DIR}"
+# shellcheck source=functions.sh
+source "$BASE_DIR/functions.sh"
 
 function getClient(){
     EL=$(cat /etc/systemd/system/execution.service | grep Description= | awk -F'=' '{print $2}' | awk '{print $1}')
