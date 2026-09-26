@@ -194,7 +194,7 @@ EOF
 	[ "$failed_checks" -eq 1 ]
 }
 
-@test "check_noatime SKIPs with INFO when no EL/CL datadir is resolvable" {
+@test "check_noatime WARNs when no EL/CL datadir is resolvable" {
 	# Service files exist but have no datadir flags (or VC-only).
 	cat > "$EXEC_SERVICE_FILE" <<'EOF'
 [Service]
@@ -206,41 +206,43 @@ ExecStart=/usr/local/bin/lodestar beacon --rest.port=5052
 EOF
 
 	check_noatime_capture
-	[[ "$(cat "$TEST_DIR/noatime.out")" == *"[INFO]"* ]]
-	[[ "$(cat "$TEST_DIR/noatime.out")" == *"noatime check skipped: no local EL/CL datadir"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"[WARN]"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"noatime not checked"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"validator-only"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"no local EL/CL chaindata"* ]]
 	[[ "$(cat "$TEST_DIR/noatime.out")" != *"[FAIL]"* ]]
-	[[ "$(cat "$TEST_DIR/noatime.out")" != *"[WARN]"* ]]
 	[ "$failed_checks" -eq 0 ]
-	[ "$warning_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
 }
 
-@test "check_noatime SKIPs validator-only node and does not FAIL on fstab" {
+@test "check_noatime WARNs on validator-only node and does not FAIL on fstab" {
 	rm -f "$EXEC_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE"
 	cat > "$NODE_CHECKER_FSTAB" <<'EOF'
 UUID=root / ext4 errors=remount-ro 0 1
 EOF
 
 	check_noatime_capture
-	[[ "$(cat "$TEST_DIR/noatime.out")" == *"noatime check skipped: no local EL/CL datadir"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"[WARN]"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"noatime not checked"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"no local EL/CL chaindata"* ]]
 	[[ "$(cat "$TEST_DIR/noatime.out")" != *"[FAIL]"* ]]
-	[[ "$(cat "$TEST_DIR/noatime.out")" != *"[WARN]"* ]]
 	[ "$failed_checks" -eq 0 ]
-	[ "$warning_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
 }
 
-@test "check_noatime fstab noatime is weak INFO only when datadir is unresolved" {
+@test "check_noatime fstab noatime is not a FAIL when datadir is unresolved" {
 	cat > "$NODE_CHECKER_FSTAB" <<'EOF'
 UUID=root / ext4 errors=remount-ro,noatime 0 1
 EOF
 	rm -f "$EXEC_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE"
 
 	check_noatime_capture
-	[[ "$(cat "$TEST_DIR/noatime.out")" == *"noatime check skipped: no local EL/CL datadir"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"[WARN]"* ]]
+	[[ "$(cat "$TEST_DIR/noatime.out")" == *"noatime not checked"* ]]
 	[[ "$(cat "$TEST_DIR/noatime.out")" == *"fstab mentions noatime (not used as a gate)"* ]]
 	[[ "$(cat "$TEST_DIR/noatime.out")" != *"[FAIL]"* ]]
-	[[ "$(cat "$TEST_DIR/noatime.out")" != *"[WARN]"* ]]
 	[ "$failed_checks" -eq 0 ]
-	[ "$warning_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
 }
 
 @test "check_noatime WARNs when findmnt OPTIONS are empty for a resolved path" {
@@ -261,7 +263,7 @@ EOF
 	[ "$(type -t node_checker_findmnt_options)" = "function" ]
 	grep -q 'node_checker_resolved_elcl_datadirs' plugins/node-checker/run.sh
 	grep -q 'findmnt -T' plugins/node-checker/run.sh
-	# fstab must never be a FAIL/WARN gate.
-	! grep -A20 '^node_checker_noatime_unresolved_fallback()' plugins/node-checker/run.sh | grep -qE 'print_check_result "(FAIL|WARN)"'
+	# fstab must never be a FAIL gate (VC-only is WARN).
+	! grep -A20 '^node_checker_noatime_unresolved_fallback()' plugins/node-checker/run.sh | grep -q 'print_check_result "FAIL"'
 	! grep -A6 '^check_noatime()' plugins/node-checker/run.sh | grep -q 'grep -q "noatime" /etc/fstab'
 }

@@ -716,10 +716,11 @@ node_checker_join_paths() {
     printf '%s' "$out"
 }
 
-# VC-only / remote CL: no local EL+CL datadir. Never FAIL or WARN on fstab.
+# VC-only / remote CL: no local EL+CL chaindata. WARN, never FAIL (including fstab).
 node_checker_noatime_unresolved_fallback() {
     local fstab="${NODE_CHECKER_FSTAB:-/etc/fstab}"
-    print_check_result "INFO" "noatime check skipped: no local EL/CL datadir"
+    print_check_result "WARN" "noatime not checked (less critical on validator-only): no local EL/CL chaindata"
+    warning_checks=$((warning_checks + 1))
     if [[ -f "$fstab" ]] && grep -q "noatime" "$fstab"; then
         print_check_result "INFO" "fstab mentions noatime (not used as a gate)"
     fi
