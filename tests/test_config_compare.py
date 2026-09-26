@@ -6,6 +6,7 @@ import deploy.lighthouse as lighthouse
 from manage.config_compare import (
     EXIT_NO_DIFF,
     _mev_params_for_client,
+    apply_changes,
     generate_default_unit,
     prepare_prune_suggest_workdir,
     prepare_workdir,
@@ -413,3 +414,45 @@ def test_tmeld_pane_paths_multi_unit_keeps_folder_compare(tmp_path):
     left, right = tmeld_pane_paths(tmp_path, meta)
     assert Path(left) == installed
     assert Path(right) == default
+
+
+def test_apply_changes_runs_daemon_reload(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    (work / "installed").mkdir(parents=True)
+    unit = work / "installed" / "consensus.service"
+    unit.write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+    dest = tmp_path / "etc" / "consensus.service"
+    dest.parent.mkdir()
+    dest.write_text("[Service]\nExecStart=/bin/old\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "manage.config_compare._load_meta",
+        lambda _w: {
+            "system_paths": {"consensus": str(dest)},
+            "pre_hashes": {"consensus": "oldhash"},
+        },
+    )
+    monkeypatch.setattr("manage.config_compare.list_changed", lambda _w: ["consensus"])
+    monkeypatch.setattr("manage.config_compare.unit_exists", lambda _p: True)
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(list(args))
+
+        class _Result:
+            returncode = 0
+
+        return _Result()
+
+    monkeypatch.setattr("manage.config_compare.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "manage.config_compare.write_service_file",
+        lambda content, dest_path, temp_filename="": Path(dest_path).write_text(
+            content, encoding="utf-8"
+        ),
+    )
+
+    applied = apply_changes(work, backup=True)
+    assert applied == ["consensus"]
+    assert any(args[:3] == ["sudo", "systemctl", "daemon-reload"] for args in calls)
