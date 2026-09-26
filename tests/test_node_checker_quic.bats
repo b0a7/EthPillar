@@ -306,19 +306,75 @@ check_inbound_quic_probe_capture() {
 	[ "$(node_checker_resolve_public_ipv4)" = "203.0.113.50" ]
 }
 
+@test "QUIC auto-install is on by default and 0 disables it" {
+	unset NODE_CHECKER_QUIC_AUTO_INSTALL
+	run node_checker_quic_auto_install_enabled
+	[ "$status" -eq 0 ]
+	NODE_CHECKER_QUIC_AUTO_INSTALL=0
+	run node_checker_quic_auto_install_enabled
+	[ "$status" -eq 1 ]
+}
+
+@test "check_inbound_quic_probe auto-installs aioquic once then PASSes" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	NODE_CHECKER_QUIC_AUTO_INSTALL=1
+	_quic_py_ready=0
+	node_checker_quic_python() {
+		if [[ "${_quic_py_ready}" -eq 1 ]]; then
+			echo "/mock/python"
+			return 0
+		fi
+		return 1
+	}
+	maybe_install_quic_probe_deps() {
+		_quic_py_ready=1
+		return 0
+	}
+	invoke_quic_inbound_probe() {
+		echo '{"ok":true,"reason":"server_versions","host":"203.0.113.50","port":9001,"server_versions":["0x1"],"alpn":["libp2p"]}'
+	}
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Installing aioquic once"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *".venv-quic"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 203.0.113.50:9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"probe tools missing"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 0 ]
+}
+
 @test "check_inbound_quic_probe WARNs when aioquic is missing and does not FAIL" {
 	write_consensus Lighthouse
 	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	NODE_CHECKER_QUIC_AUTO_INSTALL=0
+	node_checker_quic_python() { return 1; }
+
+	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"probe tools missing"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Not a FAIL"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *".venv-quic"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"NODE_CHECKER_QUIC_AUTO_INSTALL=0"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"quicmap"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"Installing aioquic once"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:"* ]]
+	[ "$failed_checks" -eq 0 ]
+	[ "$warning_checks" -eq 1 ]
+}
+
+@test "check_inbound_quic_probe WARNs when auto-install fails and does not FAIL" {
+	write_consensus Lighthouse
+	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
+	NODE_CHECKER_QUIC_AUTO_INSTALL=1
 	node_checker_quic_python() { return 1; }
 	maybe_install_quic_probe_deps() { return 1; }
 
 	check_inbound_quic_probe_capture
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Installing aioquic once"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"probe tools missing"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"optional install"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *".venv-quic"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"quicmap"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"enr:"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$warning_checks" -eq 1 ]
 }

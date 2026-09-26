@@ -154,8 +154,8 @@ Usage: run.sh [--troubleshoot] [--debug]
 The Plugins menu has no flags. Default path auto-prints the same troubleshoot
 guidance when inbound looks broken (UFW, TCP checker, QUIC probe, zero inbound,
 missing QUIC). Local listen (ss/UFW) is not the same as inbound reachability.
-Active QUIC needs the optional aioquic venv; missing tools WARN, they do not FAIL.
-ENR is debug-only.
+First QUIC probe auto-installs aioquic into .venv-quic (NODE_CHECKER_QUIC_AUTO_INSTALL=0 to skip).
+Missing tools after that WARN, they do not FAIL. ENR is debug-only.
 EOF
 }
 

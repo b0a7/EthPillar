@@ -12,8 +12,9 @@ and tqdm UI, and emits JSON for node-checker.
 
 eth-docker `port-check` (Apache-2.0) prints a throwaway Docker one-liner that
 pip-installs aioquic/cryptography/tqdm and curls quicmap.py. EthPillar is
-systemd/bare-metal: the same handshake is optional (side venv / download) so
-aioquic is not a default install dependency.
+systemd/bare-metal: node-checker auto-creates a side .venv-quic on first probe
+so aioquic is not a default install dependency. Set NODE_CHECKER_QUIC_AUTO_INSTALL=0
+to skip that one-time pip.
 
 A copy of the Apache License 2.0 is at:
   https://www.apache.org/licenses/LICENSE-2.0

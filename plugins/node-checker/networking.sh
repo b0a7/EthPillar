@@ -40,7 +40,8 @@ NODE_CHECKER_PUBLIC_IPV4="${NODE_CHECKER_PUBLIC_IPV4:-}"
 NODE_CHECKER_QUIC_VENV="${NODE_CHECKER_QUIC_VENV:-}"
 NODE_CHECKER_QUIC_PYTHON="${NODE_CHECKER_QUIC_PYTHON:-}"
 NODE_CHECKER_QUIC_TIMEOUT="${NODE_CHECKER_QUIC_TIMEOUT:-5}"
-NODE_CHECKER_QUIC_AUTO_INSTALL="${NODE_CHECKER_QUIC_AUTO_INSTALL:-0}"
+# Default on so Plugins → node-checker just works. Set 0 to skip the one-time pip.
+NODE_CHECKER_QUIC_AUTO_INSTALL="${NODE_CHECKER_QUIC_AUTO_INSTALL:-1}"
 
 # Request the troubleshoot block for the menu/default path. Never enables ENR.
 node_checker_request_troubleshoot() {
@@ -453,7 +454,7 @@ print_port_troubleshoot_guidance() {
     echo "  The consensus layer needs UDP for transport. A TCP-only forward will not do."
     echo "  No website can test a UDP port — checkers that offer a green result only speak TCP."
     echo "  A green TCP result for ${cl_p2p} or ${el_p2p} proves nothing about QUIC ${cl_quic}/udp."
-    echo "  Node-checker can actively probe QUIC (quicmap-style aioquic handshake) when the optional venv is installed."
+    echo "  Node-checker auto-installs aioquic into .venv-quic on first probe (NODE_CHECKER_QUIC_AUTO_INSTALL=0 to skip)."
     echo "  Peer-direction inbound QUIC is complementary — it is not a replacement for the active probe."
     echo "  If your public IPv4 is CGNAT (100.64.0.0/10), no IPv4 port-forward can work; use IPv6 or ask the ISP for a public IPv4."
     echo "  UFW (when active) should allow ${cl_p2p}/tcp, ${cl_p2p}/udp, ${cl_quic}/udp, ${el_p2p}/tcp, ${el_p2p}/udp."
@@ -661,20 +662,24 @@ node_checker_quic_python() {
     return 1
 }
 
+node_checker_quic_auto_install_enabled() {
+    [[ "${NODE_CHECKER_QUIC_AUTO_INSTALL:-1}" != "0" ]]
+}
+
 quic_probe_install_hint() {
     local root venv req
     root="$(node_checker_quic_root)"
     venv="$(node_checker_quic_default_venv)"
     req="${root}/plugins/node-checker/requirements-quic.txt"
-    echo "  Optional one-time setup (aioquic is not part of the default EthPillar venv):"
+    echo "  Node-checker auto-creates \"${venv}\" and pip-installs aioquic on first probe."
     echo "    python3 -m venv \"${venv}\""
     echo "    \"${venv}/bin/pip\" install -r \"${req}\""
-    echo "  Or rerun with NODE_CHECKER_QUIC_AUTO_INSTALL=1. Adapted from https://github.com/bojanisc/quicmap (Apache-2.0)."
+    echo "  To skip auto-install: NODE_CHECKER_QUIC_AUTO_INSTALL=0. Adapted from https://github.com/bojanisc/quicmap (Apache-2.0)."
 }
 
-# Best-effort optional venv. Never used unless NODE_CHECKER_QUIC_AUTO_INSTALL=1.
+# One-time side venv. Default on; NODE_CHECKER_QUIC_AUTO_INSTALL=0 disables.
 maybe_install_quic_probe_deps() {
-    [[ "${NODE_CHECKER_QUIC_AUTO_INSTALL:-0}" -eq 1 ]] || return 1
+    node_checker_quic_auto_install_enabled || return 1
     local venv req
     venv="$(node_checker_quic_default_venv)"
     req="$(node_checker_quic_root)/plugins/node-checker/requirements-quic.txt"
@@ -758,11 +763,14 @@ check_inbound_quic_probe() {
     fi
 
     if ! node_checker_quic_python >/dev/null 2>&1; then
-        maybe_install_quic_probe_deps || true
+        if node_checker_quic_auto_install_enabled; then
+            print_check_result "INFO" "Installing aioquic once into $(node_checker_quic_default_venv) (not the default EthPillar venv)."
+            maybe_install_quic_probe_deps || true
+        fi
     fi
     if ! node_checker_quic_python >/dev/null 2>&1; then
         total_checks=$((total_checks + 1))
-        print_check_result "WARN" "Inbound QUIC probe tools missing (aioquic). Not a FAIL — optional install:"
+        print_check_result "WARN" "Inbound QUIC probe tools missing (aioquic). Not a FAIL — install:"
         quic_probe_install_hint
         warning_checks=$((warning_checks + 1))
         return 0
@@ -779,7 +787,7 @@ check_inbound_quic_probe() {
     reason="$(jq -r '.reason // empty' <<< "$json" 2>/dev/null || true)"
     if [[ "$reason" == "aioquic_missing" ]]; then
         total_checks=$((total_checks + 1))
-        print_check_result "WARN" "Inbound QUIC probe tools missing (aioquic). Not a FAIL — optional install:"
+        print_check_result "WARN" "Inbound QUIC probe tools missing (aioquic). Not a FAIL — install:"
         quic_probe_install_hint
         warning_checks=$((warning_checks + 1))
         return 0
