@@ -938,9 +938,14 @@ startValidatorStackAfterUpdate(){
     test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
 }
 
-# Ensure Charon is up before starting the VC (key import / loadKeys).
+# Ensure Charon is up before starting the VC (key import / loadKeys): the VC
+# talks to the beacon node through Charon's validator API. `start` starts a
+# stopped Charon and is a no-op when it is already running; key imports only
+# change the VC datadir, so a running Charon needs no restart.
 ensureCharonBeforeValidator(){
-    isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || sudo systemctl start charon 2>/dev/null || true
+    if isCharonEnabled; then
+        sudo systemctl start charon 2>/dev/null || true
+    fi
 }
 
 # Reload systemd units after .env.overrides edits (Charon + core stack).
@@ -1810,16 +1815,38 @@ Key shares were found under validator_keys.
 Also import them into ${vc_label} now?
 
 (You can re-run later via Validator → ${OBOL_IMPORT_KEY_SHARES})" 14 70; then
-            runImportCharonKeySharesYes
+            # Stop Charon so the new cluster never runs next to the VC's old key
+            # shares; the import stops the VC, then starts Charon → VC.
+            isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+            if ! runImportCharonKeySharesYes; then
+                # Import failed: the VC stays stopped (old shares), but bring
+                # Charon back up on the new cluster.
+                ensureCharonBeforeValidator
+                whiptail --title "Import .charon cluster folder" --msgbox \
+"Key share import failed. Charon is running with the new cluster;
+the validator client is stopped.
+
+Fix the error above, then run:
+  Validator → ${OBOL_IMPORT_KEY_SHARES}" 13 70
+                return 1
+            fi
             return
         fi
     fi
 
+    # Charon reads the cluster files only at startup: reload a running Charon
+    # (a stopped one stays stopped). The VC keeps its current key shares until
+    # the user imports the new ones.
+    local charon_next="Start Charon (this menu → Start Charon)"
+    if systemctl is-active --quiet charon 2>/dev/null; then
+        sudo systemctl restart charon 2>/dev/null || true
+        charon_next="Charon was restarted with the new cluster"
+    fi
     whiptail --title "Import .charon cluster folder" --msgbox \
 "Copied .charon into ${DEST}.
 
 Next:
-  1. Start Charon (this menu → Start Charon)
+  1. ${charon_next}
   2. Validator → ${OBOL_IMPORT_KEY_SHARES} (if not imported yet)" 14 70
 }
 
