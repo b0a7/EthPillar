@@ -40,9 +40,11 @@ setup() {
 	NODE_CHECKER_QUIC_AUTO_INSTALL=0
 	unset TEKU_QUIC_IPV6_PORT || true
 	unset NODE_CHECKER_EL_PEER_COUNT || true
+	MOCK_EL_PID=""
 }
 
 teardown() {
+	stop_mock_el_peer_count
 	rm -rf "$TEST_DIR"
 }
 
@@ -310,6 +312,50 @@ check_open_ports_capture() {
 
 # ── check_peer_count (mocked Beacon / EL APIs) ────────────────────────────────
 
+# Live JSON-RPC on :8545 returning a count the bats stubs never use (99 / 0x63).
+# If isolation is broken, check_peer_count prints 99 instead of the stub.
+start_mock_el_peer_count() {
+	local hex="${1:-0x63}"
+	MOCK_EL_HEX="$hex" python3 -c '
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+HEX = os.environ["MOCK_EL_HEX"]
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n:
+            self.rfile.read(n)
+        body = ("{\"jsonrpc\":\"2.0\",\"result\":\"%s\",\"id\":1}" % HEX).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *args):
+        pass
+HTTPServer(("127.0.0.1", 8545), H).serve_forever()
+' &
+	MOCK_EL_PID=$!
+	local i
+	for i in $(seq 1 30); do
+		if curl -sf -m 1 -X POST -H "Content-Type: application/json" \
+			--data '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' \
+			http://127.0.0.1:8545 >/dev/null; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
+stop_mock_el_peer_count() {
+	if [[ -n "${MOCK_EL_PID:-}" ]]; then
+		kill "$MOCK_EL_PID" 2>/dev/null || true
+		wait "$MOCK_EL_PID" 2>/dev/null || true
+		MOCK_EL_PID=""
+	fi
+}
+
 check_peer_count_capture() {
 	check_peer_count > "$TEST_DIR/peers.out" 2>&1
 	cat "$TEST_DIR/peers.out"
@@ -440,6 +486,46 @@ stub_healthy_node_apis() {
 	fetch_el_rpc() { echo '{"jsonrpc":"2.0","result":"0x5","id":1}'; }
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 5"* ]]
+	[ "$failed_checks" -eq 0 ]
+}
+
+@test "unstubbed EL peer count reads a live mock on :8545 (99, not the bats stub)" {
+	start_mock_el_peer_count 0x63
+	write_consensus Lighthouse
+	fetch_cl_api() {
+		case "$1" in
+			*identity*) sample_identity_json ;;
+			*peers*) sample_peers_json ;;
+			*peer_count*) echo '{"data":{"connected":"4"}}' ;;
+			*) echo '{}' ;;
+		esac
+	}
+	unset NODE_CHECKER_EL_PEER_COUNT || true
+	[ "$(node_checker_el_connected_peers)" -eq 99 ]
+	check_peer_count_capture
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 99"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"Execution layer connected peers: 5"* ]]
+}
+
+@test "NODE_CHECKER_EL_PEER_COUNT and fetch_el_rpc stub ignore live mock EL on :8545" {
+	start_mock_el_peer_count 0x63
+	unset NODE_CHECKER_EL_PEER_COUNT || true
+	[ "$(node_checker_el_connected_peers)" -eq 99 ]
+	stub_healthy_node_apis
+	check_peer_count_capture
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 5"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"Execution layer connected peers: 99"* ]]
+	[ "$failed_checks" -eq 0 ]
+	unset NODE_CHECKER_EL_PEER_COUNT || true
+	fetch_el_rpc() { echo '{"jsonrpc":"2.0","result":"0x5","id":1}'; }
+	total_checks=0
+	failed_checks=0
+	warning_checks=0
+	NODE_CHECKER_AUTO_TROUBLESHOOT=0
+	NODE_CHECKER_TROUBLESHOOT_PRINTED=0
+	check_peer_count_capture
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 5"* ]]
+	[[ "$(cat "$TEST_DIR/peers.out")" != *"Execution layer connected peers: 99"* ]]
 	[ "$failed_checks" -eq 0 ]
 }
 
