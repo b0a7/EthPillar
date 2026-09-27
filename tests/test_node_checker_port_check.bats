@@ -39,6 +39,7 @@ setup() {
 	NODE_CHECKER_PUBLIC_IPV4=""
 	NODE_CHECKER_QUIC_AUTO_INSTALL=0
 	unset TEKU_QUIC_IPV6_PORT || true
+	unset NODE_CHECKER_EL_PEER_COUNT || true
 }
 
 teardown() {
@@ -143,6 +144,14 @@ EOF
 	[ "$(inbound_status_kind 3)" = "working" ]
 	[ "$(inbound_status_kind 0)" = "not-working" ]
 	[ "$(inbound_status_kind '?')" = "unknown" ]
+}
+
+@test "node_checker_parse_jsonrpc_quantity converts hex and decimal" {
+	[ "$(node_checker_parse_jsonrpc_quantity 0x5)" -eq 5 ]
+	[ "$(node_checker_parse_jsonrpc_quantity 0x23)" -eq 35 ]
+	[ "$(node_checker_parse_jsonrpc_quantity 0x0)" -eq 0 ]
+	[ "$(node_checker_parse_jsonrpc_quantity 7)" -eq 7 ]
+	[ "$(node_checker_parse_jsonrpc_quantity '')" -eq 0 ]
 }
 
 # ── peer JSON ─────────────────────────────────────────────────────────────────
@@ -317,6 +326,7 @@ stub_healthy_node_apis() {
 			*) echo '{}' ;;
 		esac
 	}
+	NODE_CHECKER_EL_PEER_COUNT=5
 	fetch_el_rpc() { echo '{"jsonrpc":"2.0","result":"0x5","id":1}'; }
 }
 
@@ -346,6 +356,7 @@ stub_healthy_node_apis() {
 			*) echo '{}' ;;
 		esac
 	}
+	NODE_CHECKER_EL_PEER_COUNT=2
 	fetch_el_rpc() { echo '{"result":"0x2"}'; }
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"No inbound CL peers"* ]]
@@ -366,6 +377,7 @@ stub_healthy_node_apis() {
 			*) echo '{}' ;;
 		esac
 	}
+	NODE_CHECKER_EL_PEER_COUNT=0
 	fetch_el_rpc() { echo '{"result":"0x0"}'; }
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Consensus client has no peers"* ]]
@@ -385,6 +397,7 @@ stub_healthy_node_apis() {
 			*) echo '{}' ;;
 		esac
 	}
+	NODE_CHECKER_EL_PEER_COUNT=3
 	fetch_el_rpc() { echo '{"result":"0x3"}'; }
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound working"* ]]
@@ -404,8 +417,35 @@ stub_healthy_node_apis() {
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Inbound firewall, NAT, and port-forward tips"* ]]
 }
 
+@test "check_peer_count uses NODE_CHECKER_EL_PEER_COUNT instead of fetch_el_rpc" {
+	write_consensus Lighthouse
+	fetch_cl_api() {
+		case "$1" in
+			*identity*) sample_identity_json ;;
+			*peers*) sample_peers_json ;;
+			*peer_count*) echo '{"data":{"connected":"4"}}' ;;
+			*) echo '{}' ;;
+		esac
+	}
+	fetch_el_rpc() { echo '{"result":"0x0"}'; }
+	NODE_CHECKER_EL_PEER_COUNT=5
+	check_peer_count_capture
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 5"* ]]
+	[ "$failed_checks" -eq 0 ]
+}
+
+@test "check_peer_count hex stub 0x5 is 5 without NODE_CHECKER_EL_PEER_COUNT (gawk-safe)" {
+	stub_healthy_node_apis
+	unset NODE_CHECKER_EL_PEER_COUNT || true
+	fetch_el_rpc() { echo '{"jsonrpc":"2.0","result":"0x5","id":1}'; }
+	check_peer_count_capture
+	[[ "$(cat "$TEST_DIR/peers.out")" == *"Execution layer connected peers: 5"* ]]
+	[ "$failed_checks" -eq 0 ]
+}
+
 @test "check_peer_count FAILs when Beacon peers API is unreachable" {
 	fetch_cl_api() { echo ''; }
+	NODE_CHECKER_EL_PEER_COUNT=1
 	fetch_el_rpc() { echo '{"result":"0x1"}'; }
 	check_peer_count_capture
 	[[ "$(cat "$TEST_DIR/peers.out")" == *"Unable to list consensus peers"* ]]

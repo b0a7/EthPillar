@@ -44,6 +44,8 @@ NODE_CHECKER_QUIC_PYTHON="${NODE_CHECKER_QUIC_PYTHON:-}"
 NODE_CHECKER_QUIC_TIMEOUT="${NODE_CHECKER_QUIC_TIMEOUT:-5}"
 # Default on so Plugins → node-checker just works. Set 0 to skip the one-time pip.
 NODE_CHECKER_QUIC_AUTO_INSTALL="${NODE_CHECKER_QUIC_AUTO_INSTALL:-1}"
+# Bats / dry-run: skip live JSON-RPC and use this connected-peer count (decimal or 0x).
+NODE_CHECKER_EL_PEER_COUNT="${NODE_CHECKER_EL_PEER_COUNT:-}"
 
 # Request the troubleshoot block for the menu/default path. Never enables ENR.
 node_checker_request_troubleshoot() {
@@ -417,6 +419,41 @@ fetch_el_rpc() {
     node_checker_http_get -X POST -H "Content-Type: application/json" \
         --data "{\"jsonrpc\":\"2.0\",\"method\":\"${method}\",\"params\":[],\"id\":1}" \
         "${EL_RPC_ENDPOINT}"
+}
+
+# JSON-RPC quantities are hex strings (net_peerCount → "0x5"). Do not pipe
+# through awk '%d': GNU awk treats "0x5" as 0 unless --posix, so a stubbed or
+# live hex result becomes "Execution layer connected peers: 0".
+node_checker_parse_jsonrpc_quantity() {
+    local raw="${1:-}"
+    raw="${raw#"${raw%%[![:space:]]*}"}"
+    raw="${raw%"${raw##*[![:space:]]}"}"
+    raw="${raw//$'\r'/}"
+    if [[ -z "$raw" || "$raw" == "null" ]]; then
+        echo 0
+        return 0
+    fi
+    if [[ "$raw" =~ ^0[xX]([0-9a-fA-F]+)$ ]]; then
+        echo "$((16#${BASH_REMATCH[1]}))"
+        return 0
+    fi
+    if [[ "$raw" =~ ^[0-9]+$ ]]; then
+        printf '%d\n' "$raw"
+        return 0
+    fi
+    echo 0
+}
+
+# Overridable in bats via NODE_CHECKER_EL_PEER_COUNT (no live :8545).
+node_checker_el_connected_peers() {
+    local json raw
+    if [[ -n "${NODE_CHECKER_EL_PEER_COUNT:-}" ]]; then
+        node_checker_parse_jsonrpc_quantity "$NODE_CHECKER_EL_PEER_COUNT"
+        return 0
+    fi
+    json="$(fetch_el_rpc net_peerCount)"
+    raw="$(jq -r '.result // empty' <<< "$json" 2>/dev/null || true)"
+    node_checker_parse_jsonrpc_quantity "$raw"
 }
 
 fetch_tcp_port_checker() {
@@ -842,7 +879,7 @@ check_inbound_quic_probe() {
 }
 
 check_peer_count() {
-    local identity_json peers_json peer_count_json el_json
+    local identity_json peers_json peer_count_json
     local cl_connected el_connected
     local inbound outbound inbound_addrs outbound_addrs
     local in_json out_json peer_id disc first_ip kind quic_in=0
@@ -851,10 +888,9 @@ check_peer_count() {
     identity_json="$(fetch_cl_api /eth/v1/node/identity)"
     peers_json="$(fetch_cl_api /eth/v1/node/peers)"
     peer_count_json="$(fetch_cl_api /eth/v1/node/peer_count)"
-    el_json="$(fetch_el_rpc net_peerCount)"
 
     cl_connected="$(jq -r '.data.connected // empty' <<< "$peer_count_json" 2>/dev/null || true)"
-    el_connected="$(jq -r '.result // empty' <<< "$el_json" 2>/dev/null | awk '{printf "%d\n", $1}')"
+    el_connected="$(node_checker_el_connected_peers)"
 
     print_check_result "INFO" "Peer direction (Beacon API). Complementary to the active QUIC probe — inbound peers also prove the Internet can dial you."
 
