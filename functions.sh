@@ -1590,9 +1590,6 @@ Continue?" 12 70; then
 Check the terminal output for details." 10 70
         return 1
     fi
-    # Charon reads the cluster files only at startup: reload a running Charon
-    # (try-restart leaves a stopped one stopped).
-    isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || true
 
     # Same UX as CDVN migrate: offer key-share import when shares are on disk.
     if charonKeysharesPresent && [[ -f "$vc_svc" ]]; then
@@ -1607,16 +1604,38 @@ Key shares were found under validator_keys.
 Also import them into ${vc_label} now?
 
 (You can re-run later via Validator → ${OBOL_IMPORT_KEY_SHARES})" 14 70; then
-            runImportCharonKeySharesYes
+            # Stop Charon so the new cluster never runs next to the VC's old key
+            # shares; the import stops the VC, then starts Charon → VC.
+            isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+            if ! runImportCharonKeySharesYes; then
+                # Import failed: the VC stays stopped (old shares), but bring
+                # Charon back up on the new cluster.
+                ensureCharonBeforeValidator
+                whiptail --title "Import .charon cluster folder" --msgbox \
+"Key share import failed. Charon is running with the new cluster;
+the validator client is stopped.
+
+Fix the error above, then run:
+  Validator → ${OBOL_IMPORT_KEY_SHARES}" 13 70
+                return 1
+            fi
             return
         fi
     fi
 
+    # Charon reads the cluster files only at startup: reload a running Charon
+    # (a stopped one stays stopped). The VC keeps its current key shares until
+    # the user imports the new ones.
+    local charon_next="Start Charon (this menu → Start Charon)"
+    if systemctl is-active --quiet charon 2>/dev/null; then
+        sudo systemctl restart charon 2>/dev/null || true
+        charon_next="Charon was restarted with the new cluster"
+    fi
     whiptail --title "Import .charon cluster folder" --msgbox \
 "Copied .charon into ${DEST}.
 
 Next:
-  1. Start Charon (this menu → Start Charon)
+  1. ${charon_next}
   2. Validator → ${OBOL_IMPORT_KEY_SHARES} (if not imported yet)" 14 70
 }
 

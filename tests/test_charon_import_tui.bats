@@ -82,6 +82,14 @@ EOF
   ohai() { :; }
   export -f ohai
 
+  # Unprivileged `systemctl is-active` (no sudo); CHARON_ACTIVE=1 → running.
+  export CHARON_ACTIVE=0
+  systemctl() {
+    echo "systemctl $*" >> "$COMMAND_LOG"
+    [[ "$*" == *"is-active"* ]] && [[ "${CHARON_ACTIVE}" -eq 1 ]]
+  }
+  export -f systemctl
+
   getClientVC() { VC="Lodestar"; }
   export -f getClientVC
   getValidatorClient() { VALIDATOR_CLIENT="Lodestar"; }
@@ -99,8 +107,10 @@ EOF
   }
   export -f runCopyCharonCluster
 
+  export IMPORT_KEYSHARES_RC=0
   runImportCharonKeySharesYes() {
     echo "runImportCharonKeySharesYes" >> "$COMMAND_LOG"
+    return "${IMPORT_KEYSHARES_RC}"
   }
   export -f runImportCharonKeySharesYes
 
@@ -171,8 +181,38 @@ teardown() {
   grep -q "runCopyCharonCluster" "$COMMAND_LOG"
   grep -q "runImportCharonKeySharesYes" "$COMMAND_LOG"
   grep -q "Also import them into" "$WHIPTAIL_LOG"
+  # Charon is stopped before the key-share import (which starts Charon → VC),
+  # so the new cluster never runs alongside the VC's old key shares.
+  local stop_line import_line
+  stop_line=$(grep -n "sudo systemctl stop charon" "$COMMAND_LOG" | cut -d: -f1)
+  import_line=$(grep -n "runImportCharonKeySharesYes" "$COMMAND_LOG" | cut -d: -f1)
+  [ -n "$stop_line" ] && [ "$stop_line" -lt "$import_line" ]
+  ! grep -q "restart charon" "$COMMAND_LOG"
+}
+
+@test "importCharonClusterFolder starts Charon again when key import fails" {
+  printf '0\n0\n' > "$WHIPTAIL_YESNO_FILE"  # confirm copy, yes import keys
+  IMPORT_KEYSHARES_RC=1
+  run importCharonClusterFolder
+  [ "$status" -ne 0 ]
+  local import_line start_line
+  import_line=$(grep -n "runImportCharonKeySharesYes" "$COMMAND_LOG" | cut -d: -f1)
+  start_line=$(grep -n "sudo systemctl start charon" "$COMMAND_LOG" | cut -d: -f1)
+  [ -n "$start_line" ] && [ "$start_line" -gt "$import_line" ]
+  ! grep -q "start validator" "$COMMAND_LOG"
+  grep -q "Key share import failed" "$WHIPTAIL_LOG"
+}
+
+@test "importCharonClusterFolder restarts Charon when key import is declined" {
+  printf '0\n1\n' > "$WHIPTAIL_YESNO_FILE"  # confirm copy, decline key import
+  CHARON_ACTIVE=1
+  run importCharonClusterFolder
+  [ "$status" -eq 0 ]
   # Charon only reads cluster files at startup: reload it if running.
-  grep -q "systemctl try-restart charon" "$COMMAND_LOG"
+  grep -q "sudo systemctl restart charon" "$COMMAND_LOG"
+  ! grep -q "systemctl stop charon" "$COMMAND_LOG"
+  grep -q "Charon was restarted with the new cluster" "$WHIPTAIL_LOG"
+  ! grep -q "Start Charon" "$WHIPTAIL_LOG"
 }
 
 @test "importCharonClusterFolder accepts parent path containing .charon" {
@@ -182,6 +222,8 @@ teardown() {
   [ "$status" -eq 0 ]
   [ -f "$CHARON_CLUSTER_DIR/cluster-lock.json" ]
   ! grep -q "runImportCharonKeySharesYes" "$COMMAND_LOG"
+  # A stopped Charon stays stopped; the user is told to start it.
+  ! grep -q "restart charon" "$COMMAND_LOG"
   grep -q "Start Charon" "$WHIPTAIL_LOG"
 }
 
@@ -189,11 +231,13 @@ teardown() {
   rm -f "$VALIDATOR_SERVICE_FILE"
   export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
   printf '0\n' > "$WHIPTAIL_YESNO_FILE"
+  CHARON_ACTIVE=1
   run importCharonClusterFolder
   [ "$status" -eq 0 ]
   [ -f "$CHARON_CLUSTER_DIR/cluster-lock.json" ]
   ! grep -q "Also import them into" "$WHIPTAIL_LOG"
   ! grep -q "runImportCharonKeySharesYes" "$COMMAND_LOG"
+  grep -q "sudo systemctl restart charon" "$COMMAND_LOG"
 }
 
 @test "importCharonClusterFolder fails when cluster-lock.json missing" {
@@ -210,7 +254,7 @@ teardown() {
   run importCharonClusterFolder
   [ "$status" -ne 0 ]
   grep -q "Failed to copy" "$WHIPTAIL_LOG"
-  ! grep -q "try-restart charon" "$COMMAND_LOG"
+  ! grep -q "restart charon" "$COMMAND_LOG"
   ! grep -q "runImportCharonKeySharesYes" "$COMMAND_LOG"
 }
 
