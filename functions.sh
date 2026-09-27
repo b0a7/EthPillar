@@ -938,12 +938,13 @@ startValidatorStackAfterUpdate(){
     test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
 }
 
-# Ensure Charon is up before starting the VC (key import / loadKeys).
-# restart (not try-restart): also starts a stopped Charon, since the VC talks
-# to the beacon node through Charon's validator API.
+# Ensure Charon is up before starting the VC (key import / loadKeys): the VC
+# talks to the beacon node through Charon's validator API. `start` starts a
+# stopped Charon and is a no-op when it is already running; key imports only
+# change the VC datadir, so a running Charon needs no restart.
 ensureCharonBeforeValidator(){
     if isCharonEnabled; then
-        sudo systemctl restart charon 2>/dev/null || true
+        sudo systemctl start charon 2>/dev/null || true
     fi
 }
 
@@ -1589,6 +1590,9 @@ Continue?" 12 70; then
 Check the terminal output for details." 10 70
         return 1
     fi
+    # Charon reads the cluster files only at startup: reload a running Charon
+    # (try-restart leaves a stopped one stopped).
+    isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || true
 
     # Same UX as CDVN migrate: offer key-share import when shares are on disk.
     if charonKeysharesPresent && [[ -f "$vc_svc" ]]; then

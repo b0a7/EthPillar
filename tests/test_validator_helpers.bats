@@ -307,13 +307,14 @@ EOF
   [ "$status" -eq 0 ]
 }
 
-@test "ensureCharonBeforeValidator (re)starts Charon when installed" {
+@test "ensureCharonBeforeValidator starts Charon when installed" {
   write_charon_service
   ensureCharonBeforeValidator
   run cat "$COMMAND_LOG"
-  # restart, not try-restart: try-restart is a no-op for a stopped unit.
-  [[ "$output" == *"sudo systemctl restart charon"* ]]
-  [[ "$output" != *"try-restart"* ]]
+  # start: starts a stopped Charon, no-op (no bounce) when already running.
+  # try-restart would leave a stopped Charon stopped.
+  [[ "$output" == *"sudo systemctl start charon"* ]]
+  [[ "$output" != *"restart"* ]]
 }
 
 @test "ensureCharonBeforeValidator does nothing without Charon" {

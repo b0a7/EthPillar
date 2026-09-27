@@ -171,6 +171,8 @@ teardown() {
   grep -q "runCopyCharonCluster" "$COMMAND_LOG"
   grep -q "runImportCharonKeySharesYes" "$COMMAND_LOG"
   grep -q "Also import them into" "$WHIPTAIL_LOG"
+  # Charon only reads cluster files at startup: reload it if running.
+  grep -q "systemctl try-restart charon" "$COMMAND_LOG"
 }
 
 @test "importCharonClusterFolder accepts parent path containing .charon" {
@@ -208,6 +210,7 @@ teardown() {
   run importCharonClusterFolder
   [ "$status" -ne 0 ]
   grep -q "Failed to copy" "$WHIPTAIL_LOG"
+  ! grep -q "try-restart charon" "$COMMAND_LOG"
   ! grep -q "runImportCharonKeySharesYes" "$COMMAND_LOG"
 }
 
