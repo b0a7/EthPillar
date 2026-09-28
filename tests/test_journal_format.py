@@ -1,16 +1,28 @@
-"""Tests for the journald log line formatter."""
+"""Tests for the journald log line formatter.
 
+Loaded by file path. ``logging/`` is not a Python package, so
+``import logging.journal_format`` would look in the stdlib.
+"""
+
+import importlib.util
 import json
 from datetime import datetime
+from pathlib import Path
 
-from manage.journal_format import (
-    LABEL_WIDTH,
-    ClientNames,
-    format_client_id,
-    format_entry_lines,
-    format_realtime_timestamp,
-    strip_client_timestamp,
+_SPEC = importlib.util.spec_from_file_location(
+    "ethpillar_journal_format",
+    Path(__file__).resolve().parents[1] / "logging" / "journal_format.py",
 )
+assert _SPEC is not None and _SPEC.loader is not None
+journal_format = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(journal_format)
+
+LABEL_WIDTH = journal_format.LABEL_WIDTH
+ClientNames = journal_format.ClientNames
+format_client_id = journal_format.format_client_id
+format_entry_lines = journal_format.format_entry_lines
+format_realtime_timestamp = journal_format.format_realtime_timestamp
+strip_client_timestamp = journal_format.strip_client_timestamp
 
 
 def test_format_realtime_timestamp_is_local_with_milliseconds():
@@ -201,7 +213,7 @@ def test_format_entry_decodes_byte_array_message(tmp_path):
 
 
 def test_main_reads_json_lines(tmp_path, capsys):
-    from manage.journal_format import main
+    main = journal_format.main
 
     (tmp_path / "execution.service").write_text(
         "Description=Geth Execution Layer Client service for MAINNET\n",

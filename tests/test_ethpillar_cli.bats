@@ -371,7 +371,7 @@ cli_help_command_names() {
         /^show_rolling_consolidated_logs\(\)/ {flag=1}
         flag {print}
         flag && /^}/ {exit}
-    ' functions.sh > "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    ' logging/journal.sh > "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q '/opt/ethpillar/aztec' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'docker compose logs -f --tail=233' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f' "$MOCK_BIN_DIR/show_rolling_fn.txt"

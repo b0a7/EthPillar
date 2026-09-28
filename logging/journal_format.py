@@ -13,6 +13,9 @@ is left in place.
 
 Reads JSON objects from stdin, one per line, and writes formatted lines to
 stdout. Unbuffered when launched with ``python3 -u``.
+
+Run this file as a script (``logging/journal_format.py``). Do not import it as
+``logging.journal_format``: a ``logging`` package would shadow the stdlib.
 """
 
 from __future__ import annotations
