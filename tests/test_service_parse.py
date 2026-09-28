@@ -4,6 +4,7 @@ from manage.service_parse import (
     canonicalize_unit,
     get_flag_value,
     has_flag,
+    known_client_name,
     normalize_cli_args,
     parse_description_client,
     parse_description_network,
@@ -35,6 +36,16 @@ ExecStart=/usr/local/bin/lighthouse bn \\
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def test_known_client_name_maps_binary_and_prefix():
+    assert known_client_name("reth") == "Reth"
+    assert known_client_name("Reth") == "Reth"
+    assert known_client_name("nimbus_beacon_node") == "Nimbus"
+    assert known_client_name("mev-boost") == "MEV-Boost"
+    assert known_client_name("Obol") == "Charon"
+    assert known_client_name("Ethereum") == ""
+    assert known_client_name("") == ""
 
 
 def test_parse_description_client_and_network():

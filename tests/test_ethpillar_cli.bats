@@ -360,7 +360,8 @@ cli_help_command_names() {
 @test "logs: dispatches to view_journal_logs, not view_logs.sh" {
     run ./ethpillar.sh logs
     [ "$status" -eq 0 ]
-    grep -q "journalctl -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
+    grep -q "journalctl -o json -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
+    grep -q "journal_format.py" "$COMMAND_LOG"
     ! grep -q "view_logs.sh" "$COMMAND_LOG"
     ! grep -q "tmux" "$COMMAND_LOG"
 }
@@ -384,8 +385,8 @@ cli_help_command_names() {
     [[ "$output" == *"Unknown target: leftover"* ]]
     [[ "$output" == *"Valid targets:"* ]]
     [[ "$output" == *"execution"* ]]
-    ! grep -q "journalctl -u leftover" "$COMMAND_LOG"
-    ! grep -q "journalctl -u validator -u consensus" "$COMMAND_LOG"
+    ! grep -q -- "-u leftover" "$COMMAND_LOG"
+    ! grep -q -- "-u validator -u consensus" "$COMMAND_LOG"
     ! grep -q "view_logs.sh" "$COMMAND_LOG"
 }
 
@@ -396,7 +397,7 @@ cli_help_command_names() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"not installed"* ]]
     [[ "$output" == *"consensus"* ]]
-    ! grep -q "journalctl -u consensus" "$COMMAND_LOG"
+    ! grep -q -- "-u consensus" "$COMMAND_LOG"
 }
 
 @test "logs: one installed unit follows only that unit" {
@@ -405,9 +406,9 @@ cli_help_command_names() {
 
     run ./ethpillar.sh logs execution
     [ "$status" -eq 0 ]
-    grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
-    ! grep -q "journalctl -u consensus" "$COMMAND_LOG"
-    ! grep -q "journalctl -u validator -u consensus -u execution" "$COMMAND_LOG"
+    grep -q "journalctl -o json -u execution --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q -- "-u consensus" "$COMMAND_LOG"
+    ! grep -q -- "-u validator -u consensus -u execution" "$COMMAND_LOG"
     ! grep -q "docker compose logs" "$COMMAND_LOG"
     ! grep -q "view_logs.sh" "$COMMAND_LOG"
 }
@@ -418,8 +419,8 @@ cli_help_command_names() {
 
     run ./ethpillar.sh logs charon validator
     [ "$status" -eq 0 ]
-    grep -q "journalctl -u charon -u validator --no-hostname -f" "$COMMAND_LOG"
-    ! grep -q "journalctl -u validator -u consensus -u execution" "$COMMAND_LOG"
+    grep -q "journalctl -o json -u charon -u validator --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q -- "-u validator -u consensus -u execution" "$COMMAND_LOG"
 }
 
 @test "logs: mixed-case names and duplicates resolve once" {
@@ -427,8 +428,8 @@ cli_help_command_names() {
 
     run ./ethpillar.sh logs Execution execution
     [ "$status" -eq 0 ]
-    grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
-    ! grep -q "journalctl -u execution -u execution" "$COMMAND_LOG"
+    grep -q "journalctl -o json -u execution --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q -- "-u execution -u execution" "$COMMAND_LOG"
 }
 
 @test "logs: csm_nimbusvalidator is a valid installed unit" {
@@ -436,7 +437,7 @@ cli_help_command_names() {
 
     run ./ethpillar.sh logs csm_nimbusvalidator
     [ "$status" -eq 0 ]
-    grep -q "journalctl -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
+    grep -q "journalctl -o json -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
 }
 
 @test "logs: unknown name after a valid unit does not start journalctl" {
@@ -445,7 +446,7 @@ cli_help_command_names() {
     run ./ethpillar.sh logs execution leftover
     [ "$status" -eq 1 ]
     [[ "$output" == *"Unknown target: leftover"* ]]
-    ! grep -q "journalctl -u execution --no-hostname -f" "$COMMAND_LOG"
+    ! grep -q "journalctl -o json -u execution --no-hostname -f" "$COMMAND_LOG"
 }
 
 @test "status: no clients installed exits 0" {

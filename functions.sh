@@ -3083,30 +3083,40 @@ journalctl_run() {
     sudo journalctl "$@"
 }
 
-# Build a journalctl … | ccze -A pipeline for tmux/log panes (sg when group is new).
+# Format one journalctl JSON record per line into the EthPillar log shape.
+# Stdlib only, so system python3 is enough (no venv).
+_journal_format_stream() {
+    python3 -u "${BASE_DIR}/manage/journal_format.py"
+}
+
+# Build a journalctl -o json | formatter | ccze pipeline for tmux/log panes.
 journalctl_ccze_pipeline() {
     local _args=("$@")
-    local _inner="journalctl"
-    local _a
+    local _inner="journalctl -o json"
+    local _a _fmt
     for _a in "${_args[@]}"; do
         _inner+=" $(printf '%q' "$_a")"
     done
+    _fmt="$(printf '%q -u %q' python3 "${BASE_DIR}/manage/journal_format.py")"
     if can_read_journal; then
-        printf '%s | ccze -A' "$_inner"
+        printf '%s | %s | ccze -A' "$_inner" "$_fmt"
     elif user_in_journal_group "$(whoami)"; then
-        printf 'sg systemd-journal -c %q | ccze -A' "$_inner"
+        printf 'sg systemd-journal -c %q | %s | ccze -A' "$_inner" "$_fmt"
     else
-        printf 'sudo %s | ccze -A' "$_inner"
+        printf 'sudo %s | %s | ccze -A' "$_inner" "$_fmt"
     fi
 }
 
 view_journal_logs() {
     # Parent ignores SIGINT so EthPillar survives Ctrl-C.
     # Child restores default so journalctl still stops.
-    export -f _journal_log_colorizer journalctl_run can_read_journal user_in_journal_group 2>/dev/null || true
+    # -o json is added here so every viewer (TUI, CLI, tmux panes) shares one
+    # formatter. export_logs calls journalctl_run directly and stays raw.
+    export BASE_DIR
+    export -f _journal_log_colorizer _journal_format_stream journalctl_run can_read_journal user_in_journal_group 2>/dev/null || true
     trap '' INT
 
-    bash -c 'trap - INT; journalctl_run "$@" | _journal_log_colorizer' _ "$@" || true
+    bash -c 'trap - INT; journalctl_run -o json "$@" | _journal_format_stream | _journal_log_colorizer' _ "$@" || true
 
     trap - INT
     return 0
