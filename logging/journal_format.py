@@ -65,20 +65,24 @@ TS_WIDTH = 23  # YYYY-MM-DD HH:MM:SS.mmm
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 _MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
+_TZ_SUFFIX = r"(?:Z|[+-]\d{2}:?\d{2})?"
 _ISO_TS = (
     r"\d{4}-\d{2}-\d{2}[T ]\d{2}[:\-]\d{2}[:\-]\d{2}"
     r"(?:\.\d+)?"
-    r"(?:Z|[+-]\d{2}:?\d{2})?"
+    + _TZ_SUFFIX
 )
 _MONTH_TS = (
     rf"(?:(?:{_MONTHS})[-\s]+\d{{1,2}}|\d{{1,2}}[-\s]+(?:{_MONTHS}))"
     rf"[-\s]+\d{{2}}:\d{{2}}:\d{{2}}(?:\.\d+)?"
 )
+# Geth/Erigon ``[09-27|21:53:01.105]``, Prysm ``[2026-09-27 21:53:01]``,
+# Grandine ``[2026-09-28T02:50:48.640Z]`` (timezone sits inside the brackets).
 _BRACKET_TS = (
     r"\["
     r"(?:"
     r"\d{4}-\d{2}-\d{2}[ T|]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
-    r"|"
+    + _TZ_SUFFIX
+    + r"|"
     r"\d{2}-\d{2}\|\d{2}:\d{2}:\d{2}(?:\.\d+)?"
     r")"
     r"\]"
@@ -100,7 +104,7 @@ _LEADING_TS = re.compile(
     re.IGNORECASE,
 )
 _STRUCT_TIME = re.compile(
-    r'(?:^|\s)(?:time="[^"]*"|ts=(?:"[^"]*"|\S+))(?=\s|$)'
+    r'(?:^|\s)(?:(?:time|ts)=(?:"[^"]*"|\S+))(?=\s|$)'
 )
 _STRUCT_KEY = re.compile(r"(?:^|\s)(?:time|ts)=")
 

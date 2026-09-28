@@ -112,6 +112,34 @@ def test_strip_client_timestamp_shapes():
             "INFO blockchain: Synced",
         ),
         (
+            "[2026-09-28T02:50:48.640Z]  INFO fork_choice_store::store:2954: synced",
+            "INFO fork_choice_store::store:2954: synced",
+        ),
+        (
+            "INFO[02-20|15:00:00.123] [4/8 Bodies] Downloading block bodies",
+            "INFO [4/8 Bodies] Downloading block bodies",
+        ),
+        (
+            "2026-09-27 21:53:01.123+00:00 | EthScheduler-Timer-0 | INFO  | BeaconChainController | Synced",
+            "EthScheduler-Timer-0 | INFO  | BeaconChainController | Synced",
+        ),
+        (
+            "2026-06-23T01:16:49.665989Z  INFO [METRIC] BLOCK 1",
+            "INFO [METRIC] BLOCK 1",
+        ),
+        (
+            'time=2026-09-28T02:50:48.640Z level=info msg="synced"',
+            'level=info msg="synced"',
+        ),
+        (
+            "WRN 2026-09-27 21:53:01.123+00:00 peer disconnected",
+            "WRN peer disconnected",
+        ),
+        (
+            "2026-09-27T21:53:01.123Z\tINFO\tcharon\tstarted",
+            "INFO\tcharon\tstarted",
+        ),
+        (
             'time="2026-09-27 21:53:01" level=info msg="Synced new block"',
             'level=info msg="Synced new block"',
         ),
