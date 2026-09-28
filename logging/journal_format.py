@@ -39,8 +39,13 @@ from manage.service_parse import (  # noqa: E402
     read_text_file,
 )
 
-LABEL_WIDTH = 22
+# Long enough for ``consensus [Lodestar]`` (20). Longer labels such as
+# ``consensus [Lighthouse]`` print in full and are not truncated.
+LABEL_WIDTH = 20
 TS_WIDTH = 23  # YYYY-MM-DD HH:MM:SS.mmm
+# CSI / SGR sequences. Reth dims its timestamp with these, which hides the
+# date from a start-of-line match. ccze recolors the plain text afterward.
+_ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 _MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
 _ISO_TS = (
@@ -72,7 +77,9 @@ _LEADING_TS = re.compile(
     rf"^(?:\[(?P<bracket_level>{_LEVEL})\]\s+"
     rf"|(?P<level>{_LEVEL})(?:\s+|(?=\[)))?"
     rf"(?P<ts>{_TS})"
-    rf"(?:\s*\|?\s*)",
+    # Trailing separator: whitespace, one Nethermind/Besu pipe, and Lodestar's
+    # empty ``[]`` scope that sits directly against the timestamp.
+    rf"(?:\s*\|?\s*)(?:\[\]\s*)?",
     re.IGNORECASE,
 )
 _STRUCT_TIME = re.compile(
@@ -178,10 +185,11 @@ def strip_client_timestamp(message: str) -> str:
     including when a short level word sits in front of it. Text after that
     first token is unchanged, so a time mentioned in the message body stays.
     """
-    rendered = _try_json_log(message)
+    plain = _ANSI_RE.sub("", message)
+    rendered = _try_json_log(plain)
     if rendered is not None:
         return rendered
-    normalized = message.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = plain.replace("\r\n", "\n").replace("\r", "\n")
     lines = normalized.split("\n")
     if not lines:
         return ""
@@ -267,7 +275,7 @@ def format_entry_lines(entry: dict, names: ClientNames) -> List[str]:
     label = format_client_id(unit, client)
     body = strip_client_timestamp(message_text(entry.get("MESSAGE")))
     lines = body.split("\n") if body else [""]
-    prefix = f"{ts}  {label}  "
+    prefix = f"{ts}  {label} "
     formatted = [prefix + lines[0]]
     if len(lines) > 1:
         indent = " " * len(prefix)

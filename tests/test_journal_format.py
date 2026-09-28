@@ -63,6 +63,14 @@ def test_strip_client_timestamp_shapes():
             "[CHAIN] info: Synced",
         ),
         (
+            "Sep-28 02:23:17.000[] info: Synced",
+            "info: Synced",
+        ),
+        (
+            "\x1b[2m2026-09-28T02:23:12.509235Z\x1b[0m  \x1b[32m INFO\x1b[0m hash=0x6f25",
+            "INFO hash=0x6f25",
+        ),
+        (
             "2026-09-27 21:53:02.011|Info|BlockTree|Imported",
             "Info|BlockTree|Imported",
         ),
@@ -134,7 +142,7 @@ def test_format_entry_uses_description_client_and_strips_geth_stamp(tmp_path):
     }
     line = format_entry_lines(entry, names)[0]
     ts = format_realtime_timestamp(entry["__REALTIME_TIMESTAMP"])
-    assert line == f"{ts}  {'execution [Reth]'.ljust(LABEL_WIDTH)}  INFO Imported block"
+    assert line == f"{ts}  {'execution [Reth]'.ljust(LABEL_WIDTH)} INFO Imported block"
     assert "[09-27|" not in line
 
 
