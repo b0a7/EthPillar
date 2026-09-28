@@ -6,7 +6,7 @@ Loaded by file path. ``logging/`` is not a Python package, so
 
 import importlib.util
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -33,6 +33,14 @@ def test_format_realtime_timestamp_is_local_with_milliseconds():
     assert text == datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M:%S") + ".105"
     assert format_realtime_timestamp(None) == " " * 23
     assert format_realtime_timestamp("nope") == " " * 23
+
+
+def test_format_realtime_timestamp_converts_epoch_to_machine_zone(monkeypatch):
+    eastern = timezone(timedelta(hours=-4))
+    monkeypatch.setattr(journal_format, "system_local_zone", lambda: eastern)
+    utc = datetime(2026, 9, 28, 2, 35, 17, tzinfo=timezone.utc)
+    us = int(utc.timestamp()) * 1_000_000 + 1_000
+    assert format_realtime_timestamp(str(us)) == "2026-09-27 22:35:17.001"
 
 
 def test_format_client_id_aligns_bracket_column():

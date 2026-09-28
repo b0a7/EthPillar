@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026  b0a7
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Format ``journalctl -o json`` records for EthPillar log viewers.
 
 Each output line is::
@@ -24,9 +39,10 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, tzinfo
 from pathlib import Path
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
@@ -89,6 +105,45 @@ _STRUCT_TIME = re.compile(
 _STRUCT_KEY = re.compile(r"(?:^|\s)(?:time|ts)=")
 
 
+def system_local_zone() -> tzinfo:
+    """Return the machine timezone from tzdata, ignoring an inherited ``TZ=UTC``.
+
+    ``datetime.fromtimestamp`` follows the ``TZ`` environment variable. Cloud
+    images and some shells export ``TZ=UTC`` even after Toolbox → Timezone
+    (``dpkg-reconfigure tzdata``) has pointed ``/etc/localtime`` at a local zone.
+    """
+    name = _system_timezone_name()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except ZoneInfoNotFoundError:
+            pass
+    fallback = datetime.now().astimezone().tzinfo
+    if fallback is not None:
+        return fallback
+    return ZoneInfo("UTC")
+
+
+def _system_timezone_name() -> str:
+    """Zone name from ``/etc/localtime`` or ``/etc/timezone``, or ""."""
+    localtime = Path("/etc/localtime")
+    try:
+        resolved = str(localtime.resolve(strict=True)).replace("\\", "/")
+    except OSError:
+        resolved = ""
+    marker = "zoneinfo/"
+    if marker in resolved:
+        name = resolved.split(marker, 1)[1]
+        if name:
+            return name
+    timezone_file = Path("/etc/timezone")
+    try:
+        name = timezone_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return name
+
+
 def format_realtime_timestamp(raw: object) -> str:
     """Format a journald microsecond timestamp as local ``YYYY-MM-DD HH:MM:SS.mmm``."""
     try:
@@ -98,7 +153,7 @@ def format_realtime_timestamp(raw: object) -> str:
     if us < 0:
         return " " * TS_WIDTH
     seconds, rem = divmod(us, 1_000_000)
-    dt = datetime.fromtimestamp(seconds)
+    dt = datetime.fromtimestamp(seconds, tz=system_local_zone())
     return f"{dt:%Y-%m-%d %H:%M:%S}.{rem // 1000:03d}"
 
 
