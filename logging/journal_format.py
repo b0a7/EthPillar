@@ -88,6 +88,10 @@ _BRACKET_TS = (
     r"\]"
 )
 _TS = rf"(?:{_BRACKET_TS}|{_ISO_TS}|{_MONTH_TS})"
+# Charon console logs are time-of-day only: ``02:58:03.057 INFO bcast ...``.
+# Fractional seconds are required so a message that merely starts with a
+# clock time is left alone. This form is only recognized at column 0.
+_TOD_TS = r"\d{2}:\d{2}:\d{2}\.\d+"
 _LEVEL = (
     r"CRITICAL|WARNING|DEBUG|TRACE|FATAL|ERROR|INFO|WARN|CRIT|"
     r"INF|WRN|DBG|NTC|NOT|ERR|TRC|FAT"
@@ -95,12 +99,15 @@ _LEVEL = (
 # Level may sit in front of the timestamp (Nimbus ``INF <date>``, Geth
 # ``INFO [date]``). A bracketed level (``[INFO] <date>``) is accepted too.
 _LEADING_TS = re.compile(
-    rf"^(?:\[(?P<bracket_level>{_LEVEL})\]\s+"
+    rf"^(?:"
+    rf"(?:\[(?P<bracket_level>{_LEVEL})\]\s+"
     rf"|(?P<level>{_LEVEL})(?:\s+|(?=\[)))?"
     rf"(?P<ts>{_TS})"
     # Trailing separator: whitespace, one Nethermind/Besu pipe, and Lodestar's
     # empty ``[]`` scope that sits directly against the timestamp.
-    rf"(?:\s*\|?\s*)(?:\[\]\s*)?",
+    rf"(?:\s*\|?\s*)(?:\[\]\s*)?"
+    rf"|(?P<tod>{_TOD_TS})\s+"
+    rf")",
     re.IGNORECASE,
 )
 _STRUCT_TIME = re.compile(

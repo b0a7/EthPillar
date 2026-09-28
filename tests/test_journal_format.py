@@ -140,6 +140,14 @@ def test_strip_client_timestamp_shapes():
             "INFO\tcharon\tstarted",
         ),
         (
+            "02:58:03.057 INFO bcast      Successfully submitted",
+            "INFO bcast      Successfully submitted",
+        ),
+        (
+            "peer dropped at 02:58:03.057 during broadcast",
+            "peer dropped at 02:58:03.057 during broadcast",
+        ),
+        (
             'time="2026-09-27 21:53:01" level=info msg="Synced new block"',
             'level=info msg="Synced new block"',
         ),
