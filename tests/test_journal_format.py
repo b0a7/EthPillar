@@ -17,7 +17,8 @@ assert _SPEC is not None and _SPEC.loader is not None
 journal_format = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(journal_format)
 
-LABEL_WIDTH = journal_format.LABEL_WIDTH
+UNIT_WIDTH = journal_format.UNIT_WIDTH
+CLIENT_WIDTH = journal_format.CLIENT_WIDTH
 ClientNames = journal_format.ClientNames
 format_client_id = journal_format.format_client_id
 format_entry_lines = journal_format.format_entry_lines
@@ -34,14 +35,22 @@ def test_format_realtime_timestamp_is_local_with_milliseconds():
     assert format_realtime_timestamp("nope") == " " * 23
 
 
-def test_format_client_id_pads_short_labels_and_keeps_long_ones():
-    short = format_client_id("execution", "Reth")
-    assert short == "execution [Reth]".ljust(LABEL_WIDTH)
-    assert len(short) == LABEL_WIDTH
+def test_format_client_id_aligns_bracket_column():
+    labels = [
+        format_client_id("consensus", "Lodestar"),
+        format_client_id("execution", "Reth"),
+        format_client_id("mevboost", "MEV-Boost"),
+    ]
+    assert [label.index("[") for label in labels] == [UNIT_WIDTH + 1] * 3
+    assert all(len(label) == UNIT_WIDTH + 1 + CLIENT_WIDTH for label in labels)
+    assert format_client_id("execution", "Reth") == "execution [Reth]".ljust(UNIT_WIDTH + 1 + CLIENT_WIDTH)
+
+
+def test_format_client_id_keeps_long_unit_and_omits_unknown_client():
     long = format_client_id("csm_nimbusvalidator", "Nimbus")
-    assert long == "csm_nimbusvalidator [Nimbus]"
-    assert len(long) > LABEL_WIDTH
-    assert format_client_id("grafana-server", "") == "grafana-server".ljust(LABEL_WIDTH)
+    assert long.startswith("csm_nimbusvalidator [Nimbus]")
+    assert long.index("[") > UNIT_WIDTH + 1
+    assert format_client_id("grafana-server", "") == "grafana-server"
 
 
 def test_strip_client_timestamp_shapes():
@@ -142,7 +151,8 @@ def test_format_entry_uses_description_client_and_strips_geth_stamp(tmp_path):
     }
     line = format_entry_lines(entry, names)[0]
     ts = format_realtime_timestamp(entry["__REALTIME_TIMESTAMP"])
-    assert line == f"{ts}  {'execution [Reth]'.ljust(LABEL_WIDTH)} INFO Imported block"
+    label = format_client_id("execution", "Reth")
+    assert line == f"{ts}  {label} INFO Imported block"
     assert "[09-27|" not in line
 
 
@@ -159,7 +169,8 @@ def test_format_entry_charon_description_and_json_message(tmp_path):
         "MESSAGE": '{"level":"info","ts":"2026-09-27T21:53:02.200Z","msg":"started"}',
     }
     line = format_entry_lines(entry, names)[0]
-    assert "charon [Charon]" in line
+    assert "charon" in line
+    assert "[Charon]" in line
     assert line.endswith("info started")
     assert "2026-09-27T21:53:02" not in line
 

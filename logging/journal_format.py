@@ -39,9 +39,10 @@ from manage.service_parse import (  # noqa: E402
     read_text_file,
 )
 
-# Long enough for ``consensus [Lodestar]`` (20). Longer labels such as
-# ``consensus [Lighthouse]`` print in full and are not truncated.
-LABEL_WIDTH = 20
+# Unit column fits execution / consensus / validator. The bracket column fits
+# ``[Lighthouse]`` and ``[Nethermind]``. Longer names print in full.
+UNIT_WIDTH = 9
+CLIENT_WIDTH = 12
 TS_WIDTH = 23  # YYYY-MM-DD HH:MM:SS.mmm
 # CSI / SGR sequences. Reth dims its timestamp with these, which hides the
 # date from a start-of-line match. ccze recolors the plain text afterward.
@@ -101,24 +102,29 @@ def format_realtime_timestamp(raw: object) -> str:
     return f"{dt:%Y-%m-%d %H:%M:%S}.{rem // 1000:03d}"
 
 
-def format_client_id(unit: str, client: str) -> str:
-    """Return ``unit [Client]``, padded to ``LABEL_WIDTH`` when shorter.
+def _pad_column(text: str, width: int) -> str:
+    """Left-align *text* to *width*. Longer values are kept in full."""
+    if len(text) < width:
+        return text.ljust(width)
+    return text
 
-    Unknown software (plugins, generic units) is the unit name alone.
-    A label longer than ``LABEL_WIDTH`` is kept in full.
+
+def format_client_id(unit: str, client: str) -> str:
+    """Return the unit and ``[Client]`` as two left-aligned columns.
+
+    ``consensus [Lodestar]`` and ``mevboost  [MEV-Boost]`` share a ``[``
+    column. Unknown software (plugins, generic units) is the unit name alone.
     """
     unit_name = unit[:-8] if unit.endswith(".service") else unit
-    if unit_name and client:
-        label = f"{unit_name} [{client}]"
-    elif unit_name:
-        label = unit_name
-    elif client:
-        label = client
-    else:
-        label = "unknown"
-    if len(label) < LABEL_WIDTH:
-        return label.ljust(LABEL_WIDTH)
-    return label
+    if not unit_name and not client:
+        return "unknown"
+    unit_field = _pad_column(unit_name, UNIT_WIDTH) if unit_name else ""
+    if not client:
+        return unit_field
+    bracket = _pad_column(f"[{client}]", CLIENT_WIDTH)
+    if unit_field:
+        return f"{unit_field} {bracket}"
+    return bracket
 
 
 def _strip_structured_time(line: str) -> str:
