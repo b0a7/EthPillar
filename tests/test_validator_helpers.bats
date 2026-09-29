@@ -307,6 +307,24 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "ensureCharonBeforeValidator starts Charon when installed" {
+  write_charon_service
+  ensureCharonBeforeValidator
+  run cat "$COMMAND_LOG"
+  # start: starts a stopped Charon, no-op (no bounce) when already running.
+  # try-restart would leave a stopped Charon stopped.
+  [[ "$output" == *"sudo systemctl start charon"* ]]
+  [[ "$output" != *"restart"* ]]
+}
+
+@test "ensureCharonBeforeValidator does nothing without Charon" {
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  ensureCharonBeforeValidator
+  run cat "$COMMAND_LOG"
+  [[ "$output" != *"charon"* ]]
+}
+
 @test "getCharonP2pPort reads p2p-tcp-address from charon.service" {
   write_charon_service "http://127.0.0.1:5052" 3812
   run getCharonP2pPort

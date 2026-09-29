@@ -122,6 +122,27 @@ def normalize_client_name(name: str) -> str:
     return _CLIENT_ALIASES.get(first_key, first)
 
 
+def known_client_name(token: str) -> str:
+    """Return the canonical client label for *token*, or "" if it is not a known client.
+
+    Accepts Description tokens (``Reth``, ``Obol``), binary names (``reth``,
+    ``mev-boost``), and prefixed process names (``nimbus_beacon_node``).
+    Unknown words such as ``Ethereum`` return "".
+    """
+    raw = (token or "").strip()
+    if not raw:
+        return ""
+    if raw in _CLIENT_ALIASES.values():
+        return raw
+    key = raw.lower().replace("_", "-")
+    if key in _CLIENT_ALIASES:
+        return _CLIENT_ALIASES[key]
+    for alias in sorted(_CLIENT_ALIASES, key=len, reverse=True):
+        if key.startswith(alias + "-"):
+            return _CLIENT_ALIASES[alias]
+    return ""
+
+
 def parse_description_client(description: str) -> str:
     """Extract client name from a ``Description=`` value."""
     if not description:

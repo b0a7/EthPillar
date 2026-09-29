@@ -939,9 +939,14 @@ startValidatorStackAfterUpdate(){
     test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
 }
 
-# Ensure Charon is up before starting the VC (key import / loadKeys).
+# Ensure Charon is up before starting the VC (key import / loadKeys): the VC
+# talks to the beacon node through Charon's validator API. `start` starts a
+# stopped Charon and is a no-op when it is already running; key imports only
+# change the VC datadir, so a running Charon needs no restart.
 ensureCharonBeforeValidator(){
-    isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || sudo systemctl start charon 2>/dev/null || true
+    if isCharonEnabled; then
+        sudo systemctl start charon 2>/dev/null || true
+    fi
 }
 
 # Reload systemd units after .env.overrides edits (Charon + core stack).
@@ -964,6 +969,217 @@ ufwAllowCharonP2p(){
     port=$(getCharonP2pPort)
     [[ -n "$port" ]] || return 0
     sudo ufw allow "${port}/tcp" comment 'Allow Charon P2P port'
+}
+
+# First word of Description= — same heuristic as getClient / node-checker.
+unitClientName(){
+    local path="$1"
+    [[ -f "$path" ]] || return 0
+    grep "Description=" "$path" 2>/dev/null | awk -F'=' '{print $2}' | awk '{print $1}'
+}
+
+# Caplin is integrated into execution.service; no QUIC by default.
+isCaplinNode(){
+    local exec_svc el cl consensus_svc
+    exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    el="$(unitClientName "$exec_svc")"
+    if [[ "$el" == "Erigon-Caplin" || "$el" == "Caplin" ]]; then
+        return 0
+    fi
+    if [[ -f "$exec_svc" ]] && grep -qiE 'caplin' "$exec_svc" 2>/dev/null; then
+        return 0
+    fi
+    consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    cl="$(unitClientName "$consensus_svc")"
+    if [[ "$cl" == "Caplin" || "$cl" == "Erigon-Caplin" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# True when a local consensus.service exists and the CL is not Caplin.
+clExpectsQuic(){
+    isCaplinNode && return 1
+    local cl
+    cl="$(unitClientName "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}")"
+    [[ -n "$cl" ]]
+}
+
+# QUIC UDP from consensus.service (--quic-port / --quicPort / --p2p-quic-port).
+parseClQuicPortFromUnit(){
+    local svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local val=""
+    [[ -f "$svc" ]] || return 0
+    val=$(grep -oE -- '--(p2p-quic-port|quic-port|quicPort)[= ][0-9]+' "$svc" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
+    if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 1 && val <= 65535 )); then
+        echo "$val"
+    fi
+}
+
+# Space-separated UDP ports. Empty when QUIC is not expected (Caplin / no CL).
+# Prefer the live unit flag, then CL_P2P_PORT_2, then 9001. Teku also needs IPv6 QUIC.
+getExpectedClQuicUdpPorts(){
+    clExpectsQuic || return 0
+    local cl quic_port ipv6_port from_unit
+    cl="$(unitClientName "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}")"
+    from_unit="$(parseClQuicPortFromUnit)"
+    quic_port="${from_unit:-${CL_P2P_PORT_2:-9001}}"
+    if [[ "$cl" == "Teku" ]]; then
+        ipv6_port="${TEKU_QUIC_IPV6_PORT:-$(( ${CL_P2P_PORT:-9000} + 91 ))}"
+        echo "${quic_port} ${ipv6_port}"
+    else
+        echo "${quic_port}"
+    fi
+}
+
+# Allow inbound UDP on expected CL QUIC port(s). No-op when QUIC is not expected.
+# Pass "quiet" to skip the no-QUIC dialog (used by the full EL/CL P2P helper).
+ufwAllowClQuic(){
+    local port ports quiet="${1:-}"
+    ports="$(getExpectedClQuicUdpPorts)"
+    if [[ -z "$ports" ]]; then
+        if [[ "$quiet" != "quiet" ]] && command -v whiptail >/dev/null 2>&1; then
+            whiptail --title "CL QUIC" --msgbox \
+                "No consensus QUIC port to allow (no consensus.service, or Caplin which has no QUIC by default).\nUse the generic Allow option to open a UDP port manually." 12 70 \
+                || true
+        fi
+        return 0
+    fi
+    for port in $ports; do
+        sudo ufw allow "${port}/udp" comment 'Allow consensus client QUIC port'
+    done
+}
+
+# First matching --flag=N / --flag N in a systemd unit. Avoids matching longer
+# flags (e.g. --http-port when asking for --port). Dots in flag names are literal.
+parseUnitFlagPort(){
+    local file="$1" flag="$2" val="" escaped=""
+    [[ -f "$file" ]] || return 0
+    escaped="$(printf '%s' "$flag" | sed 's/[].[*^$()+?{|]/\\&/g')"
+    val=$(grep -oE -- "(^|[[:space:]\\\\])${escaped}[= ][0-9]+" "$file" 2>/dev/null | head -1 | grep -oE '[0-9]+$' || true)
+    if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 1 && val <= 65535 )); then
+        echo "$val"
+    fi
+}
+
+# EL libp2p / discovery port. Unit flag, then EL_P2P_PORT, then 30303.
+getExpectedElP2pPort(){
+    local svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    local from_unit=""
+    from_unit="$(parseUnitFlagPort "$svc" '--p2p-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--p2p.port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--Network.P2PPort')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--port')"
+    echo "${from_unit:-${EL_P2P_PORT:-30303}}"
+}
+
+# CL discv5 / libp2p port. Unit flag, then CL_P2P_PORT, then 9000.
+# Caplin has no consensus.service — read --caplin.discovery.port from execution.
+getExpectedClP2pPort(){
+    local svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    local from_unit=""
+    from_unit="$(parseUnitFlagPort "$svc" '--p2p-tcp-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--p2p-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--libp2p-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--tcp-port')"
+    [[ -z "$from_unit" ]] && from_unit="$(parseUnitFlagPort "$svc" '--port')"
+    if [[ -z "$from_unit" ]] && isCaplinNode; then
+        from_unit="$(parseUnitFlagPort "$exec_svc" '--caplin.discovery.port')"
+    fi
+    echo "${from_unit:-${CL_P2P_PORT:-9000}}"
+}
+
+# Extra EL discovery / torrent rules (port/proto). Same extras enable-defaults opened.
+getExpectedElExtraUfwPorts(){
+    local el exec_svc from_unit
+    exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    el="$(unitClientName "$exec_svc")"
+    case "$el" in
+        Reth)
+            from_unit="$(parseUnitFlagPort "$exec_svc" '--discovery.v5.port')"
+            echo "${from_unit:-${EL_P2P_PORT_2:-30304}}/udp"
+            ;;
+        Erigon|Erigon-Caplin)
+            echo "30304/tcp 30304/udp 42069/tcp 42069/udp"
+            ;;
+    esac
+}
+
+# One-line summary of rules ufwAllowExpectedP2pPorts will add (no Charon).
+describeExpectedP2pUfwRules(){
+    local el_port cl_port extra spec
+    el_port="$(getExpectedElP2pPort)"
+    cl_port="$(getExpectedClP2pPort)"
+    echo -n "${el_port}/tcp ${el_port}/udp ${cl_port}/tcp ${cl_port}/udp"
+    extra="$(getExpectedElExtraUfwPorts)"
+    for spec in $extra; do
+        echo -n " ${spec}"
+    done
+    for spec in $(getExpectedClQuicUdpPorts); do
+        echo -n " ${spec}/udp"
+    done
+    echo
+}
+
+# Allow EL + CL P2P TCP/UDP (and QUIC UDP when expected). Charon stays separate.
+ufwAllowExpectedP2pPorts(){
+    local el_port cl_port extra spec
+    el_port="$(getExpectedElP2pPort)"
+    cl_port="$(getExpectedClP2pPort)"
+    sudo ufw allow "${el_port}/tcp" comment 'Allow execution client P2P'
+    sudo ufw allow "${el_port}/udp" comment 'Allow execution client P2P'
+    sudo ufw allow "${cl_port}/tcp" comment 'Allow consensus client P2P'
+    sudo ufw allow "${cl_port}/udp" comment 'Allow consensus client P2P'
+    extra="$(getExpectedElExtraUfwPorts)"
+    for spec in $extra; do
+        sudo ufw allow "${spec}" comment 'Allow execution client extra P2P/discovery'
+    done
+    ufwAllowClQuic quiet
+}
+
+# Append one numbered UFW menu row. Used by ufwBuildFirewallMenu.
+_ufw_menu_add_pair(){
+    local action="$1" label="$2"
+    UFW_MENU_PAIRS+=("${UFW_MENU_NEXT}" "$label")
+    UFW_MENU_ACTIONS["${UFW_MENU_NEXT}"]="$action"
+    UFW_MENU_NEXT=$((UFW_MENU_NEXT + 1))
+}
+
+# Build UFW Firewall menu pairs (numbered tags) and action map.
+# Charon P2P is omitted when charon.service is not installed.
+# Sets UFW_MENU_PAIRS and UFW_MENU_ACTIONS.
+ufwBuildFirewallMenu(){
+    UFW_MENU_NEXT=1
+    UFW_MENU_PAIRS=()
+    unset UFW_MENU_ACTIONS 2>/dev/null || true
+    declare -gA UFW_MENU_ACTIONS=()
+
+    _ufw_menu_add_pair view "View ufw status"
+    _ufw_menu_add_pair allow_port "Allow incoming traffic on a port"
+    _ufw_menu_add_pair deny_port "Deny incoming traffic on a port"
+    _ufw_menu_add_pair delete_rule "Delete a rule"
+    UFW_MENU_PAIRS+=("-" "")
+    _ufw_menu_add_pair enable_defaults "Enable firewall with default settings"
+    _ufw_menu_add_pair ec_rpc "EC RPC Node: Allow local network access to RPC port 8545"
+    _ufw_menu_add_pair cc_rpc "CC RPC Node: Allow local network access to RPC port 5052"
+    _ufw_menu_add_pair grafana "Monitoring: Allow local network access to Grafana port 3000"
+    _ufw_menu_add_pair elcl_p2p "EL/CL P2P: Allow TCP/UDP (from execution & consensus, incl. QUIC)"
+    if isCharonEnabled; then
+        _ufw_menu_add_pair charon "${OBOL_CHARON}: Allow P2P port (from charon.service)"
+    fi
+    _ufw_menu_add_pair disable "Disable firewall"
+    _ufw_menu_add_pair reset "Reset firewall rules: Delete all rules"
+    UFW_MENU_PAIRS+=("-" "")
+    _ufw_menu_add_pair whitelist "Whitelist an IP address: Allow full access to this node"
+    UFW_MENU_PAIRS+=("-" "")
+    UFW_MENU_PAIRS+=("99" "Back to main menu")
+    UFW_MENU_ACTIONS["99"]="back"
+}
+
+ufwFirewallMenuAction(){
+    local choice="$1"
+    echo "${UFW_MENU_ACTIONS[$choice]:-}"
 }
 
 # Classify how this node runs validator duties.
@@ -1601,16 +1817,38 @@ Key shares were found under validator_keys.
 Also import them into ${vc_label} now?
 
 (You can re-run later via Validator → ${OBOL_IMPORT_KEY_SHARES})" 14 70; then
-            runImportCharonKeySharesYes
+            # Stop Charon so the new cluster never runs next to the VC's old key
+            # shares; the import stops the VC, then starts Charon → VC.
+            isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+            if ! runImportCharonKeySharesYes; then
+                # Import failed: the VC stays stopped (old shares), but bring
+                # Charon back up on the new cluster.
+                ensureCharonBeforeValidator
+                whiptail --title "Import .charon cluster folder" --msgbox \
+"Key share import failed. Charon is running with the new cluster;
+the validator client is stopped.
+
+Fix the error above, then run:
+  Validator → ${OBOL_IMPORT_KEY_SHARES}" 13 70
+                return 1
+            fi
             return
         fi
     fi
 
+    # Charon reads the cluster files only at startup: reload a running Charon
+    # (a stopped one stays stopped). The VC keeps its current key shares until
+    # the user imports the new ones.
+    local charon_next="Start Charon (this menu → Start Charon)"
+    if systemctl is-active --quiet charon 2>/dev/null; then
+        sudo systemctl restart charon 2>/dev/null || true
+        charon_next="Charon was restarted with the new cluster"
+    fi
     whiptail --title "Import .charon cluster folder" --msgbox \
 "Copied .charon into ${DEST}.
 
 Next:
-  1. Start Charon (this menu → Start Charon)
+  1. ${charon_next}
   2. Validator → ${OBOL_IMPORT_KEY_SHARES} (if not imported yet)" 14 70
 }
 
@@ -2761,207 +2999,9 @@ Actions: $VA_URL
     whiptail --title "Validator Actions: New features since Pectra Upgrade" --msgbox "$MSG" 18 78
 }
 
-# Return 0 when the current user can read system journal entries without sudo.
-can_read_journal() {
-    if [[ "$(id -u)" -eq 0 ]]; then
-        return 0
-    fi
-    journalctl -n 1 --quiet _UID=0 >/dev/null 2>&1 && return 0
-    if user_in_journal_group "$(whoami)"; then
-        sg systemd-journal -c 'journalctl -n 1 --quiet _UID=0 >/dev/null' 2>/dev/null && return 0
-    fi
-    return 1
-}
-
-# Return 0 when the named user appears in systemd-journal.
-user_in_journal_group() {
-    local user="${1:-$(whoami)}"
-    getent group systemd-journal 2>/dev/null | grep -qE -o -- "$user"
-}
-
-# Return 0 when the user can read system journal entries without sudo.
-user_can_read_system_journal() {
-    local user="${1:-$(whoami)}"
-
-    if [[ "$user" == "$(whoami)" ]]; then
-        can_read_journal && return 0
-        if user_in_journal_group "$user"; then
-            sg systemd-journal -c 'journalctl -n 1 --quiet _UID=0 >/dev/null' 2>/dev/null && return 0
-        fi
-        return 1
-    fi
-
-    if su - "$user" -c 'journalctl -n 1 --quiet _UID=0 >/dev/null 2>&1'; then
-        return 0
-    fi
-    if user_in_journal_group "$user"; then
-        su - "$user" -c "sg systemd-journal -c 'journalctl -n 1 --quiet _UID=0 >/dev/null'" && return 0
-    fi
-    return 1
-}
-
-# Add the current user to systemd-journal when needed. Returns 0 when journal
-# access works in this session, 1 when a new login is required.
-ensure_journal_access() {
-    local current_user
-    current_user=$(whoami)
-
-    if [[ "$(id -u)" -eq 0 ]]; then
-        return 0
-    fi
-
-    if ! user_in_journal_group "$current_user"; then
-        sudo usermod -aG systemd-journal "$current_user"
-    fi
-
-    can_read_journal
-}
-
-_journal_log_colorizer() {
-    if command -v ccze >/dev/null 2>&1; then
-        ccze -A
-    else
-        cat
-    fi
-}
-
-# Run journalctl with sudo only when unprivileged access is unavailable.
-journalctl_run() {
-    if can_read_journal; then
-        journalctl "$@"
-        return $?
-    fi
-
-    ensure_journal_access || true
-    if can_read_journal; then
-        journalctl "$@"
-        return $?
-    fi
-
-    if user_in_journal_group "$(whoami)"; then
-        local _jcmd=(journalctl "$@")
-        sg systemd-journal -c "$(printf '%q ' "${_jcmd[@]}")"
-        return $?
-    fi
-
-    sudo journalctl "$@"
-}
-
-# Build a journalctl … | ccze -A pipeline for tmux/log panes (sg when group is new).
-journalctl_ccze_pipeline() {
-    local _args=("$@")
-    local _inner="journalctl"
-    local _a
-    for _a in "${_args[@]}"; do
-        _inner+=" $(printf '%q' "$_a")"
-    done
-    if can_read_journal; then
-        printf '%s | ccze -A' "$_inner"
-    elif user_in_journal_group "$(whoami)"; then
-        printf 'sg systemd-journal -c %q | ccze -A' "$_inner"
-    else
-        printf 'sudo %s | ccze -A' "$_inner"
-    fi
-}
-
-view_journal_logs() {
-    # Parent ignores SIGINT so EthPillar survives Ctrl-C.
-    # Child restores default so journalctl still stops.
-    export -f _journal_log_colorizer journalctl_run can_read_journal user_in_journal_group 2>/dev/null || true
-    trap '' INT
-
-    bash -c 'trap - INT; journalctl_run "$@" | _journal_log_colorizer' _ "$@" || true
-
-    trap - INT
-    return 0
-}
-
-# TUI Logging & Monitoring → 🔍 View Rolling Consolidated Logs, and `ethpillar logs`.
-# Aztec remote-rpc compose follow, then one journalctl stream for all client units.
-show_rolling_consolidated_logs() {
-    # Aztec with remote rpc
-    if [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.service ]]; then
-          cd  /opt/ethpillar/aztec && docker compose logs -f --tail=233
-    fi
-    view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f
-}
-
-# Function to display log dialog and return the selected option
-function get_user_input() {
-    local OPTIONS=()
-    local service date_range
-    test -f /etc/systemd/system/execution.service && OPTIONS+=("execution" "")
-    test -f /etc/systemd/system/consensus.service && OPTIONS+=("consensus" "")
-    test -f /etc/systemd/system/validator.service && OPTIONS+=("validator" "")
-    test -f /etc/systemd/system/charon.service && OPTIONS+=("charon" "")
-    test -f /etc/systemd/system/mevboost.service && OPTIONS+=("mevboost" "" )
-    test -f /etc/systemd/system/csm_nimbusvalidator.service && OPTIONS+=("csm_nimbusvalidator" "")
-    service=$(whiptail --title "Export journalctl service logs" --menu \
-          "I want to export logs for:" 15 60 6 \
-          "${OPTIONS[@]}" \
-          3>&1 1>&2 2>&3)
-    if [ -z "$service" ]; then return; fi # pressed cancel
-    date_range=$(whiptail --title "Date Range Selection" --menu "Choose a date range:" 15 60 5 \
-        "Today" "" \
-        "Yesterday" "" \
-        "Last_Hour" "" \
-        "Last_Week" "" \
-        "Custom" ""  3>&1 1>&2 2>&3)
-    if [ -z "$date_range" ]; then return; fi # pressed cancel
-    echo "$service $date_range"
-}
-
-# Exports journalctl logs
-function export_logs() {
-    local user_input service date_range output_file
-    user_input=$(get_user_input)
-    if [ -z "$user_input" ]; then return; fi # pressed cancel
-    service=$(echo "$user_input" | awk '{print $1}')
-    date_range=$(echo "$user_input" | awk '{print $2}')
-
-    # Determine the start and end times based on the selected date range
-    local start_time=""
-    local end_time=""
-    case $date_range in
-        "Today")
-            start_time="00:00"
-            end_time="23:59:59"
-            ;;
-        "Yesterday")
-            start_time="$(date -d yesterday +%F) 00:00:00"
-            end_time="$(date -d yesterday +%F) 23:59:59"
-            ;;
-        "Last_Hour")
-            start_time="$(date -d '1 hour ago' '+%F %H:%M:%S')"
-            end_time="$(date '+%F %H:%M:%S')"
-            ;;
-        "Last_Week")
-            start_time="$(date -d 'last week' +%F) 00:00:00"
-            end_time="$(date -d 'this week' +%F) 23:59:59"
-            ;;
-        "Custom")
-            local custom_start custom_end
-            custom_start=$(whiptail --title "Custom Start Date" --inputbox "Enter start date (YYYY-MM-DD HH:MM):" 10 60 "$(date +%F)" 3>&1 1>&2 2>&3)
-            [[ -z $custom_start ]] && return 1 # user pressed <Cancel> button
-            custom_end=$(whiptail --title "Custom End Date" --inputbox "Enter end date (YYYY-MM-DD HH:MM):" 10 60 "$(date +%F)" 3>&1 1>&2 2>&3)
-            [[ -z $custom_end ]] && return 1 # user pressed <Cancel> button
-            start_time="$custom_start"
-            end_time="$custom_end"
-            ;;
-        *)
-            whiptail --title "Invalid Option" --msgbox "Invalid date range selected." 10 60
-            return 1
-            ;;
-    esac
-
-    # Prompt for the output file name
-    output_file=$(whiptail --title "Output File Name" --inputbox "Enter the output file name:" 10 60 "ethpillar_logs_${service}.txt" 3>&1 1>&2 2>&3)
-
-    # Generate journalctl command based on user input and save to a log file
-    journalctl_run --since "$start_time" --until "$end_time" -u "$service" | tee "$HOME"/"$output_file"
-
-    whiptail --title "Export Complete" --msgbox "Logs have been exported to $HOME/$output_file" 10 60
-}
+# Journal access, formatted live logs, and raw journal export.
+# shellcheck source=logging/journal.sh
+source "${BASE_DIR}/logging/journal.sh"
 
 # Install apt packages required by the TUI, deploy scripts, and updates.
 # List lives in deploy/runtime_packages.txt (no Python imports — safe before venv exists).
