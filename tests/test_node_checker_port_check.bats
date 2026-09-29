@@ -689,7 +689,10 @@ EOF
 		in_fn { print }
 		in_fn && /^}/ { exit }
 	' functions.sh > "$TEST_DIR/checkopen.body"
-	grep -q 'plugins/node-checker/run.sh --ports' "$TEST_DIR/checkopen.body"
+	# Quotes around ${BASE_DIR} are fine; the invoked command is still run.sh --ports.
+	tr -d '"' < "$TEST_DIR/checkopen.body" | grep -q 'plugins/node-checker/run.sh --ports'
+	grep -q '${BASE_DIR}' "$TEST_DIR/checkopen.body"
+	! grep -q '\./plugins/node-checker/run.sh' "$TEST_DIR/checkopen.body"
 	! grep -q 'vercel.app' "$TEST_DIR/checkopen.body"
 	! grep -q 'read -r -p' "$TEST_DIR/checkopen.body"
 	grep -q 'node_checker_port_checker' plugins/node-checker/run.sh

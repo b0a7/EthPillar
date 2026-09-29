@@ -2126,7 +2126,7 @@ viewPubkeyAndIndices(){
 # TCP public checker, CL QUIC listen/UFW, and the active inbound QUIC probe.
 # The public checker URL lives only in plugins/node-checker/networking.sh.
 checkOpenPorts(){
-    sudo bash -c './plugins/node-checker/run.sh --ports'
+    sudo bash "${BASE_DIR}/plugins/node-checker/run.sh" --ports
 }
 
 # Find largest disk usage
