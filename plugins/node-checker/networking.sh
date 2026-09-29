@@ -4,6 +4,7 @@
 # License: GNU GPL
 # Source: https://github.com/coincashew/ethpillar
 # Description: Node-checker networking / port-check helpers (sourced by run.sh).
+# Port Checker (run.sh --ports) runs node_checker_inbound_checks only.
 #
 # Approach adapted from ethstaker/eth-docker `port-check` (Apache-2.0): Beacon
 # API inbound vs outbound, QUIC multiaddrs, CGNAT honesty, and operator
@@ -484,7 +485,9 @@ print_port_troubleshoot_guidance() {
 
     print_check_result "INFO" "Inbound firewall, NAT, and port-forward tips:"
     echo "  When peers cannot reach this node from the Internet, check the firewall, router port-forwards, and ISP."
-    if [[ "$(inbound_status_kind "$inbound")" == "working" ]]; then
+    if [[ "$inbound" == "skipped" ]]; then
+        echo "  Peer direction was not measured in this run. The full Node Checker reports inbound vs outbound peers."
+    elif [[ "$(inbound_status_kind "$inbound")" == "working" ]]; then
         if [[ "${NODE_CHECKER_AUTO_TROUBLESHOOT:-0}" -eq 1 ]]; then
             echo "  Inbound peering looks fine; another port, NAT, or firewall check still looked wrong."
         else
@@ -496,7 +499,7 @@ print_port_troubleshoot_guidance() {
         echo "  No inbound consensus peers yet. A node started in the last few minutes may not have been dialed."
         echo "  Wait, then re-run node-checker before changing firewall rules."
     fi
-    if [[ "$outbound" =~ ^[0-9]+$ && "$outbound" -eq 0 && "$inbound" != "?" ]]; then
+    if [[ "$outbound" =~ ^[0-9]+$ && "$outbound" -eq 0 && "$inbound" != "?" && "$inbound" != "skipped" ]]; then
         echo "  Outbound is also zero — consensus may still be starting, or UDP ${cl_p2p} is blocked outbound too."
     fi
     echo "  Local listen (ss) and UFW allow rules are necessary but not sufficient."
@@ -876,6 +879,17 @@ check_inbound_quic_probe() {
     if [[ "${NODE_CHECKER_DEBUG:-0}" -eq 1 ]]; then
         print_check_result "INFO" "QUIC probe JSON (no ENR): $(printf '%s' "$json" | tr -d '\n')"
     fi
+}
+
+# Inbound subset shared by Port Checker and the Node Checker health section.
+# TCP public checker, CL QUIC listen/UFW, and the active inbound QUIC probe.
+# Local ss inventory and peer-direction stay outside this function.
+node_checker_inbound_checks() {
+    check_cl_quic
+    echo
+    check_open_ports
+    echo
+    check_inbound_quic_probe
 }
 
 check_peer_count() {
