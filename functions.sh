@@ -1226,7 +1226,7 @@ charonEpbsSupported() {
 # True when the MEV-Boost TUI should offer ePBS migration.
 # - Split LXC (MEV, no local VC): always show (export / remote complete).
 # - Charon DVT on this host: hide until charonEpbsSupported (builder path is Charon's).
-# - Solo: manage.epbs.support_level == "full" (Prysm, Lodestar).
+# - Solo: manage.epbs.support_level == "full" (Prysm v7.2.0+ builders list, Lodestar).
 # CLI (`python -m manage.epbs`) is not gated; placeholders stay there.
 epbsTuiSupported() {
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
