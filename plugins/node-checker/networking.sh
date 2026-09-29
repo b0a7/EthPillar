@@ -862,7 +862,7 @@ check_inbound_quic_probe() {
         if node_checker_debug_enabled && [[ -n "$versions" ]]; then
             version_suffix=" (${versions})"
         fi
-        print_check_result "PASS" "Inbound QUIC open on ${port}/udp — Internet can complete a QUIC handshake${version_suffix}"
+        print_check_result "PASS" "Inbound QUIC open on ${port}/udp (Internet can complete a QUIC handshake)${version_suffix}"
         if node_checker_debug_enabled && [[ -n "$alpn" ]]; then
             print_check_result "INFO" "QUIC probe ALPN: ${alpn}"
         fi
