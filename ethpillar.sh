@@ -1797,7 +1797,7 @@ function checkV1StakingSetup(){
   fi
 }
 
-# If no consensus or validator client service is installed, start install workflow
+# If no execution, consensus or validator service and no Aztec install exist, start install workflow
 function installNode(){
   if [[ ! -f /etc/systemd/system/consensus.service && ! -f /etc/systemd/system/execution.service && ! -f /etc/systemd/system/validator.service && ! -d /opt/ethpillar/aztec ]]; then
           local _ROLE
@@ -1825,7 +1825,7 @@ function installNode(){
   fi
 }
 
-# Ask to apply patches
+# Ensure motd runs at login; offer the locale patch (002) if not yet applied and locale is not UTF-8
 function applyPatches(){
   # Add motd to login message
   local motd_line="cat \"${BASE_DIR}/motd\""
