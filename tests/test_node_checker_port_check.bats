@@ -312,11 +312,14 @@ check_open_ports_capture() {
 
 # ── check_peer_count (mocked Beacon / EL APIs) ────────────────────────────────
 
-# Live JSON-RPC on :8545 returning a count the bats stubs never use (99 / 0x63).
+# Live JSON-RPC on an ephemeral port returning a count the bats stubs never use (99 / 0x63).
+# Port 0 avoids colliding with a real execution client already bound to 8545.
 # If isolation is broken, check_peer_count prints 99 instead of the stub.
 start_mock_el_peer_count() {
 	local hex="${1:-0x63}"
-	MOCK_EL_HEX="$hex" python3 -c '
+	local portfile="$TEST_DIR/mock_el.port"
+	rm -f "$portfile"
+	MOCK_EL_HEX="$hex" MOCK_EL_PORTFILE="$portfile" python3 -c '
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 HEX = os.environ["MOCK_EL_HEX"]
@@ -333,14 +336,30 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args):
         pass
-HTTPServer(("127.0.0.1", 8545), H).serve_forever()
+httpd = HTTPServer(("127.0.0.1", 0), H)
+with open(os.environ["MOCK_EL_PORTFILE"], "w", encoding="utf-8") as fh:
+    fh.write(str(httpd.server_address[1]))
+    fh.write("\n")
+httpd.serve_forever()
 ' &
 	MOCK_EL_PID=$!
-	local i
+	local i port=""
+	for i in $(seq 1 50); do
+		if [[ -s "$portfile" ]]; then
+			port="$(tr -d '[:space:]' < "$portfile")"
+			break
+		fi
+		if ! kill -0 "$MOCK_EL_PID" 2>/dev/null; then
+			return 1
+		fi
+		sleep 0.05
+	done
+	[[ "$port" =~ ^[0-9]+$ ]] || return 1
+	EL_RPC_ENDPOINT="http://127.0.0.1:${port}"
 	for i in $(seq 1 30); do
 		if curl -sf -m 1 -X POST -H "Content-Type: application/json" \
 			--data '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' \
-			http://127.0.0.1:8545 >/dev/null; then
+			"$EL_RPC_ENDPOINT" >/dev/null; then
 			return 0
 		fi
 		sleep 0.1
@@ -489,7 +508,7 @@ stub_healthy_node_apis() {
 	[ "$failed_checks" -eq 0 ]
 }
 
-@test "unstubbed EL peer count reads a live mock on :8545 (99, not the bats stub)" {
+@test "unstubbed EL peer count reads a live mock on an ephemeral port (99, not the bats stub)" {
 	start_mock_el_peer_count 0x63
 	write_consensus Lighthouse
 	fetch_cl_api() {
@@ -507,7 +526,7 @@ stub_healthy_node_apis() {
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"Execution layer connected peers: 5"* ]]
 }
 
-@test "NODE_CHECKER_EL_PEER_COUNT and fetch_el_rpc stub ignore live mock EL on :8545" {
+@test "NODE_CHECKER_EL_PEER_COUNT and fetch_el_rpc stub ignore live mock EL on an ephemeral port" {
 	start_mock_el_peer_count 0x63
 	unset NODE_CHECKER_EL_PEER_COUNT || true
 	[ "$(node_checker_el_connected_peers)" -eq 99 ]
