@@ -31,6 +31,7 @@ from manage.epbs import (
     load_migration_file,
     parse_mevboost_relays,
     prepare,
+    prysm_has_builder_list,
     status,
     strip_bn_sidecar,
     strip_charon_builder_api,
@@ -154,13 +155,19 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
     assert plan.applied
     vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
     args = _args(vc)
-    assert has_flag(args, "--enable-builder")
+    assert not has_flag(args, "--enable-builder")
     assert has_flag(args, "--proposer-settings-file")
     settings = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
     assert settings["version"] == 2
     assert settings["default_config"]["fee_recipient"] == FEE
-    assert settings["default_config"]["builder"]["enabled"] is True
-    assert settings["default_config"]["builder"]["relays"] == [r["url"] for r in RELAYS]
+    builder = settings["default_config"]["builder"]
+    assert "enabled" not in builder
+    assert "relays" not in builder
+    assert builder["builders"] == [{"url": r["url"]} for r in RELAYS]
+    assert builder["max_execution_payment"] == "0"
+    assert builder["min_bid"] == "6000000"  # 0.006 ETH → Gwei
+    assert "gas_limit" not in settings["default_config"]
+    assert not any("200000000" in w for w in plan.warnings)
     assert "validator" in plan.services_to_restart
 
     # Idempotent
@@ -178,8 +185,10 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
     bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
     assert "18550" not in bn
     assert not has_flag(_args(bn), "--http-mev-relay")
-    # VC relays remain
-    assert json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))["default_config"]["builder"]["relays"]
+    # VC builders remain; deprecated flag stays off
+    kept = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
+    assert kept["default_config"]["builder"]["builders"]
+    assert not has_flag(_args(Path(fs.unit_path("validator")).read_text(encoding="utf-8")), "--enable-builder")
     hint = complete_rollback_hint(fs)
     assert hint in done.format_text()
     assert "restart consensus validator" in hint
@@ -194,6 +203,129 @@ def test_prysm_prepare_and_complete(tmp_path: Path) -> None:
     assert "VC relays: yes" in after
     assert "already removed" in after
     assert "Complete: refused" not in after
+
+
+def test_prysm_prepare_migrates_legacy_relays_and_preserves_other_fields(tmp_path: Path) -> None:
+    """v7.1 relays/enabled are replaced; graffiti, gas limit, and per-key config stay."""
+    fs = _fs(tmp_path)
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    pubkey = "0x" + "ab" * 48
+    legacy = {
+        "version": 1,
+        "proposer_config": {
+            pubkey: {"fee_recipient": FEE, "graffiti": "keep-me"},
+        },
+        "default_config": {
+            "fee_recipient": FEE,
+            "graffiti": "default-graffiti",
+            "gas_limit": "30000000",
+            "builder": {
+                "enabled": True,
+                "relays": ["https://old.example/relay"],
+                "gas_limit": "30000000",
+                "max_execution_payment": "0",
+                "builder_boost_factor": "100",
+                "builders_set": True,
+            },
+        },
+    }
+    Path(fs.prysm_settings_path).write_text(json.dumps(legacy), encoding="utf-8")
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters=(
+                "--enable-builder "
+                f"--proposer-settings-file={fs.prysm_settings_path} "
+                "--suggested-gas-limit=30000000"
+            ),
+        ),
+    )
+
+    # Legacy relays alone are not a prepared builder list.
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
+    st = status(fs)
+    assert "legacy builder.relays is ignored" in st
+    assert "VC relays: no" in st
+
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    settings = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
+    assert settings["version"] == 2
+    assert settings["proposer_config"][pubkey]["graffiti"] == "keep-me"
+    default = settings["default_config"]
+    assert default["graffiti"] == "default-graffiti"
+    assert default["gas_limit"] == "30000000"
+    builder = default["builder"]
+    assert builder["builders"] == [{"url": r["url"]} for r in RELAYS]
+    assert "enabled" not in builder
+    assert "relays" not in builder
+    assert "builders_set" not in builder
+    # Operator builder gas limit is left; it is legacy v1 content Prysm drops at the fork.
+    assert builder["gas_limit"] == "30000000"
+    assert builder["builder_boost_factor"] == "100"
+    assert builder["min_bid"] == "6000000"
+    args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(args, "--enable-builder")
+    assert has_flag(args, "--suggested-gas-limit")
+    assert get_flag_value(args, "--suggested-gas-limit") == "30000000"
+
+    done = complete(fs, apply=True)
+    assert done.disable_mevboost
+    assert prysm_has_builder_list(
+        json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
+    )
+
+
+def test_prysm_sepolia_gas_limit_is_documented_not_written(tmp_path: Path) -> None:
+    """Sepolia prepare warns about 200M and does not write gas_limit."""
+    fs = _fs(tmp_path)
+    _write(fs, "mevboost", generate_mevboost_service("sepolia", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "sepolia", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "sepolia",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--enable-builder",
+        ),
+    )
+    plan = prepare(fs, apply=True)
+    settings = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
+    assert "gas_limit" not in settings["default_config"]
+    assert any("200000000" in w for w in plan.warnings)
+    assert any("60M" in w for w in plan.warnings)
+
+    settings["default_config"]["gas_limit"] = "200000000"
+    Path(fs.prysm_settings_path).write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+    again = prepare(fs, apply=True)
+    assert not any("200000000" in w for w in again.warnings)
+    kept = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
+    assert kept["default_config"]["gas_limit"] == "200000000"
+    assert kept["default_config"]["builder"]["builders"]
 
 
 def test_eth_min_bid_to_gwei() -> None:
@@ -722,7 +854,13 @@ def test_export_import_round_trip_prysm(tmp_path: Path) -> None:
     assert plan.command == "import"
     assert plan.applied
     settings = json.loads(Path(vc_fs.prysm_settings_path).read_text(encoding="utf-8"))
-    assert settings["default_config"]["builder"]["relays"] == [r["url"] for r in RELAYS]
+    builder = settings["default_config"]["builder"]
+    assert builder["builders"] == [{"url": r["url"]} for r in RELAYS]
+    assert builder["min_bid"] == "6000000"
+    assert "relays" not in builder
+    vc_text = Path(vc_fs.unit_path("validator")).read_text(encoding="utf-8")
+    assert not has_flag(_args(vc_text), "--enable-builder")
+    assert has_flag(_args(vc_text), "--proposer-settings-file")
     assert "validator" in plan.services_to_restart
 
 

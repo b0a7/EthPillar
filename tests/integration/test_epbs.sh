@@ -82,7 +82,7 @@ assert_unit_lacks() {
     fi
 }
 
-# Fail unless proposer-settings.json is schema v2 with enabled builder relays.
+# Fail unless proposer-settings.json is schema v2 with a nonempty builders list.
 assert_proposer_settings() {
     if [[ ! -f "$SETTINGS" ]]; then
         echo "❌ proposer-settings.json not written at $SETTINGS"
@@ -94,11 +94,14 @@ from pathlib import Path
 path = Path("/var/lib/prysm_validator/proposer-settings.json")
 data = json.loads(path.read_text(encoding="utf-8"))
 builder = (data.get("default_config") or {}).get("builder") or {}
-relays = builder.get("relays") or []
+entries = builder.get("builders") or []
+urls = [e.get("url") for e in entries if isinstance(e, dict) and e.get("url")]
 assert data.get("version") == 2, data
-assert builder.get("enabled") is True, builder
-assert relays, "proposer-settings.json has no relays"
-print(f"✅ proposer-settings.json: {len(relays)} relay(s), builder.enabled=true")
+assert "enabled" not in builder, builder
+assert "relays" not in builder, builder
+assert urls, "proposer-settings.json has no builder URLs"
+assert builder.get("max_execution_payment") == "0", builder
+print(f"✅ proposer-settings.json: {len(urls)} builder URL(s), schema v2")
 PY
 }
 
@@ -118,8 +121,8 @@ assert_vc_process_has_epbs_flags() {
     fi
     case "$VC_CLIENT" in
         Prysm)
-            if [[ "$cmdline" != *"--enable-builder"* ]]; then
-                echo "❌ running VC is missing --enable-builder"
+            if [[ "$cmdline" == *"--enable-builder"* ]]; then
+                echo "❌ running VC still has deprecated --enable-builder"
                 echo "  cmdline: $cmdline"
                 exit 1
             fi
@@ -128,7 +131,7 @@ assert_vc_process_has_epbs_flags() {
                 echo "  cmdline: $cmdline"
                 exit 1
             fi
-            echo "✅ running VC pid=${pid} has --enable-builder and --proposer-settings-file"
+            echo "✅ running VC pid=${pid} has --proposer-settings-file and no --enable-builder"
             ;;
         Lodestar)
             if [[ "$cmdline" != *"--builder.urls"* ]]; then
@@ -150,7 +153,7 @@ assert_vc_process_has_epbs_flags() {
 assert_prepare_units() {
     case "$VC_CLIENT" in
         Prysm)
-            assert_unit_has "$VC_UNIT" "--enable-builder"
+            assert_unit_lacks "$VC_UNIT" "--enable-builder"
             assert_unit_has "$VC_UNIT" "--proposer-settings-file"
             assert_proposer_settings
             ;;
@@ -173,7 +176,7 @@ assert_complete_units() {
     assert_unit_lacks "$BN_UNIT" "$SIDECAR"
     case "$VC_CLIENT" in
         Prysm)
-            assert_unit_has "$VC_UNIT" "--enable-builder"
+            assert_unit_lacks "$VC_UNIT" "--enable-builder"
             assert_unit_has "$VC_UNIT" "--proposer-settings-file"
             assert_proposer_settings
             ;;

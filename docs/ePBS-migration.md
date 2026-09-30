@@ -54,11 +54,15 @@ That item appears when the local validator fully supports migration (**Prysm** o
 
 | Your validator | What EthPillar does |
 |----------------|---------------------|
-| **Prysm** (v7.1.7+) | Writes your MEV-Boost relays into Prysm’s proposer settings and turns builder mode on. Restarts the validator if you agree. **Does not** stop MEV-Boost. |
+| **Prysm** (v7.2.0+) | Writes each MEV-Boost relay URL into Prysm’s proposer settings as a builder (`default_config.builder.builders`). That list is what opts the validator into relay registration before Gloas and what Prysm calls after Gloas. Removes the deprecated `--enable-builder` flag. Restarts the validator if you agree. **Does not** stop MEV-Boost. |
 | **Lodestar** (v1.47.0+) | Writes `--builder.urls` and `--builder.minBid` on the validator. Older Lodestar builds skip this so the client can still start. **Does not** stop MEV-Boost. |
 | **Lighthouse, Teku, Nimbus, Grandine** | Not offered in the TUI. |
 
 After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks keep working as they do today.
+
+If an older EthPillar already wrote `builder.relays` (and `--enable-builder`), run the before-fork step again. Prysm v7.2.0 ignores `relays`. Complete stays refused until `builders` is present.
+
+**Sepolia gas limit (Prysm v7.2.0).** This Prysm release does not include the 200M gas-limit schedule, so Gloas proposals default to 60M. If you want 200M, add `"gas_limit": "200000000"` yourself under `default_config` (or under a key in `proposer_config`). EthPillar does not write that value, and it does not set it on mainnet or Hoodi. `--suggested-gas-limit` only affects pre-Gloas mev-boost registrations.
 
 **After the Gloas fork** (after the first step succeeded)
 
@@ -182,7 +186,7 @@ Relays and `-min-bid` are read from `mevboost.service` (or from a migration file
 | Client | Behavior |
 |--------|----------|
 | **Obol Charon** (any signer VC, co-located) | Keeps `--builder-api`; **skips** VC relay writes. TUI entry hidden until Obol ships Gloas/ePBS support. |
-| **Prysm** (v7.1.7+, no Charon) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema v2) with `default_config.builder.enabled`, `relays`, and `max_execution_payment: "0"` (Gloas execution-payment cap; `0` is the public-bid / proto default and does not disable builder payments). Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Upserts VC `--enable-builder` and `--proposer-settings-file`. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
+| **Prysm** (v7.2.0+, no Charon) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema version 2). Each MEV-Boost relay becomes `default_config.builder.builders[].url`. A nonempty `builders` list opts the key into pre-Gloas mev-boost registration and is the post-Gloas builder list. `auth_data` is omitted (Prysm signs the URL bytes). `max_execution_payment` is `"0"` (trustless-only: collateral-backed bid value counts; a builder’s promised execution-layer payment does not). MEV-Boost `-min-bid` (ETH) is copied to `builder.min_bid` as integer Gwei. Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Sets `--proposer-settings-file` and **removes** deprecated `--enable-builder` (that flag only produces legacy pre-Gloas content and does not override v2 settings). Does not write `gas_limit` or `--suggested-gas-limit`. Drops legacy `builder.enabled`, `builder.relays`, and `builders_set` (v7.2.0 ignores `relays` and rejects unknown keys / `builders_set`). On Sepolia, warns that v7.2.0 defaults to a 60M gas limit unless you set `"gas_limit": "200000000"` yourself. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
 | **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. Older builds are skipped so the VC can still start. |
 | **Lighthouse, Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |
 
@@ -218,7 +222,7 @@ Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is 
 
 | Validator | Support | Notes |
 |-----------|---------|--------|
-| Prysm v7.1.7+ | **full** | TUI + CLI. Relays in proposer-settings (`BuilderConfig.Relays`). BN `--http-mev-relay` until complete. |
+| Prysm v7.2.0+ | **full** | TUI + CLI. Relay URLs in proposer-settings `default_config.builder.builders` (schema v2). `--enable-builder` is removed on prepare. BN `--http-mev-relay` until complete. A file that only has legacy `builder.relays` is not treated as prepared. |
 | Lodestar v1.47.0+ | **full** | TUI + CLI. VC `--builder.urls` / `--builder.minBid` written only if `--help` lists them. |
 | Lighthouse | **placeholder** | VC `--builder-proposals` only; one BN `--builder` URL. |
 | Teku | **placeholder** | Staked Builder REST client ([Consensys/teku#11026](https://github.com/Consensys/teku/issues/11026)) not wired. Relays stay on BN `--builder-endpoint`. |
@@ -232,7 +236,7 @@ After import (or co-located prepare), Prysm’s journal may show **both**:
 - `Proposer settings loaded from default` — from `--suggested-fee-recipient`
 - `Proposer settings loaded from file` — from `--proposer-settings-file`
 
-That pair is expected. Relays live in the JSON at `default_config.builder.relays`. Seeing “loaded from default” does **not** mean import failed.
+That pair is expected. Builder URLs live in the JSON at `default_config.builder.builders` (each entry’s `url`). A legacy `builder.relays` array is ignored by Prysm v7.2.0. Seeing “loaded from default” does **not** mean import failed. A startup warning about `--enable-builder` means that deprecated flag is still on the unit; prepare removes it.
 
 Confirm the import from the running process flags and the JSON file, not from that journal line alone:
 
@@ -242,7 +246,7 @@ sudo journalctl -u validator --no-pager -n 80 | grep -i "proposer settings"
 
 pid=$(sudo systemctl show -p MainPID --value validator)
 tr '\0' ' ' < /proc/${pid}/cmdline
-# expect --enable-builder and --proposer-settings-file=...
+# expect --proposer-settings-file=... and no --enable-builder
 sudo cat /var/lib/prysm_validator/proposer-settings.json
-# relays are under default_config.builder.relays
+# builder URLs are under default_config.builder.builders[].url
 ```

@@ -6,9 +6,10 @@ Two-step operator flow (EthStaker Glamsterdam guidance):
    onto the validator client. Keep ``mevboost.service`` and BN sidecar flags so
    pre-Gloas proposals still work.
 2. **complete** — stop/disable MEV-Boost and strip BN flags that pointed at
-   ``http://127.0.0.1:18550``. Keep VC builder-enable flags and the VC relay
-   list from step 1. Refused unless the VC already has a relay list (or
-   ``--force`` / ``--remote-vc-prepared`` for split LXC).
+   ``http://127.0.0.1:18550``. Keep the VC builder list from step 1 (Prysm
+   ``builders`` entries, Lodestar ``--builder.urls``). Refused unless the VC
+   already has that list (or ``--force`` / ``--remote-vc-prepared`` for split
+   LXC).
 
 **Split LXC:** when CC/MEV and VC (or Charon+VC) live on different hosts,
 ``export`` writes a ``.ethpillar.epbs-migration`` file from MEV relays and
@@ -25,9 +26,10 @@ support (same gate as ``charonEpbsSupported`` in the TUI).
 
 Support levels:
 
-* ``full`` — Prysm (proposer-settings relays) and Lodestar v1.47.0+
-  (VC ``--builder.urls`` / ``--builder.minBid``). Lodestar prepare still
-  probes ``lodestar validator --help`` so older binaries are skipped.
+* ``full`` — Prysm v7.2.0+ (proposer-settings schema v2 ``builders`` list)
+  and Lodestar v1.47.0+ (VC ``--builder.urls`` / ``--builder.minBid``).
+  Lodestar prepare still probes ``lodestar validator --help`` so older
+  binaries are skipped.
 * ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
   list; prepare is a documented no-op. Complete is refused without
   ``--force``.
@@ -139,10 +141,28 @@ BN_BOOL_FLAGS: Dict[str, Tuple[str, ...]] = {
     "Lodestar": ("--builder",),
 }
 
+# Prysm v7.2.0 ships Sepolia Gloas without the upstream 200M schedule.
+# Operators who want 200M set this themselves; EthPillar does not write it.
+SEPOLIA_GLOAS_GAS_LIMIT = "200000000"
+SEPOLIA_GAS_LIMIT_NOTE = (
+    "Sepolia on Prysm v7.2.0 defaults Gloas proposer gas limit to 60M "
+    "(this release has no 200M GAS_LIMIT_SCHEDULE). To propose at 200M, set "
+    f"\"gas_limit\": \"{SEPOLIA_GLOAS_GAS_LIMIT}\" on default_config or a "
+    "proposer_config key. EthPillar does not write that value. "
+    "--suggested-gas-limit only applies to pre-Gloas mev-boost registrations."
+)
+
+# v7.2.0 still accepts these builder keys but ignores or warns on them.
+# ``relays`` is unread; ``enabled`` is legacy mev-boost content dropped at
+# the fork; ``builders_set`` is an internal marker that fails strict load.
+_PRYSM_STALE_BUILDER_KEYS = ("enabled", "relays", "builders_set")
+
 SUPPORT_NOTES: Dict[str, str] = {
     "Prysm": (
-        "Full: relays go in proposer-settings.json (BuilderConfig.Relays). "
-        "Requires Prysm v7.1.7+."
+        "Full: MEV relay URLs go in proposer-settings.json as "
+        "default_config.builder.builders (schema v2). A nonempty list opts "
+        "into pre-Gloas mev-boost registration and is the Gloas builder list. "
+        "Requires Prysm v7.2.0+. Prepare removes deprecated --enable-builder."
     ),
     "Lodestar": (
         "Full: VC flags --builder.urls / --builder.minBid (v1.47.0+). "
@@ -605,24 +625,139 @@ def _write_unit_if_changed(
 
 
 def _prysm_builder_config(relays: RelaysConfig) -> dict:
-    """Build Prysm ``default_config.builder`` (schema v2 BuilderConfig).
+    """Build Prysm v7.2.0 ``default_config.builder`` (schema version 2).
+
+    A nonempty ``builders`` list opts the key into pre-Gloas mev-boost
+    registration and is the post-Gloas direct-builder list. Each entry is a
+    ``BuilderEntry`` with ``url`` set to the MEV-Boost relay URL. ``auth_data``
+    is omitted so Prysm signs the UTF-8 bytes of that URL (its default).
+    ``enabled`` and ``relays`` are legacy and are not written.
+
+    ``max_execution_payment`` ``"0"`` is an explicit trustless-only cap: the
+    collateral-backed bid value still counts, and a builder's promised
+    execution-layer payment does not. Unset is the same effective cap but
+    logs a warning.
+
+    ``min_bid`` is MEV-Boost ``-min-bid`` converted from ETH to integer Gwei,
+    matching Prysm's ``BuilderConfig.min_bid`` (Gwei).
 
     Args:
-        relays: URLs (and unused min-bid; Prysm has no min-bid field here).
+        relays: Relay URLs and optional MEV-Boost min-bid (ETH).
 
     Returns:
-        Dict with ``enabled``, ``relays``, and ``max_execution_payment``.
+        Builder object with ``builders``, ``max_execution_payment``, and
+        ``min_bid`` when MEV-Boost set a min-bid.
     """
-    return {
-        "enabled": True,
-        "relays": list(relays.urls),
-        # Cap on extra Gloas *execution_payment* from a builder (wei), not the
-        # MEV bid / proposer reward. Public gossip bids must use
-        # execution_payment=0; uint64 0 is also Prysm's proto/omitempty default
-        # (v7.1.7 BuilderConfig). It does not disable builder mode or zero out
-        # builder block value.
+    config: dict = {
+        "builders": [{"url": url} for url in relays.urls],
         "max_execution_payment": "0",
     }
+    if relays.min_bid:
+        config["min_bid"] = eth_min_bid_to_gwei(relays.min_bid)
+    return config
+
+
+def _prysm_explicit_gas_limit(data: dict) -> bool:
+    """Return True when any option already sets a non-zero ``gas_limit``.
+
+    Args:
+        data: Proposer-settings object.
+
+    Returns:
+        True if ``default_config`` or any ``proposer_config`` entry has a
+        gas limit other than empty or ``0``.
+    """
+
+    def _set(option: object) -> bool:
+        if not isinstance(option, dict):
+            return False
+        value = option.get("gas_limit")
+        if value is None:
+            return False
+        return str(value).strip() not in ("", "0")
+
+    if _set(data.get("default_config")):
+        return True
+    proposer = data.get("proposer_config")
+    if not isinstance(proposer, dict):
+        return False
+    return any(_set(opt) for opt in proposer.values())
+
+
+def _prysm_builder_dict(data: dict) -> dict:
+    """Return ``default_config.builder`` when it is an object.
+
+    Args:
+        data: Proposer-settings object.
+
+    Returns:
+        The builder object, or an empty dict when absent or the wrong type.
+    """
+    default = data.get("default_config")
+    if not isinstance(default, dict):
+        return {}
+    builder = default.get("builder")
+    return builder if isinstance(builder, dict) else {}
+
+
+def prysm_has_builder_list(data: dict) -> bool:
+    """Return True when default builders include a non-sidecar URL.
+
+    Prysm v7.2.0 ignores legacy ``builder.relays``. Only a nonempty
+    ``builders`` list counts as prepared. An explicit empty list is an opt-out.
+
+    Args:
+        data: Proposer-settings object.
+
+    Returns:
+        True when some ``builders[].url`` is set and is not the local sidecar.
+    """
+    entries = _prysm_builder_dict(data).get("builders")
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        if isinstance(url, str) and url.strip() and not is_sidecar_url(url):
+            return True
+    return False
+
+
+def prysm_legacy_relays_only(data: dict) -> bool:
+    """Return True when the file still has ``builder.relays`` and no builders.
+
+    Args:
+        data: Proposer-settings object.
+
+    Returns:
+        True for a v7.1-style relay list that v7.2.0 will ignore.
+    """
+    relays = _prysm_builder_dict(data).get("relays")
+    has_legacy = isinstance(relays, list) and any(str(url).strip() for url in relays)
+    return has_legacy and not prysm_has_builder_list(data)
+
+
+def _prysm_flag_action(old_unit: str, new_unit: str) -> str:
+    """Describe Prysm VC flag edits between two unit files.
+
+    Args:
+        old_unit: Unit text before prepare.
+        new_unit: Unit text after prepare.
+
+    Returns:
+        Short action detail for the migration plan.
+    """
+    old_args = normalize_cli_args(parse_unit(old_unit).exec_args)
+    new_args = normalize_cli_args(parse_unit(new_unit).exec_args)
+    parts: List[str] = []
+    if get_flag_value(old_args, "--proposer-settings-file") != get_flag_value(
+        new_args, "--proposer-settings-file"
+    ):
+        parts.append("set --proposer-settings-file")
+    if has_flag(old_args, "--enable-builder") and not has_flag(new_args, "--enable-builder"):
+        parts.append("remove deprecated --enable-builder")
+    return "; ".join(parts) if parts else "update validator flags"
 
 
 def apply_relays_prysm(
@@ -631,11 +766,17 @@ def apply_relays_prysm(
     existing_settings: Optional[str],
     settings_path: str = PRYSM_SETTINGS_PATH,
 ) -> Tuple[str, str, str]:
-    """Merge mev-boost relays into Prysm proposer-settings and VC flags.
+    """Merge mev-boost relays into Prysm v7.2.0 proposer settings and VC flags.
 
-    Sets schema version 2, enables builder, copies ``--suggested-fee-recipient``
-    into ``default_config.fee_recipient`` when missing, and upserts
-    ``--enable-builder`` plus ``--proposer-settings-file``.
+    Sets schema version 2, writes ``default_config.builder.builders`` from the
+    relay URLs, copies ``--suggested-fee-recipient`` into ``fee_recipient``
+    when missing, sets ``--proposer-settings-file``, and removes deprecated
+    ``--enable-builder``. Does not write ``gas_limit`` (including the Sepolia
+    200M value) or ``--suggested-gas-limit``.
+
+    Existing ``proposer_config`` entries, graffiti, and option-level gas limits
+    are left in place. Legacy ``builder.enabled``, ``builder.relays``, and
+    ``builders_set`` are removed from ``default_config.builder``.
 
     Args:
         vc_content: Current ``validator.service`` text.
@@ -675,9 +816,13 @@ def apply_relays_prysm(
     builder = default.setdefault("builder", {})
     if not isinstance(builder, dict):
         raise EpbsError("default_config.builder must be an object")
+    for stale in _PRYSM_STALE_BUILDER_KEYS:
+        builder.pop(stale, None)
+    # Mirror the current MEV-Boost min-bid; drop a stale value when unset.
+    builder.pop("min_bid", None)
     builder.update(_prysm_builder_config(relays))
 
-    args = upsert_flag(args, "--enable-builder")
+    args = remove_flags(args, "--enable-builder")
     args = upsert_flag(args, "--proposer-settings-file", settings_path)
     new_unit = _rebuild_unit(vc_content, args)
     settings_json = json.dumps(data, indent=2) + "\n"
@@ -1110,15 +1255,17 @@ def _apply_vc_relays(
         changed_vc = new_vc != vc_content
         changed_json = (existing or "") != settings_json
         if changed_vc:
-            plan.actions.append(
-                PlanAction(
-                    vc_path,
-                    "add --enable-builder and --proposer-settings-file",
-                )
-            )
+            plan.actions.append(PlanAction(vc_path, _prysm_flag_action(vc_content, new_vc)))
         plan.actions.append(
-            PlanAction(settings_path, "write BuilderConfig.relays (schema v2)")
+            PlanAction(settings_path, "write default_config.builder.builders (schema v2)")
         )
+        if relays.network == "sepolia":
+            try:
+                written = json.loads(settings_json)
+            except json.JSONDecodeError:
+                written = {}
+            if isinstance(written, dict) and not _prysm_explicit_gas_limit(written):
+                plan.warnings.append(SEPOLIA_GAS_LIMIT_NOTE)
         if apply:
             if changed_vc:
                 _write_unit_if_changed(fs, vc_path, vc_content, new_vc, True)
@@ -1314,6 +1461,31 @@ def import_migration(
     return plan
 
 
+def _load_prysm_settings(fs: EpbsFilesystem, vc_content: str) -> Optional[dict]:
+    """Load Prysm proposer-settings JSON, or None when missing or invalid.
+
+    Args:
+        fs: IO adapter.
+        vc_content: ``validator.service`` text (for ``--proposer-settings-file``).
+
+    Returns:
+        Parsed object, or None if the file is absent, unreadable, or not a
+        JSON object.
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    settings_path = (
+        get_flag_value(args, "--proposer-settings-file") or fs.prysm_settings_path
+    )
+    raw = fs.read_text(settings_path)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
     """Return True if the VC already has a non-sidecar relay list.
 
@@ -1323,24 +1495,14 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         vc_content: ``validator.service`` text.
 
     Returns:
-        True for Prysm when ``default_config.builder.relays`` is non-empty,
-        or for Lodestar when ``--builder.urls`` is set and is not the sidecar.
+        True for Prysm when ``default_config.builder.builders`` has a
+        non-sidecar URL, or for Lodestar when ``--builder.urls`` is set and
+        is not the sidecar. Legacy ``builder.relays`` does not count.
         Always False for placeholder clients.
     """
     if vc_name == "Prysm":
-        args = normalize_cli_args(parse_unit(vc_content).exec_args)
-        settings_path = (
-            get_flag_value(args, "--proposer-settings-file") or fs.prysm_settings_path
-        )
-        raw = fs.read_text(settings_path)
-        if not raw:
-            return False
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            return False
-        builder = (data.get("default_config") or {}).get("builder") or {}
-        return bool(builder.get("relays"))
+        data = _load_prysm_settings(fs, vc_content)
+        return bool(data) and prysm_has_builder_list(data)
     if vc_name == "Lodestar":
         args = normalize_cli_args(parse_unit(vc_content).exec_args)
         urls = get_flag_value(args, "--builder.urls")
@@ -1549,7 +1711,17 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
     if mode == "separate":
         _, vc_content = _read_required_unit(fs, "validator")
         has_relays = _vc_has_relays(fs, vc_name, vc_content)
-        lines.append("VC relays: " + ("yes" if has_relays else "no"))
+        if vc_name == "Prysm":
+            loaded = _load_prysm_settings(fs, vc_content)
+            if loaded and prysm_legacy_relays_only(loaded):
+                lines.append(
+                    "VC relays: no (legacy builder.relays is ignored on Prysm "
+                    "v7.2.0; re-run prepare)"
+                )
+            else:
+                lines.append("VC relays: " + ("yes" if has_relays else "no"))
+        else:
+            lines.append("VC relays: " + ("yes" if has_relays else "no"))
         if charon_installed(fs):
             if charon_ready_for_complete(fs):
                 lines.append(
