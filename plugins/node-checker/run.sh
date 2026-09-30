@@ -4,6 +4,7 @@
 # License: GNU GPL
 # Source: https://github.com/coincashew/ethpillar
 # Description: Node-checker TUI entrypoint. Port/QUIC/inbound helpers: networking.sh.
+# --ports runs only the inbound subset (Port Checker menu).
 #
 # Made for home and solo stakers 🏠🥩
 
@@ -146,8 +147,9 @@ source "${SOURCE_DIR}/networking.sh"
 
 node_checker_usage() {
     cat <<'EOF'
-Usage: run.sh [--troubleshoot] [--debug]
+Usage: run.sh [--troubleshoot] [--debug] [--ports]
 
+  --ports         Port Checker only: CL QUIC listen/UFW, public TCP checker, active inbound QUIC
   --troubleshoot  Force inbound firewall/NAT/forward guidance even when checks are green (no ENR or public IP)
   --debug         Troubleshoot plus ENR/identity/public-IP diagnostics (redact before sharing)
 
@@ -156,12 +158,16 @@ guidance when inbound looks broken (UFW, TCP checker, QUIC probe, zero inbound,
 missing QUIC). Local listen (ss/UFW) is not the same as inbound reachability.
 First QUIC probe auto-installs aioquic into .venv-quic (NODE_CHECKER_QUIC_AUTO_INSTALL=0 to skip).
 Missing tools after that WARN, they do not FAIL. ENR and public IPv4 are debug-only.
+Security & Node Checks → Port Checker runs this script with --ports.
 EOF
 }
 
 node_checker_parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --ports|--port-checker)
+                NODE_CHECKER_PORTS_ONLY=1
+                ;;
             --troubleshoot)
                 NODE_CHECKER_TROUBLESHOOT=1
                 ;;
@@ -181,6 +187,43 @@ node_checker_parse_args() {
         esac
         shift
     done
+}
+
+# Warn when an installed unit is stopped. Port Checker used to say this before the TCP check.
+node_checker_warn_inactive_unit() {
+    local unit_file="$1"
+    local unit_name="$2"
+    local message="$3"
+    [[ -f "$unit_file" ]] || return 0
+    if ! systemctl is-active --quiet "$unit_name" 2>/dev/null; then
+        print_check_result "WARN" "$message"
+    fi
+}
+
+# Security & Node Checks → Port Checker. Inbound subset only, then pause.
+node_checker_port_checker() {
+    clear 2>/dev/null || true
+    if [[ "$EUID" -ne 0 ]]; then
+        print_check_result "WARN" "Some checks require root privileges"
+    fi
+    echo -e "\n${YELLOW}${BOLD}=== Port Checker: Test for Incoming Connections ===${NC}\n"
+    print_check_result "INFO" "Inbound subset of Node Checker: CL QUIC listen/UFW, public TCP checker, active inbound QUIC probe."
+    print_check_result "INFO" "Ports come from the installed node (same as Node Checker), not a manual prompt."
+    node_checker_warn_inactive_unit "$(node_checker_exec_service)" execution \
+        "Execution client service not running. EL port may appear NOT open."
+    node_checker_warn_inactive_unit "$(node_checker_consensus_service)" consensus \
+        "Consensus client service not running. CL port may appear NOT open."
+    if isCharonEnabled; then
+        node_checker_warn_inactive_unit "${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}" charon \
+            "Charon service not running. Charon P2P port may appear NOT open."
+    fi
+    echo
+    node_checker_inbound_checks
+    echo
+    # Peer counts are not collected here; skip the "client does not report direction" line.
+    maybe_print_port_troubleshoot skipped skipped
+    echo -e "\n${GREEN}${BOLD}=== Port Checker Complete: Press enter to exit ===${NC}"
+    read -r
 }
 
 check_firewall() {
@@ -872,11 +915,7 @@ node_checker_main() {
     check_listening_ports
     echo
     check_elcl_listening_ports
-    check_cl_quic
-    echo
-    check_open_ports
-    echo
-    check_inbound_quic_probe
+    node_checker_inbound_checks
     echo
     check_peer_count
     echo
@@ -921,5 +960,9 @@ node_checker_main() {
 # Allow sourcing for bats tests without auto-running the interactive scanner.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     node_checker_parse_args "$@"
-    node_checker_main
+    if [[ "${NODE_CHECKER_PORTS_ONLY:-0}" -eq 1 ]]; then
+        node_checker_port_checker
+    else
+        node_checker_main
+    fi
 fi

@@ -312,11 +312,14 @@ check_open_ports_capture() {
 
 # ── check_peer_count (mocked Beacon / EL APIs) ────────────────────────────────
 
-# Live JSON-RPC on :8545 returning a count the bats stubs never use (99 / 0x63).
+# Live JSON-RPC on an ephemeral port returning a count the bats stubs never use (99 / 0x63).
+# Port 0 avoids colliding with a real execution client already bound to 8545.
 # If isolation is broken, check_peer_count prints 99 instead of the stub.
 start_mock_el_peer_count() {
 	local hex="${1:-0x63}"
-	MOCK_EL_HEX="$hex" python3 -c '
+	local portfile="$TEST_DIR/mock_el.port"
+	rm -f "$portfile"
+	MOCK_EL_HEX="$hex" MOCK_EL_PORTFILE="$portfile" python3 -c '
 import os
 from http.server import BaseHTTPRequestHandler, HTTPServer
 HEX = os.environ["MOCK_EL_HEX"]
@@ -333,14 +336,30 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(body)
     def log_message(self, *args):
         pass
-HTTPServer(("127.0.0.1", 8545), H).serve_forever()
+httpd = HTTPServer(("127.0.0.1", 0), H)
+with open(os.environ["MOCK_EL_PORTFILE"], "w", encoding="utf-8") as fh:
+    fh.write(str(httpd.server_address[1]))
+    fh.write("\n")
+httpd.serve_forever()
 ' &
 	MOCK_EL_PID=$!
-	local i
+	local i port=""
+	for i in $(seq 1 50); do
+		if [[ -s "$portfile" ]]; then
+			port="$(tr -d '[:space:]' < "$portfile")"
+			break
+		fi
+		if ! kill -0 "$MOCK_EL_PID" 2>/dev/null; then
+			return 1
+		fi
+		sleep 0.05
+	done
+	[[ "$port" =~ ^[0-9]+$ ]] || return 1
+	EL_RPC_ENDPOINT="http://127.0.0.1:${port}"
 	for i in $(seq 1 30); do
 		if curl -sf -m 1 -X POST -H "Content-Type: application/json" \
 			--data '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' \
-			http://127.0.0.1:8545 >/dev/null; then
+			"$EL_RPC_ENDPOINT" >/dev/null; then
 			return 0
 		fi
 		sleep 0.1
@@ -489,7 +508,7 @@ stub_healthy_node_apis() {
 	[ "$failed_checks" -eq 0 ]
 }
 
-@test "unstubbed EL peer count reads a live mock on :8545 (99, not the bats stub)" {
+@test "unstubbed EL peer count reads a live mock on an ephemeral port (99, not the bats stub)" {
 	start_mock_el_peer_count 0x63
 	write_consensus Lighthouse
 	fetch_cl_api() {
@@ -507,7 +526,7 @@ stub_healthy_node_apis() {
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"Execution layer connected peers: 5"* ]]
 }
 
-@test "NODE_CHECKER_EL_PEER_COUNT and fetch_el_rpc stub ignore live mock EL on :8545" {
+@test "NODE_CHECKER_EL_PEER_COUNT and fetch_el_rpc stub ignore live mock EL on an ephemeral port" {
 	start_mock_el_peer_count 0x63
 	unset NODE_CHECKER_EL_PEER_COUNT || true
 	[ "$(node_checker_el_connected_peers)" -eq 99 ]
@@ -582,4 +601,119 @@ stub_healthy_node_apis() {
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"Plugins menu"* ]]
 	[[ "$(cat "$TEST_DIR/peers.out")" != *"enr:-SECRET"* ]]
 	[ "$NODE_CHECKER_DEBUG" -eq 0 ]
+}
+
+# ── Port Checker menu wiring ──────────────────────────────────────────────────
+
+@test "node_checker_inbound_checks runs QUIC listen, TCP checker, then QUIC probe" {
+	local order="$TEST_DIR/order"
+	: > "$order"
+	check_cl_quic() { echo CL >> "$order"; }
+	check_open_ports() { echo TCP >> "$order"; }
+	check_inbound_quic_probe() { echo PROBE >> "$order"; }
+	node_checker_inbound_checks >/dev/null
+	[ "$(paste -sd, "$order")" = "CL,TCP,PROBE" ]
+}
+
+@test "node_checker_main keeps the inbound subset inside the full suite" {
+	awk '
+		/^node_checker_main\(\)/ { in_fn=1 }
+		in_fn && /^# Allow sourcing/ { exit }
+		in_fn { print }
+	' plugins/node-checker/run.sh > "$TEST_DIR/main.body"
+	grep -q 'check_listening_ports' "$TEST_DIR/main.body"
+	grep -q 'check_elcl_listening_ports' "$TEST_DIR/main.body"
+	grep -q 'node_checker_inbound_checks' "$TEST_DIR/main.body"
+	grep -q 'check_peer_count' "$TEST_DIR/main.body"
+	grep -q 'check_systemd_services' "$TEST_DIR/main.body"
+	! grep -q 'check_open_ports' "$TEST_DIR/main.body"
+	! grep -q 'check_cl_quic' "$TEST_DIR/main.body"
+	! grep -q 'check_inbound_quic_probe' "$TEST_DIR/main.body"
+}
+
+@test "node_checker_parse_args --ports selects the port checker" {
+	NODE_CHECKER_PORTS_ONLY=0
+	NODE_CHECKER_TROUBLESHOOT=0
+	NODE_CHECKER_DEBUG=0
+	node_checker_parse_args --ports --debug
+	[ "$NODE_CHECKER_PORTS_ONLY" -eq 1 ]
+	[ "$NODE_CHECKER_TROUBLESHOOT" -eq 1 ]
+	[ "$NODE_CHECKER_DEBUG" -eq 1 ]
+	NODE_CHECKER_PORTS_ONLY=0
+	node_checker_parse_args --port-checker
+	[ "$NODE_CHECKER_PORTS_ONLY" -eq 1 ]
+}
+
+@test "print_port_troubleshoot_guidance skipped does not claim the CL hides direction" {
+	print_port_troubleshoot_guidance skipped skipped > "$TEST_DIR/guide.out"
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"Peer direction was not measured"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" == *"full Node Checker"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"does not report peer direction"* ]]
+	[[ "$(cat "$TEST_DIR/guide.out")" != *"No inbound consensus peers yet"* ]]
+}
+
+@test "node_checker_port_checker runs the inbound subset, then pauses" {
+	local order="$TEST_DIR/order"
+	: > "$order"
+	clear() { echo CLEARED >> "$order"; }
+	read() { echo PAUSED >> "$order"; }
+	check_cl_quic() { echo CL >> "$order"; }
+	check_open_ports() {
+		echo TCP >> "$order"
+		NODE_CHECKER_AUTO_TROUBLESHOOT=1
+	}
+	check_inbound_quic_probe() { echo PROBE >> "$order"; }
+	NODE_CHECKER_TROUBLESHOOT=0
+	NODE_CHECKER_TROUBLESHOOT_PRINTED=0
+	node_checker_port_checker > "$TEST_DIR/port.out" 2>&1
+	[ "$(paste -sd, "$order")" = "CLEARED,CL,TCP,PROBE,PAUSED" ]
+	[[ "$(cat "$TEST_DIR/port.out")" == *"Port Checker: Test for Incoming Connections"* ]]
+	[[ "$(cat "$TEST_DIR/port.out")" == *"not a manual prompt"* ]]
+	[[ "$(cat "$TEST_DIR/port.out")" == *"Peer direction was not measured"* ]]
+	[[ "$(cat "$TEST_DIR/port.out")" == *"Press enter to exit"* ]]
+	[[ "$(cat "$TEST_DIR/port.out")" != *"does not report peer direction"* ]]
+}
+
+@test "node_checker_port_checker warns when installed clients are stopped" {
+	write_execution Nethermind
+	write_consensus Lighthouse
+	cat > "$CHARON_SERVICE_FILE" <<'EOF'
+[Unit]
+Description=Charon
+[Service]
+ExecStart=/usr/bin/charon run --p2p-tcp-address=0.0.0.0:3610
+EOF
+	clear() { :; }
+	read() { :; }
+	systemctl() { return 1; }
+	check_cl_quic() { :; }
+	check_open_ports() { :; }
+	check_inbound_quic_probe() { :; }
+	NODE_CHECKER_AUTO_TROUBLESHOOT=0
+	NODE_CHECKER_TROUBLESHOOT=0
+	NODE_CHECKER_TROUBLESHOOT_PRINTED=0
+	node_checker_port_checker > "$TEST_DIR/port.out" 2>&1
+	[[ "$(cat "$TEST_DIR/port.out")" == *"Execution client service not running"* ]]
+	[[ "$(cat "$TEST_DIR/port.out")" == *"Consensus client service not running"* ]]
+	[[ "$(cat "$TEST_DIR/port.out")" == *"Charon service not running"* ]]
+}
+
+@test "Port Checker menu calls checkOpenPorts which runs run.sh --ports" {
+	grep -q 'Port Checker: Test for Incoming Connections' ethpillar.sh
+	grep -A3 '🔄)' ethpillar.sh | grep -q 'checkOpenPorts'
+	grep -A3 '🛡️)' ethpillar.sh | grep -q 'plugins/node-checker/run.sh'
+	! grep -A3 '🛡️)' ethpillar.sh | grep -q -- '--ports'
+	awk '
+		/^checkOpenPorts\(\)/ { in_fn=1 }
+		in_fn { print }
+		in_fn && /^}/ { exit }
+	' functions.sh > "$TEST_DIR/checkopen.body"
+	# Quotes around ${BASE_DIR} are fine; the invoked command is still run.sh --ports.
+	tr -d '"' < "$TEST_DIR/checkopen.body" | grep -q 'plugins/node-checker/run.sh --ports'
+	grep -q '${BASE_DIR}' "$TEST_DIR/checkopen.body"
+	! grep -q '\./plugins/node-checker/run.sh' "$TEST_DIR/checkopen.body"
+	! grep -q 'vercel.app' "$TEST_DIR/checkopen.body"
+	! grep -q 'read -r -p' "$TEST_DIR/checkopen.body"
+	grep -q 'node_checker_port_checker' plugins/node-checker/run.sh
+	grep -q 'NODE_CHECKER_PORTS_ONLY' plugins/node-checker/run.sh
 }

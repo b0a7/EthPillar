@@ -338,7 +338,7 @@ check_inbound_quic_probe_capture() {
 	check_inbound_quic_probe_capture
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Installing aioquic once"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *".venv-quic"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp (Internet can complete a QUIC handshake)"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"handshake ("* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"0x1"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"libp2p"* ]]
@@ -394,8 +394,8 @@ check_inbound_quic_probe_capture() {
 	}
 
 	check_inbound_quic_probe_capture
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Internet can complete a QUIC handshake"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp (Internet can complete a QUIC handshake)"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"—"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"handshake ("* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"0x1"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"libp2p"* ]]
@@ -524,8 +524,7 @@ check_inbound_quic_probe_capture() {
 	}
 
 	check_inbound_quic_probe_capture
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp"* ]]
-	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"handshake (0x1)"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Inbound QUIC open on 9001/udp (Internet can complete a QUIC handshake) (0x1)"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe ALPN: libp2p"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe target 203.0.113.50"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"QUIC probe JSON (no ENR)"* ]]

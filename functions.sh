@@ -2124,57 +2124,11 @@ viewPubkeyAndIndices(){
     read -r
 }
 
-# Checks for open ports. Diagnose peering/router/port-forwarding issues.
+# Port Checker menu: Node Checker's inbound subset (networking.sh).
+# TCP public checker, CL QUIC listen/UFW, and the active inbound QUIC probe.
+# The public checker URL lives only in plugins/node-checker/networking.sh.
 checkOpenPorts(){
-    clear
-    [[ -f /etc/systemd/system/execution.service ]] \
-        && ! systemctl is-active --quiet execution \
-        && echo "${tty_red}WARNING: Execution client service not running. EL port may appear NOT open."
-    [[ -f /etc/systemd/system/consensus.service ]] \
-        && ! systemctl is-active --quiet consensus \
-        && echo "${tty_red}WARNING: Consensus client service not running. CL port may appear NOT open."
-    isCharonEnabled \
-        && ! systemctl is-active --quiet charon \
-        && echo "${tty_red}WARNING: Charon service not running. Charon P2P port may appear NOT open."
-    ohai "Checking for Open Ports:"
-    ohai "- Properly configuring open ports will improve validator performance and network health."
-    ohai "- Test if ports (e.g. 30303, 9000, Charon P2P) are accessible from the Internet."
-    ohai "- Test if port forwarding and/or firewalls are properly configured."
-    ohai "- Replace defaults with custom or client-specific port numbers as needed."
-
-    local CL_PORT EL_PORT CHARON_PORT CHECK_PORTS
-    # Read the ports from user input
-    read -r -p "Enter your Consensus Client's P2P port (press Enter to use default 9000): " CL_PORT
-    CL_PORT=${CL_PORT:-9000}
-    ohai "Using port ${CL_PORT} for Consensus Client's P2P port."
-    read -r -p "Enter your Execution Client's P2P port (press Enter to use default 30303): " EL_PORT
-    EL_PORT=${EL_PORT:-30303}
-    ohai "Using port ${EL_PORT} for Execution Client's P2P port."
-    CHECK_PORTS="${EL_PORT},${CL_PORT}"
-    if isCharonEnabled; then
-        CHARON_PORT=$(getCharonP2pPort)
-        if [[ -n "$CHARON_PORT" ]]; then
-            CHECK_PORTS="${CHECK_PORTS},${CHARON_PORT}"
-            ohai "Including Charon P2P port ${CHARON_PORT} (TCP only)."
-        fi
-    fi
-
-    # Call port checker
-    ohai "Calling https://eth2-client-port-checker.vercel.app/api/checker?ports=${CHECK_PORTS}"
-    json=$(curl -s "https://eth2-client-port-checker.vercel.app/api/checker?ports=${CHECK_PORTS}")
-
-    # Parse JSON using jq and print requester IP
-    ohai "Your IP: $(echo "$json" | jq -r .requester_ip)"
-
-    # Parse JSON using jq and check if any open ports exist
-    if $(echo "$json" | jq -e '.open_ports[]' > /dev/null 2>&1); then
-      ohai "Open ports found:"
-      echo "$json" | jq -r '.open_ports[]' | while read port; do echo $port; done
-    else
-      ohai "No open ports found."
-    fi
-    ohai "Press ENTER to finish."
-    read
+    sudo bash "${BASE_DIR}/plugins/node-checker/run.sh" --ports
 }
 
 # Find largest disk usage
