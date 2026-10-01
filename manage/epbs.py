@@ -32,7 +32,8 @@ Support levels:
   binaries are skipped.
 * ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
   list; prepare is a documented no-op. Complete is refused without
-  ``--force``.
+  ``--force``. Grandine 3.0.0-rc.0 (Sepolia Gloas) is still in this bucket:
+  ``--builder-url`` is one URL, not a ``builders[]`` list.
 """
 
 from __future__ import annotations
@@ -184,10 +185,25 @@ SUPPORT_NOTES: Dict[str, str] = {
         "Complete is refused without --force."
     ),
     "Grandine": (
-        "Placeholder: integrated client; --builder-url takes a single sidecar. "
-        "Prepare is a no-op. Complete is refused without --force."
+        "Placeholder: 3.0.0-rc.0 is the Sepolia Gloas binary, but --builder-url "
+        "is still a single URL (no builders list). Prepare is a no-op. "
+        "Complete is refused without --force. Sepolia installs use 3.0.0-rc.0; "
+        "other networks stay on the stable release. EthPillar does not set "
+        "--default-gas-limit; the RC schedules 200000000 at Sepolia Gloas "
+        "epoch 353024."
     ),
 }
+
+# Shown on Grandine prepare/status. Not a TUI enablement: support stays
+# placeholder, and the Integration ePBS matrix is not expanded.
+GRANDINE_EPBS_NOTE = (
+    "Grandine 3.0.0-rc.0 still has a single --builder-url "
+    "(--builder-api-url is deprecated) and no builders list, so prepare "
+    "cannot register MEV relays. Integration ePBS was not expanded. "
+    "Sepolia gas_limit_schedule is already 200000000 at Gloas epoch 353024; "
+    "EthPillar does not set --default-gas-limit because that overrides the "
+    "schedule on every epoch, including pre-Gloas (preferred limit 60000000)."
+)
 
 
 class EpbsError(Exception):
@@ -932,7 +948,10 @@ def apply_relays_placeholder(client: str) -> str:
         "Lighthouse": "--builder-relays=<urls> (not shipped; VC still --builder-proposals)",
         "Teku": "--validators-builder-relays=<urls> (not shipped; #11026 REST client unwired)",
         "Nimbus": "--payload-builder-relays=<urls> (not shipped; VC still --payload-builder=true)",
-        "Grandine": "multi --builder-url list (not shipped; single --builder-url today)",
+        "Grandine": (
+            "multi --builder-url / builders[].url list "
+            "(not shipped in 3.0.0-rc.0; single --builder-url today)"
+        ),
     }
     return planned.get(client, "no VC relay-list flag shipped")
 
@@ -1312,6 +1331,8 @@ def _apply_vc_relays(
             f"without a VC relay replacement. Complete is refused unless you "
             f"pass --force (local EL + P2P bids only)."
         )
+        if vc_name == "Grandine":
+            plan.warnings.append(GRANDINE_EPBS_NOTE)
         if mode == "integrated_grandine":
             plan.warnings.append(
                 "Grandine is integrated; there is no separate validator.service."
@@ -1751,6 +1772,7 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
         lines.append(
             "Complete: refused unless --force (local EL + P2P only)."
         )
+        lines.append(GRANDINE_EPBS_NOTE)
     if bn_name:
         _, bn_content = _read_required_unit(fs, "consensus")
         stripped = strip_bn_sidecar(bn_content, bn_name)

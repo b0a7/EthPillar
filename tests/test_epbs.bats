@@ -40,6 +40,14 @@ setup() {
   grep -q 'charon_epbs_supported' manage/epbs.py
 }
 
+@test "integration ePBS matrix stays Prysm and Lodestar" {
+  # Grandine 3.0.0-rc.0 has no builders list, so the matrix was not expanded.
+  ! grep -q 'Grandine-.*ePBS' tests/integration/run_docker_tests.py
+  grep -q 'was not expanded' docs/ePBS-migration.md
+  grep -q '3.0.0-rc.0' docs/ePBS-migration.md
+  grep -q 'validators-builder-registration-default-gas-limit=200000000' docs/ePBS-migration.md
+}
+
 @test "integration matrix has Prysm and Lodestar ePBS migration cases" {
     grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py

@@ -860,6 +860,18 @@ class TestGrandineService:
         )
         assert "--network-dir=/opt/ethpillar/testnet" in result
 
+    def test_bn_sepolia_does_not_set_default_gas_limit(self):
+        """Sepolia Gloas gas limit is scheduled in the 3.0.0-rc.0 binary."""
+        result = generate_grandine_bn_service(
+            "sepolia", SYNC_URL, JWTSECRET_PATH,
+            CL_REST_PORT, CL_P2P_PORT, CL_P2P_PORT_2, CL_MAX_PEER_COUNT,
+            mev_parameters="--builder-url=http://127.0.0.1:18550",
+        )
+        assert "Description=Grandine Consensus Client service for SEPOLIA" in result
+        assert "--network=sepolia" in result
+        assert "--default-gas-limit" not in result
+        assert "--builder-url=http://127.0.0.1:18550" in result
+
     def test_bn_integrated_vc(self):
         result = generate_grandine_bn_service(
             "mainnet", SYNC_URL, JWTSECRET_PATH,

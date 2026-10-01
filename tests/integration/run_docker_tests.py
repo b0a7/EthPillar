@@ -90,6 +90,10 @@ switch_tests = [
 ]
 
 # Post-install ePBS migration cases (empty-wallet VC start).
+# Grandine 3.0.0-rc.0 is omitted on purpose: it still has a single --builder-url
+# and no builders[].url / multi-relay prepare path (same bar as Prysm and
+# Lodestar). Sepolia installs that RC via deploy.grandine; this matrix is
+# unchanged. See docs/ePBS-migration.md.
 epbs_tests = [
     (
         "Prysm-Reth-ePBS-Migration-SEPOLIA",

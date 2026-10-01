@@ -29,7 +29,7 @@ Use this when execution, consensus, MEV-Boost, and a **solo** validator client a
 
 **MEV-Boost → ePBS migration**
 
-That item appears when the local validator fully supports migration (**Prysm** or **Lodestar** v1.47.0+). Lighthouse, Teku, Nimbus, and Grandine do not get the TUI entry.
+That item appears when the local validator fully supports migration (**Prysm** or **Lodestar** v1.47.0+). Lighthouse, Teku, Nimbus, and Grandine do not get the TUI entry. Grandine **3.0.0-rc.0** is the Sepolia Gloas binary, but it still has one `--builder-url` and no builder list, so it stays off this menu.
 
 | Menu item | When to use it |
 |-----------|----------------|
@@ -56,13 +56,17 @@ That item appears when the local validator fully supports migration (**Prysm** o
 |----------------|---------------------|
 | **Prysm** (v7.2.0+) | Writes each MEV-Boost relay URL into Prysm’s proposer settings as a builder (`default_config.builder.builders`). That list is what opts the validator into relay registration before Gloas and what Prysm calls after Gloas. Removes the deprecated `--enable-builder` flag. Restarts the validator if you agree. **Does not** stop MEV-Boost. |
 | **Lodestar** (v1.47.0+) | Writes `--builder.urls` and `--builder.minBid` on the validator. Older Lodestar builds skip this so the client can still start. **Does not** stop MEV-Boost. |
-| **Lighthouse, Teku, Nimbus, Grandine** | Not offered in the TUI. |
+| **Lighthouse, Teku, Nimbus, Grandine** | Not offered in the TUI. Grandine 3.0.0-rc.0 does not change this: prepare would have nowhere to write a relay list. |
 
 After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks keep working as they do today.
 
 If an older EthPillar already wrote `builder.relays` (and `--enable-builder`), run the before-fork step again. Prysm v7.2.0 ignores `relays`. Complete stays refused until `builders` is present.
 
 **Sepolia gas limit (Prysm v7.2.0).** This Prysm release does not include the 200M gas-limit schedule, so Gloas proposals default to 60M. If you want 200M, add `"gas_limit": "200000000"` yourself under `default_config` (or under a key in `proposer_config`). EthPillar does not write that value, and it does not set it on mainnet or Hoodi. `--suggested-gas-limit` only affects pre-Gloas mev-boost registrations.
+
+**Sepolia gas limit (Grandine 3.0.0-rc.0).** This RC already schedules `200000000` at Gloas epoch `353024`. EthPillar does not set `--default-gas-limit`: that flag replaces the schedule on every epoch, including pre-Gloas (preferred limit 60M). There is no `builders[].url` field to fill in.
+
+**Coordinator note (not applied on this branch).** Prysm’s operator-set `"gas_limit": "200000000"` and Teku’s `--validators-builder-registration-default-gas-limit=200000000` stay as they are. This branch does not change Prysm or Teku.
 
 **After the Gloas fork** (after the first step succeeded)
 
@@ -188,7 +192,7 @@ Relays and `-min-bid` are read from `mevboost.service` (or from a migration file
 | **Obol Charon** (any signer VC, co-located) | Keeps `--builder-api`; **skips** VC relay writes. TUI entry hidden until Obol ships Gloas/ePBS support. |
 | **Prysm** (v7.2.0+, no Charon) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema version 2). Each MEV-Boost relay becomes `default_config.builder.builders[].url`. A nonempty `builders` list opts the key into pre-Gloas mev-boost registration and is the post-Gloas builder list. `auth_data` is omitted (Prysm signs the URL bytes). `max_execution_payment` is `"0"` (trustless-only: collateral-backed bid value counts; a builder’s promised execution-layer payment does not). MEV-Boost `-min-bid` (ETH) is copied to `builder.min_bid` as integer Gwei. Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Sets `--proposer-settings-file` and **removes** deprecated `--enable-builder` (that flag only produces legacy pre-Gloas content and does not override v2 settings). Does not write `gas_limit` or `--suggested-gas-limit`. Drops legacy `builder.enabled`, `builder.relays`, and `builders_set` (v7.2.0 ignores `relays` and rejects unknown keys / `builders_set`). On Sepolia, warns that v7.2.0 defaults to a 60M gas limit unless you set `"gas_limit": "200000000"` yourself. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
 | **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. Older builds are skipped so the VC can still start. |
-| **Lighthouse, Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. |
+| **Lighthouse, Teku, Nimbus, Grandine** | Documented no-op; units are not mutated. Grandine 3.0.0-rc.0 is included: single `--builder-url`, no `builders[]` list, and `--default-gas-limit` is left unset. |
 
 BN sidecar flags stay until `complete`.
 
@@ -227,7 +231,17 @@ Restart `consensus` after apply so the BN drops the sidecar URL. When Charon is 
 | Lighthouse | **placeholder** | VC `--builder-proposals` only; one BN `--builder` URL. |
 | Teku | **placeholder** | Staked Builder REST client ([Consensys/teku#11026](https://github.com/Consensys/teku/issues/11026)) not wired. Relays stay on BN `--builder-endpoint`. |
 | Nimbus | **placeholder** | VC `--payload-builder=true`; URL on BN. |
-| Grandine | **placeholder** | Integrated client; single `--builder-url`. |
+| Grandine 3.0.0-rc.0 | **placeholder** | Sepolia installs that RC; other networks stay on stable Grandine (2.0.6). Integrated client; single `--builder-url` (`--builder-api-url` is deprecated). No `builders[]` list, so Integration ePBS was not expanded. Gas limit 200000000 is already scheduled at epoch 353024; `--default-gas-limit` is not written. |
+
+### Why Grandine is not in the Integration ePBS matrix
+
+Prysm and Lodestar are in that matrix because prepare writes a real relay list (`builders[].url`, or `--builder.urls`) and the empty-wallet VC starts with those flags. Grandine 3.0.0-rc.0 was checked against the same bar ([release 3.0.0-rc.0](https://github.com/grandinetech/grandine/releases/tag/3.0.0-rc.0), `runtime/src/grandine_args.rs`):
+
+- `--builder-url` is one URL. `--builder-api-url` is a deprecated alias for that same URL.
+- `validators.yml` can set per-validator `gas_limit` and builder boost, not a builder URL list.
+- Sepolia `gas_limit_schedule` is already `200000000` at epoch `353024`. Writing `--default-gas-limit` would override that schedule before the fork.
+
+Integration was not expanded. Sepolia Grandine installs and updates use `3.0.0-rc.0`; mainnet, Hoodi, Holesky, and Ephemery keep GitHub latest stable (2.0.6 when this RC was published). A later stable `3.0.0` or newer replaces the Sepolia pin automatically.
 
 ### Inspecting a running Prysm VC
 

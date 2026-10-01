@@ -492,6 +492,16 @@ EOF
   ! version_matches_latest "v1.45.0-rc.0" "v1.45.0" "" ""
 }
 
+@test "version_matches_latest accepts Grandine 3.0.0 binary against 3.0.0-rc.0" {
+  version_matches_latest "v3.0.0" "3.0.0-rc.0" "" ""
+  version_matches_latest "3.0.0" "3.0.0-rc.0" "" ""
+}
+
+@test "version_matches_latest does not treat a stable as its own RC" {
+  ! version_matches_latest "v1.45.0" "v1.45.0-rc.0" "" ""
+  ! version_matches_latest "v2.0.6" "3.0.0-rc.0" "" ""
+}
+
 @test "version_matches_latest matches commit prefix either way" {
   version_matches_latest "v1.45.0" "v1.45.0" "668ea9d" "668ea9dea24189d9be99940acd923e8920e75bf6"
   version_matches_latest "1.45.0" "v1.45.0" "668ea9dea24189d9be99940acd923e8920e75bf6" "668ea9d"

@@ -1,9 +1,111 @@
 import os
+import re
+from pathlib import Path
 import subprocess
 from deploy.common import install_system_binary, write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, BASE_DATA_DIR
-from client_requirements import validate_version_for_network
+from client_requirements import compare_versions, validate_version_for_network
 from typing import Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
+
+# Sepolia Gloas/ePBS ships as a pre-release. GitHub ``/releases/latest`` stays
+# on the stable line (2.0.6 when this RC was published). Mainnet and other
+# networks must keep tracking that stable tag, not this RC.
+GRANDINE_SEPOLIA_GLOAS_TAG = "3.0.0-rc.0"
+# First stable release that supersedes the RC pin. Until GitHub latest reaches
+# this version, Sepolia installs the RC above.
+GRANDINE_STABLE_GLOAS_FLOOR = "3.0.0"
+# Baked into Grandine 3.0.0-rc.0 ``Config::sepolia`` (types/src/config.rs).
+# ``--default-gas-limit`` replaces the schedule at every epoch, including
+# pre-Gloas, so EthPillar does not set it. There is no ``builders[]`` list;
+# ``--builder-url`` is still a single URL.
+GRANDINE_SEPOLIA_GLOAS_EPOCH = 353024
+GRANDINE_SEPOLIA_GLOAS_GAS_LIMIT = 200_000_000
+_NETWORK_IN_UNIT = re.compile(
+    r"\b(MAINNET|HOLESKY|SEPOLIA|HOODI|EPHEMERY)\b",
+    re.IGNORECASE,
+)
+
+
+def grandine_release_tag(eth_network: str, latest_tag: Optional[str] = None) -> str:
+    """Return the Grandine release tag EthPillar should install.
+
+    Sepolia uses ``3.0.0-rc.0`` until GitHub latest is a stable ``3.0.0`` or
+    newer. Every other network returns ``LATEST`` so the stable line
+    (2.0.6 today) is unchanged.
+
+    Args:
+        eth_network: Network name from deploy (``sepolia``, ``MAINNET``, …).
+        latest_tag: Official GitHub latest tag, when already known. When it
+            is a stable 3.0.0 or newer, Sepolia also returns ``LATEST``.
+
+    Returns:
+        ``LATEST`` or :data:`GRANDINE_SEPOLIA_GLOAS_TAG`.
+    """
+    if (eth_network or "").strip().lower() != "sepolia":
+        return "LATEST"
+    if latest_tag:
+        try:
+            if compare_versions(latest_tag, GRANDINE_STABLE_GLOAS_FLOOR) >= 0:
+                return "LATEST"
+        except (TypeError, ValueError):
+            pass
+    return GRANDINE_SEPOLIA_GLOAS_TAG
+
+
+def network_from_consensus_unit(text: str) -> str:
+    """Return the lowercase network named in a Grandine consensus unit.
+
+    Args:
+        text: ``consensus.service`` contents.
+
+    Returns:
+        ``sepolia``, ``mainnet``, … or ``""`` when the unit does not say.
+    """
+    match = _NETWORK_IN_UNIT.search(text or "")
+    return match.group(1).lower() if match else ""
+
+
+def resolve_grandine_install_tag(eth_network: str) -> str:
+    """Pick ``LATEST`` or the Sepolia Gloas RC for *eth_network*.
+
+    Non-Sepolia never queries GitHub. Sepolia probes official latest so a
+    future stable 3.0.0 replaces the RC pin. If that probe fails, Sepolia
+    still gets the RC (the mandatory Gloas build).
+
+    Args:
+        eth_network: Network name from deploy or from the installed unit.
+
+    Returns:
+        ``LATEST`` or :data:`GRANDINE_SEPOLIA_GLOAS_TAG`.
+    """
+    if grandine_release_tag(eth_network) == "LATEST":
+        return "LATEST"
+    try:
+        latest = str(get_release_info("LATEST", True).get("version") or "")
+    except Exception:
+        # GitHub lookup failed. Sepolia still needs the Gloas RC.
+        return GRANDINE_SEPOLIA_GLOAS_TAG
+    return grandine_release_tag(eth_network, latest_tag=latest)
+
+
+def grandine_update_tag(unit_path: Optional[str] = None) -> str:
+    """Return the Grandine update target for an installed consensus unit.
+
+    Args:
+        unit_path: ``consensus.service`` path. Defaults to
+            ``CONSENSUS_SERVICE_FILE`` or ``/etc/systemd/system/consensus.service``.
+
+    Returns:
+        ``LATEST`` when the unit is missing or not Sepolia, otherwise the
+        same tag :func:`resolve_grandine_install_tag` would install.
+    """
+    path = unit_path or os.environ.get("CONSENSUS_SERVICE_FILE") or "/etc/systemd/system/consensus.service"
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return "LATEST"
+    return resolve_grandine_install_tag(network_from_consensus_unit(text))
+
 
 def generate_grandine_bn_service(eth_network: str, sync_url: str, jwtsecret_path: str,
                                  cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
@@ -113,6 +215,11 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
 # are appended to `consensus.service`. The EthPillar key management scripts have 
 # been adapted to copy the `.json` and `.txt` keystore files directly into 
 # `/var/lib/grandine/validator_keys/` and set proper permissions for the `consensus` user.
+#
+# Sepolia Gloas (3.0.0-rc.0) already schedules gas limit 200000000 at epoch
+# 353024. Do not add --default-gas-limit: it overrides that schedule on every
+# epoch, including pre-Gloas. --builder-url remains a single sidecar URL;
+# 3.0.0-rc.0 has no builders[] list, so ePBS prepare stays a no-op.
 # ==============================================================================
 
 def download_grandine(eth_network: str) -> str:
@@ -130,9 +237,16 @@ def download_grandine(eth_network: str) -> str:
     # Create User and directories
     setup_client_user_and_dir("consensus", "grandine")
 
-    # Resolve version and download URL
+    # Resolve version and download URL. Sepolia Gloas uses 3.0.0-rc.0;
+    # every other network stays on GitHub latest stable (2.0.6 today).
     arch_amd64 = get_machine_architecture() == "amd64"
-    info = get_release_info("LATEST", arch_amd64)
+    release_tag = resolve_grandine_install_tag(eth_network)
+    if release_tag != "LATEST":
+        print(
+            f"Grandine on {eth_network}: installing {release_tag} "
+            "(Sepolia Gloas RC). Other networks stay on the stable release."
+        )
+    info = get_release_info(release_tag, arch_amd64)
     gr_version = info["version"]
 
     # Validate version for network requirements

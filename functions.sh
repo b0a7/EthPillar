@@ -556,8 +556,10 @@ fetch_ethpillar_remote_version() {
     echo "$latest"
 }
 
-# Query deploy.common release_info LATEST. Sets TAG, TAG_COMMIT, RELEASE_DATA.
+# Query deploy.common release_info. Sets TAG, TAG_COMMIT, RELEASE_DATA.
 # Usage: fetch_latest_release <client> [--strip-v]
+# Grandine on a Sepolia consensus unit resolves 3.0.0-rc.0; every other
+# client, and Grandine elsewhere, resolves LATEST (stable 2.0.6 for Grandine).
 # Returns 1 if the request fails or version is missing (does not exit).
 fetch_latest_release() {
     local client="$1"
@@ -567,7 +569,17 @@ fetch_latest_release() {
     TAG=""
     TAG_COMMIT=""
     RELEASE_DATA=""
-    data=$(PYTHONPATH="${BASE_DIR}" "${ETHPILLAR_PYTHON:-python3}" -m deploy.common release_info "$client" "LATEST") || return 1
+    local tag="LATEST"
+    # Sepolia Grandine tracks 3.0.0-rc.0; other networks stay on LATEST (2.0.6).
+    # An empty/unexpected reply (tests that mock python3) keeps LATEST.
+    if [[ "${client,,}" == "grandine" ]]; then
+        local pinned=""
+        pinned=$(PYTHONPATH="${BASE_DIR}" "${ETHPILLAR_PYTHON:-python3}" -c 'from deploy.grandine import grandine_update_tag; print(grandine_update_tag(), end="")' 2>/dev/null || true)
+        if [[ "$pinned" == "LATEST" || "$pinned" == "3.0.0-rc.0" ]]; then
+            tag="$pinned"
+        fi
+    fi
+    data=$(PYTHONPATH="${BASE_DIR}" "${ETHPILLAR_PYTHON:-python3}" -m deploy.common release_info "$client" "$tag") || return 1
     RELEASE_DATA="$data"
     TAG=$(echo "$data" | jq -r .version)
     TAG_COMMIT=$(echo "$data" | jq -r '.commit // empty')
@@ -751,6 +763,13 @@ version_matches_latest() {
   local inst_commit="${3:-${INSTALLED_COMMIT:-}}"
   local tag_commit="${4:-${TAG_COMMIT:-}}"
   local inst_lc tag_lc
+
+  # Grandine 3.0.0-rc.0 --version is CARGO_PKG_VERSION 3.0.0 (no -rc.0).
+  # Keep this pair in sync with GRANDINE_SEPOLIA_GLOAS_TAG in deploy/grandine.py.
+  # Other RC/stable pairs stay unequal (1.45.0 does not match 1.45.0-rc.0).
+  if [[ "${installed#v}" == "3.0.0" && "${latest#v}" == "3.0.0-rc.0" ]]; then
+    installed="$latest"
+  fi
 
   [[ "${installed#v}" == "${latest#v}" ]] || return 1
 
@@ -1227,6 +1246,7 @@ charonEpbsSupported() {
 # - Split LXC (MEV, no local VC): always show (export / remote complete).
 # - Charon DVT on this host: hide until charonEpbsSupported (builder path is Charon's).
 # - Solo: manage.epbs.support_level == "full" (Prysm v7.2.0+ builders list, Lodestar).
+#   Grandine 3.0.0-rc.0 stays out: single --builder-url, no builders list.
 # CLI (`python -m manage.epbs`) is not gated; placeholders stay there.
 epbsTuiSupported() {
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"

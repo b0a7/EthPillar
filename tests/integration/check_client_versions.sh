@@ -55,6 +55,18 @@ get_forced_rc_tag() {
   return 1
 }
 
+# Sepolia Grandine is pinned to 3.0.0-rc.0 (binary prints 3.0.0). That pin
+# wins over the install-time LATEST snapshot so the Sepolia Grandine deploy
+# is not compared to stable 2.0.6. Forced upgrade seeds still win.
+get_grandine_sepolia_tag() {
+  local client="$1"
+  local tag
+  [[ "${client,,}" == "grandine" ]] || return 1
+  tag=$(PYTHONPATH="/ethpillar" python3 -c 'from deploy.grandine import grandine_update_tag; print(grandine_update_tag(), end="")' 2>/dev/null || true)
+  [[ "$tag" == "3.0.0-rc.0" ]] || return 1
+  echo "$tag"
+}
+
 get_latest_release_tag() {
   local client="$1"
   local data tag
@@ -81,6 +93,11 @@ get_expected_release_tag() {
     echo "$tag"
     return 0
   fi
+  if tag=$(get_grandine_sepolia_tag "$client"); then
+    TAG_COMMIT=$(PYTHONPATH="/ethpillar" python3 -m deploy.common release_info "$client" "$tag" 2>/dev/null | jq -r '.commit // empty' || true)
+    echo "$tag"
+    return 0
+  fi
   if [[ -n "$snapshot" && -f "$snapshot" ]]; then
     tag=$(jq -r --arg k "$key" '.[$k] // empty' "$snapshot")
     if [[ -n "$tag" && "$tag" != "null" ]]; then
@@ -102,6 +119,8 @@ assert_matches_latest() {
 
   if get_forced_rc_tag "$release_client" >/dev/null; then
     expected_label="forced seed"
+  elif get_grandine_sepolia_tag "$release_client" >/dev/null; then
+    expected_label="Sepolia Gloas pin"
   elif [[ -n "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT:-}" && -f "${ETHPILLAR_INTEGRATION_LATEST_SNAPSHOT}" ]]; then
     expected_label="install-time LATEST"
   fi

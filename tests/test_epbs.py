@@ -17,6 +17,7 @@ from deploy.grandine import generate_grandine_bn_service
 from deploy.charon import generate_charon_service
 from manage.epbs import (
     CHARON_EPBS_NOTE,
+    GRANDINE_EPBS_NOTE,
     COMPLETE_REFUSED,
     MIGRATION_FORMAT,
     MIGRATION_VERSION,
@@ -674,7 +675,11 @@ def test_grandine_integrated_placeholder_and_complete(tmp_path: Path) -> None:
     plan = prepare(fs, apply=True)
     assert plan.client == "Grandine"
     assert plan.support == "placeholder"
-    assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert GRANDINE_EPBS_NOTE in plan.warnings
+    assert "builders" in plan.notes
+    bn_text = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" in bn_text
+    assert "--default-gas-limit" not in bn_text
     with pytest.raises(EpbsError, match="Complete refused"):
         complete(fs, apply=False)
 
