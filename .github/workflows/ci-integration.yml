@@ -4,6 +4,13 @@ name: CI — Integration
 # Scheduled full-suite runs use ci-nightly.yml; use workflow_dispatch for ad-hoc integration only.
 on:
   workflow_dispatch:
+  # TEMPORARY — strip this push trigger before any PR. It exists only on this
+  # RC tip. Agent tokens cannot workflow_dispatch (403); a branch-scoped push
+  # is the fallback so CI — Integration still runs here. Do not copy it onto
+  # a PR branch for an official (non-RC) client release.
+  push:
+    branches:
+      - cursor/epbs-grandine-300-rc0-2a45
 
 permissions:
   contents: read
