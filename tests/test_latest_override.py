@@ -10,11 +10,15 @@ from tests.integration.latest_override import (
     clear_override,
     forced_rc_tag,
     install_github_release_hook,
+    is_consensus_downgrade,
     load_override,
+    load_seeds_manifest,
+    main as latest_override_main,
     normalize_deploy_clients,
     prepare_rc_overrides,
     remap_latest_tag,
     write_override,
+    write_seeds_manifest,
 )
 
 
@@ -194,6 +198,96 @@ def test_check_client_versions_script_reads_clients_map():
     assert "matches_forced_seed" in text
 
 
+def test_consensus_downgrade_when_rc_seed_is_newer_than_latest(tmp_path):
+    """Lighthouse v8.3.0-rc.0 vs LATEST v8.2.3 is the Nightly schema-downgrade case."""
+    manifest = tmp_path / "seeds.json"
+    write_seeds_manifest(
+        {"lighthouse": "v8.3.0-rc.0", "reth": "v1.9.0-rc.1", "teku": "25.9.0"},
+        {"lighthouse": "rc", "reth": "rc", "teku": "stable"},
+        {},
+        path=str(manifest),
+        latest={
+            "lighthouse": "v8.2.3",
+            "reth": "v1.8.0",
+            "teku": "25.9.3",
+        },
+    )
+    loaded = load_seeds_manifest(str(manifest))
+    assert loaded["latest"]["lighthouse"] == "v8.2.3"
+    assert is_consensus_downgrade("lighthouse", path=str(manifest))
+    assert is_consensus_downgrade("Lighthouse", path=str(manifest))
+    # EL RC newer than LATEST is not a beacon-DB downgrade.
+    assert not is_consensus_downgrade("reth", path=str(manifest))
+    # Previous stable is older than LATEST: keep the DB and upgrade forward.
+    assert not is_consensus_downgrade("teku", path=str(manifest))
+    assert not is_consensus_downgrade("nimbus", path=str(manifest))
+    assert not is_consensus_downgrade("lighthouse", path=str(tmp_path / "missing.json"))
+
+
+def test_prepare_records_official_latest_for_downgrade_check(tmp_path, capsys):
+    override = str(tmp_path / "override.json")
+    seeds = str(tmp_path / "seeds.json")
+
+    def fake_find_seed(client: str, _repo):
+        if client == "lighthouse":
+            return {
+                "client": client,
+                "rc_tag": "v8.3.0-rc.0",
+                "seed_tag": "v8.3.0-rc.0",
+                "seed_kind": "rc",
+                "latest": "v8.2.3",
+                "status": "ok",
+                "reason": "prerelease newer than LATEST",
+            }
+        return {
+            "client": client,
+            "rc_tag": None,
+            "seed_tag": "v1.2.2",
+            "seed_kind": "stable",
+            "latest": "v1.2.3",
+            "status": "ok",
+            "reason": "previous stable older than LATEST",
+        }
+
+    result = prepare_rc_overrides(
+        ["lighthouse", "reth"],
+        path=override,
+        find_rc_fn=fake_find_seed,
+        seeds_dest=seeds,
+    )
+    assert result["latest"]["lighthouse"] == "v8.2.3"
+    assert result["latest"]["reth"] == "v1.2.3"
+    assert is_consensus_downgrade("lighthouse", path=seeds)
+    assert not is_consensus_downgrade("reth", path=seeds)
+    logged = capsys.readouterr().out
+    assert "binary downgrade vs LATEST" in logged
+    assert "wipe the beacon DB" in logged
+
+
+def test_downgrade_cli_prints_yes_or_no(tmp_path, monkeypatch, capsys):
+    manifest = tmp_path / "seeds.json"
+    write_seeds_manifest(
+        {"lodestar": "v1.49.0-rc.0"},
+        {"lodestar": "rc"},
+        {},
+        path=str(manifest),
+        latest={"lodestar": "v1.48.0"},
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["latest_override.py", "downgrade", "lodestar", "--seeds", str(manifest)],
+    )
+    assert latest_override_main() == 0
+    assert capsys.readouterr().out.strip() == "yes"
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["latest_override.py", "downgrade", "lodestar", "--seeds", str(tmp_path / "absent.json")],
+    )
+    assert latest_override_main() == 0
+    assert capsys.readouterr().out.strip() == "no"
+
+
 def test_test_updates_script_two_phase_and_install_gate():
     text = Path("tests/integration/test_updates.sh").read_text(encoding="utf-8")
     code = "\n".join(
@@ -207,6 +301,15 @@ def test_test_updates_script_two_phase_and_install_gate():
     assert "Soft-skipping real-upgrade assert" in text
     assert "ethpillar-integration-upgrade-seeds.json" in text
     assert "ETHPILLAR_CHECK_ROLES" in text
+    assert "consensus_downgrade_answer" in text
+    assert "wipe_consensus_beacon_for_downgrade" in text
+    assert '[[ "$target" == "consensus" ]]' in text
+    wipe = Path("tests/integration/wipe_consensus_beacon.sh").read_text(encoding="utf-8")
+    assert "beacon_datadir_for_client" in wipe
+    assert "wipe_beacon_datadir" in wipe
+    assert "systemctl stop consensus" in wipe
+    assert "systemctl start" not in wipe
+    assert "systemctl restart" not in wipe
     check = Path("tests/integration/check_client_versions.sh").read_text(encoding="utf-8")
     assert "ETHPILLAR_CHECK_ROLES" in check
     assert "should_check_role" in check
