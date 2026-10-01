@@ -1180,6 +1180,31 @@ ufwFirewallMenuAction(){
     echo "${UFW_MENU_ACTIONS[$choice]:-}"
 }
 
+# REST port for the UFW "CC RPC" allow (menu action cc_rpc).
+# A port flag on consensus.service is the port the client binds, so it wins
+# over CL_REST_PORT — including the env default 5052. With no unit port flag,
+# use CL_REST_PORT, then 5052.
+consensusRestPortForUfw(){
+    local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    local scraped=""
+    if [[ -f "$consensus_svc" ]] && grep -qE -- '(--http-port=|--rest-port=|--rest-api-port=|--rest\.port=)[0-9]+' "$consensus_svc"; then
+        # getBeaconNodeEndpoint keeps CL_REST_PORT when it is set, which skips
+        # the unit scrape. Clear it for this call only.
+        scraped=$(CL_REST_PORT="" getBeaconNodeEndpoint)
+        echo "${scraped##*:}"
+        return 0
+    fi
+    echo "${CL_REST_PORT:-5052}"
+}
+
+# Allow the local network to reach the consensus REST port (UFW menu cc_rpc).
+# Optional argument overrides the resolved port (the menu passes it once).
+ufwAllowConsensusRest(){
+    local port="${1:-}"
+    [[ -n "$port" ]] || port="$(consensusRestPortForUfw)"
+    sudo ufw allow from "${network_current}" to any port "${port}" comment 'Allow local network to access consensus client RPC port'
+}
+
 # Classify how this node runs validator duties.
 # Returns: none | separate | integrated_grandine
 getValidatorMode(){
@@ -1211,6 +1236,24 @@ getValidatorClient(){
 
     VC="$VALIDATOR_CLIENT"
     echo "$VALIDATOR_CLIENT"
+}
+
+# Whiptail title fragment for the Validator submenu.
+# Integrated Grandine has no validator.service; the menu still names Grandine.
+validatorSubmenuTitle(){
+    local mode
+    mode=$(getValidatorMode)
+    if [[ "$mode" == "integrated_grandine" ]]; then
+        echo "Grandine (integrated)"
+        return 0
+    fi
+    getValidatorClient
+}
+
+# True when the main menu should list the Validator row.
+# Separate VC units and integrated Grandine (keystore on consensus.service).
+mainMenuShowsValidator(){
+    [[ "$(getValidatorMode)" != "none" ]]
 }
 
 # Lighthouse --datadir for import/list: prefer the EthPillar VC path, then the
@@ -2613,7 +2656,7 @@ exposeRpcCL(){
     _closed='127.0.0.1'
     _exposed='0.0.0.0'
     _service='consensus'
-    _file="/etc/systemd/system/${_service}.service"
+    _file="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/${_service}.service}"
     getNetworkConfig
 
     _flag=$(clRestBindFlag "${CL}")

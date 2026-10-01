@@ -22,7 +22,8 @@ fi
 API_BN_ENDPOINT="http://localhost:5052"
 EL_RPC_ENDPOINT="http://localhost:8545"
 
-declare -A client_github_url
+# -g so the map stays visible when this file is sourced from a function (bats setup).
+declare -gA client_github_url
 client_github_url['Lighthouse']='https://api.github.com/repos/sigp/lighthouse/releases/latest'
 client_github_url['Lodestar']='https://api.github.com/repos/ChainSafe/lodestar/releases/latest'
 client_github_url['Teku']='https://api.github.com/repos/ConsenSys/teku/releases/latest'
@@ -543,8 +544,9 @@ check_consensus_version() {
 }
 
 check_validator_version() {
-    [[ ! -f /etc/systemd/system/validator.service ]] && return
-    VAL=$(grep "Description=" /etc/systemd/system/validator.service | awk -F'=' '{print $2}' | awk '{print $1}')
+    local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+    [[ ! -f "$validator_svc" ]] && return
+    VAL=$(grep "Description=" "$validator_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     tag_url=${client_github_url["$VAL"]}
     name="Validator client ($VAL)"
 
