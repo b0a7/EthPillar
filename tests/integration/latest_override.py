@@ -40,6 +40,8 @@ from typing import Any, Callable, Iterable
 OVERRIDE_PATH = "/tmp/ethpillar-integration-latest-override.json"
 SEEDS_PATH = "/tmp/ethpillar-integration-upgrade-seeds.json"
 ENV_VAR = "ETHPILLAR_INTEGRATION_LATEST_OVERRIDE"
+# Sepolia Gloas builder file shipped in this pre-release. GitHub latest skips it.
+LIGHTHOUSE_EPBS_RC_TAG = "v8.3.0-rc.0"
 SEEDS_ENV = "ETHPILLAR_INTEGRATION_UPGRADE_SEEDS"
 _HOOK_ATTR = "_ethpillar_latest_override_wrapped"
 _GETH_HOOK_ATTR = "_ethpillar_geth_latest_override_wrapped"
@@ -487,6 +489,46 @@ def prepare_rc_overrides(
 
 
 prepare_upgrade_seeds = prepare_rc_overrides
+
+
+def lighthouse_epbs_pin_tag(latest_tag: str) -> str | None:
+    """Return the Gloas RC tag when *latest_tag* is older than that RC.
+
+    GitHub ``/releases/latest`` skips pre-releases, so a normal install does
+    not download v8.3.0-rc.0 while it is only a release candidate. The ePBS
+    integration case pins that tag until latest itself is the RC or newer.
+
+    Args:
+        latest_tag: Official Lighthouse latest tag (may be empty).
+
+    Returns:
+        ``v8.3.0-rc.0`` when latest is missing or older, otherwise None.
+    """
+    from client_requirements import compare_versions
+
+    latest = (latest_tag or "").strip()
+    if not latest:
+        return LIGHTHOUSE_EPBS_RC_TAG
+    if compare_versions(latest, LIGHTHOUSE_EPBS_RC_TAG) >= 0:
+        return None
+    return LIGHTHOUSE_EPBS_RC_TAG
+
+
+def pin_lighthouse_epbs_install(latest_tag: str, path: str | None = None) -> str | None:
+    """Write a Lighthouse-only LATEST override when the Gloas RC is not latest.
+
+    Args:
+        latest_tag: Official Lighthouse latest tag.
+        path: Override file path. Defaults to the integration override path.
+
+    Returns:
+        The pinned tag, or None when no override was written.
+    """
+    tag = lighthouse_epbs_pin_tag(latest_tag)
+    if tag is None:
+        return None
+    write_override({"lighthouse": tag}, path=path, kinds={"lighthouse": "rc"})
+    return tag
 
 
 def install_github_release_hook() -> bool:

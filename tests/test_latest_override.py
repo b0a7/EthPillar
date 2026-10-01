@@ -13,15 +13,35 @@ from tests.integration.latest_override import (
     is_consensus_downgrade,
     is_execution_downgrade,
     is_harness_downgrade,
+    lighthouse_epbs_pin_tag,
     load_override,
     load_seeds_manifest,
     main as latest_override_main,
     normalize_deploy_clients,
+    pin_lighthouse_epbs_install,
     prepare_rc_overrides,
     remap_latest_tag,
     write_override,
     write_seeds_manifest,
 )
+
+
+def test_lighthouse_epbs_pin_only_when_latest_is_older(tmp_path):
+    assert lighthouse_epbs_pin_tag("v8.2.3") == "v8.3.0-rc.0"
+    assert lighthouse_epbs_pin_tag("") == "v8.3.0-rc.0"
+    assert lighthouse_epbs_pin_tag("v8.3.0-rc.0") is None
+    assert lighthouse_epbs_pin_tag("v8.3.0") is None
+    assert lighthouse_epbs_pin_tag("v8.3.0-rc.1") is None
+
+    path = str(tmp_path / "override.json")
+    assert pin_lighthouse_epbs_install("v8.3.0", path=path) is None
+    assert not Path(path).exists()
+    assert pin_lighthouse_epbs_install("v8.2.3", path=path) == "v8.3.0-rc.0"
+    saved = load_override(path)
+    assert saved["clients"]["lighthouse"] == "v8.3.0-rc.0"
+    assert saved["repos"]["sigp/lighthouse"] == "v8.3.0-rc.0"
+    assert saved["kinds"]["lighthouse"] == "rc"
+    assert "reth" not in saved["clients"]
 
 
 def test_remap_latest_tag_noop_without_file(tmp_path):

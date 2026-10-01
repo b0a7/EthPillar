@@ -5,5 +5,7 @@ tqdm
 console-menu
 python-dotenv
 rich
+# Lighthouse ePBS builder_definitions.yml
+PyYAML
 # systemd config compare (Meld-in-terminal)
 tmeld

@@ -1,5 +1,5 @@
 #!/bin/bash
-# EthPillar ePBS migration integration test (Prysm or Lodestar + MEV-Boost).
+# EthPillar ePBS migration integration test (Prysm, Lodestar, or Lighthouse + MEV-Boost).
 # Runs inside the Docker container after a VC+MEV node is deployed.
 #
 # Starts the validator with an empty wallet (no keystores) so we can
@@ -16,13 +16,14 @@ BN_UNIT="/etc/systemd/system/consensus.service"
 MEV_UNIT="/etc/systemd/system/mevboost.service"
 SIDECAR="127.0.0.1:18550"
 SETTINGS="/var/lib/prysm_validator/proposer-settings.json"
+LH_BUILDERS="/var/lib/lighthouse_validator/validators/builder_definitions.yml"
 
 # Run manage.epbs with the integration venv. Extra args are forwarded.
 epbs_cli() {
     PYTHONPATH=/ethpillar "$py" -m manage.epbs "$@"
 }
 
-# First word of Description= (Prysm, Lodestar, …).
+# First word of Description= (Prysm, Lodestar, Lighthouse, …).
 detect_vc_client() {
     grep -m1 '^Description=' "$VC_UNIT" 2>/dev/null | awk -F'=' '{print $2}' | awk '{print $1}'
 }
@@ -43,9 +44,9 @@ assert_supported_vc() {
         exit 1
     fi
     case "$VC_CLIENT" in
-        Prysm|Lodestar) ;;
+        Prysm|Lodestar|Lighthouse) ;;
         *)
-            echo "❌ ePBS integration test requires a Prysm or Lodestar validator client"
+            echo "❌ ePBS integration test requires a Prysm, Lodestar, or Lighthouse validator client"
             grep Description= "$VC_UNIT" || true
             exit 1
             ;;
@@ -105,6 +106,32 @@ print(f"✅ proposer-settings.json: {len(urls)} builder URL(s), schema v2")
 PY
 }
 
+# Fail unless Lighthouse builder_definitions.yml lists enabled non-sidecar builders.
+assert_lighthouse_builders() {
+    if [[ ! -f "$LH_BUILDERS" ]]; then
+        echo "❌ builder_definitions.yml not written at $LH_BUILDERS"
+        exit 1
+    fi
+    PYTHONPATH=/ethpillar "$py" - <<'PY'
+import yaml
+from pathlib import Path
+path = Path("/var/lib/lighthouse_validator/validators/builder_definitions.yml")
+data = yaml.safe_load(path.read_text(encoding="utf-8"))
+entries = data.get("builders") or []
+urls = [
+    e.get("url")
+    for e in entries
+    if isinstance(e, dict) and e.get("enabled") is True and e.get("url")
+]
+assert urls, "builder_definitions.yml has no enabled builder URLs"
+assert all("18550" not in url for url in urls), urls
+assert all(e.get("max_execution_payment") == 0 for e in entries if isinstance(e, dict)), data
+text = path.read_text(encoding="utf-8")
+assert "gas_limit" not in text, text
+print(f"✅ builder_definitions.yml: {len(urls)} builder URL(s), no gas_limit")
+PY
+}
+
 # Fail unless the live validator process argv includes this client's ePBS flags.
 assert_vc_process_has_epbs_flags() {
     local pid cmdline
@@ -146,6 +173,29 @@ assert_vc_process_has_epbs_flags() {
             fi
             echo "✅ running VC pid=${pid} has --builder.urls (not sidecar)"
             ;;
+        Lighthouse)
+            if [[ "$cmdline" != *"lighthouse"* || "$cmdline" != *"vc"* ]]; then
+                echo "❌ running VC does not look like lighthouse vc"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            if [[ "$cmdline" != *"--builder-proposals"* ]]; then
+                echo "❌ running VC is missing --builder-proposals"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            if [[ "$cmdline" == *"--gas-limit"* ]]; then
+                echo "❌ running VC sets --gas-limit (that overrides the Sepolia 200M schedule)"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            if [[ "$cmdline" == *"$SIDECAR"* ]]; then
+                echo "❌ running VC cmdline points at the MEV-Boost sidecar"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            echo "✅ running VC pid=${pid} kept --builder-proposals and did not set --gas-limit"
+            ;;
     esac
 }
 
@@ -167,6 +217,11 @@ assert_prepare_units() {
                 exit 1
             fi
             ;;
+        Lighthouse)
+            assert_unit_has "$VC_UNIT" "--builder-proposals"
+            assert_unit_lacks "$VC_UNIT" "--gas-limit"
+            assert_lighthouse_builders
+            ;;
     esac
     assert_unit_has "$BN_UNIT" "$SIDECAR"
 }
@@ -183,6 +238,11 @@ assert_complete_units() {
         Lodestar)
             assert_unit_has "$VC_UNIT" "--builder.urls"
             assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            ;;
+        Lighthouse)
+            assert_unit_has "$VC_UNIT" "--builder-proposals"
+            assert_unit_lacks "$VC_UNIT" "--gas-limit"
+            assert_lighthouse_builders
             ;;
     esac
 }

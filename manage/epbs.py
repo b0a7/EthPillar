@@ -7,7 +7,8 @@ Two-step operator flow (EthStaker Glamsterdam guidance):
    pre-Gloas proposals still work.
 2. **complete** — stop/disable MEV-Boost and strip BN flags that pointed at
    ``http://127.0.0.1:18550``. Keep the VC builder list from step 1 (Prysm
-   ``builders`` entries, Lodestar ``--builder.urls``). Refused unless the VC
+   ``builders`` entries, Lodestar ``--builder.urls``, Lighthouse
+   ``builder_definitions.yml``). Refused unless the VC
    already has that list (or ``--force`` / ``--remote-vc-prepared`` for split
    LXC).
 
@@ -26,13 +27,14 @@ support (same gate as ``charonEpbsSupported`` in the TUI).
 
 Support levels:
 
-* ``full`` — Prysm v7.2.0+ (proposer-settings schema v2 ``builders`` list)
-  and Lodestar v1.47.0+ (VC ``--builder.urls`` / ``--builder.minBid``).
+* ``full`` — Prysm v7.2.0+ (proposer-settings schema v2 ``builders`` list),
+  Lodestar v1.47.0+ (VC ``--builder.urls`` / ``--builder.minBid``), and
+  Lighthouse v8.3.0-rc.0+ (``builder_definitions.yml`` ``builders[].url``).
   Lodestar prepare still probes ``lodestar validator --help`` so older
-  binaries are skipped.
-* ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
-  list; prepare is a documented no-op. Complete is refused without
-  ``--force``.
+  binaries are skipped. Lighthouse prepare probes ``lighthouse --version``
+  the same way.
+* ``placeholder`` — Teku, Nimbus, Grandine: no released VC relay list;
+  prepare is a documented no-op. Complete is refused without ``--force``.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -49,6 +52,9 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+import yaml
+
+from client_requirements import compare_versions
 from deploy.common import BASE_DATA_DIR, write_service_file
 from manage.service_parse import (
     SERVICE_FILES,
@@ -143,13 +149,37 @@ BN_BOOL_FLAGS: Dict[str, Tuple[str, ...]] = {
 
 # Prysm v7.2.0 ships Sepolia Gloas without the upstream 200M schedule.
 # Operators who want 200M set this themselves; EthPillar does not write it.
+# Lighthouse v8.3.0-rc.0 does ship that schedule (200M at the Gloas epoch);
+# EthPillar does not write --gas-limit because it would override the schedule.
 SEPOLIA_GLOAS_GAS_LIMIT = "200000000"
+LIGHTHOUSE_BUILDERS_MIN_VERSION = "v8.3.0-rc.0"
+LIGHTHOUSE_BUILDERS_FILENAME = "builder_definitions.yml"
+LIGHTHOUSE_VALIDATORS_DIRNAME = "validators"
+LIGHTHOUSE_SEPOLIA_GAS_EPOCH = "353024"
+# ``lighthouse --version`` may append a commit (``v8.3.0-rc.0-4920af7``).
+# Keep the semver and a single ``-rc.N`` / ``-alpha.N`` / ``-beta.N`` token.
+_LIGHTHOUSE_VERSION_RE = re.compile(
+    r"v?\d+\.\d+\.\d+(?:-(?:rc|alpha|beta|dev)\.[0-9A-Za-z]+)?",
+    re.IGNORECASE,
+)
 SEPOLIA_GAS_LIMIT_NOTE = (
     "Sepolia on Prysm v7.2.0 defaults Gloas proposer gas limit to 60M "
     "(this release has no 200M GAS_LIMIT_SCHEDULE). To propose at 200M, set "
     f"\"gas_limit\": \"{SEPOLIA_GLOAS_GAS_LIMIT}\" on default_config or a "
     "proposer_config key. EthPillar does not write that value. "
     "--suggested-gas-limit only applies to pre-Gloas mev-boost registrations."
+)
+LIGHTHOUSE_SEPOLIA_GAS_NOTE = (
+    "Sepolia Gloas on Lighthouse v8.3.0-rc.0+ follows GAS_LIMIT_SCHEDULE "
+    f"({SEPOLIA_GLOAS_GAS_LIMIT} at epoch {LIGHTHOUSE_SEPOLIA_GAS_EPOCH}). "
+    "EthPillar does not set --gas-limit or validator_definitions.yml "
+    "gas_limit; those override the schedule."
+)
+LIGHTHOUSE_SEPOLIA_GAS_OVERRIDE_NOTE = (
+    "Sepolia Gloas schedule is "
+    f"{SEPOLIA_GLOAS_GAS_LIMIT} gas at epoch {LIGHTHOUSE_SEPOLIA_GAS_EPOCH}, "
+    "but this validator sets --gas-limit or a per-validator gas_limit, which "
+    "overrides that schedule. EthPillar leaves the override in place."
 )
 
 # v7.2.0 still accepts these builder keys but ignores or warns on them.
@@ -170,9 +200,13 @@ SUPPORT_NOTES: Dict[str, str] = {
         "--builder.urls."
     ),
     "Lighthouse": (
-        "Placeholder: VC has --builder-proposals only; no released relay-list "
-        "flag. Prepare is a no-op. Complete is refused without --force "
-        "(would stop MEV-Boost with no VC relay replacement)."
+        "Full: MEV relay URLs go in <datadir>/validators/builder_definitions.yml "
+        "as builders[].url (v8.3.0-rc.0+). enabled is true and "
+        "max_execution_payment is 0 (trustless-only). auth_data is omitted "
+        "(Lighthouse defaults it to the URL hostname). Global min_bid is "
+        "MEV-Boost -min-bid in integer Gwei. Prepare keeps --builder-proposals. "
+        "Does not set --gas-limit; Sepolia uses the 200M schedule. Skipped when "
+        "lighthouse --version is older than v8.3.0-rc.0."
     ),
     "Teku": (
         "Placeholder: Staked Builder API REST client (Consensys/teku#11026) is "
@@ -303,6 +337,9 @@ class EpbsFilesystem:
     Attributes:
         systemd_dir: Directory containing ``*.service`` files.
         prysm_settings_path: Default Prysm proposer-settings JSON path.
+        lighthouse_builders_path: Override for Lighthouse
+            ``builder_definitions.yml``. Empty derives it from the VC
+            ``--datadir`` / ``--validators-dir``.
         read_text: Read a file; return None if missing.
         exists: True when the path is a regular file.
         write_unit: Optional override for writing systemd units.
@@ -313,6 +350,7 @@ class EpbsFilesystem:
 
     systemd_dir: str = "/etc/systemd/system"
     prysm_settings_path: str = PRYSM_SETTINGS_PATH
+    lighthouse_builders_path: str = ""
     read_text: Callable[[str], Optional[str]] = read_text_file
     exists: Callable[[str], bool] = unit_exists
     write_unit: Optional[Callable[[str, str], None]] = None
@@ -568,13 +606,13 @@ def support_level(client: str) -> str:
         client: Validator client name (``Prysm``, ``Lodestar``, …).
 
     Returns:
-        ``full`` (Prysm, Lodestar) or ``placeholder``.
+        ``full`` (Prysm, Lodestar, Lighthouse) or ``placeholder``.
         The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) mirrors
-        this for local validators (shown for Prysm/Lodestar only), but is
-        always shown on MEV hosts without a local validator (split LXC) and
-        hidden when Charon is enabled.
+        this for local validators (shown for Prysm/Lodestar/Lighthouse only),
+        but is always shown on MEV hosts without a local validator (split LXC)
+        and hidden when Charon is enabled.
     """
-    if client in ("Prysm", "Lodestar"):
+    if client in ("Prysm", "Lodestar", "Lighthouse"):
         return "full"
     return "placeholder"
 
@@ -919,17 +957,278 @@ def lodestar_has_builder_urls_flag(fs: EpbsFilesystem, vc_content: str) -> bool:
     return "--builder.urls" in _command_help(fs, help_cmd)
 
 
+def parse_lighthouse_version(text: str) -> str:
+    """Return a comparable version tag from ``lighthouse --version`` text.
+
+    Args:
+        text: Combined stdout and stderr from the binary.
+
+    Returns:
+        A ``v``-prefixed semver such as ``v8.3.0-rc.0``, or ``""`` when no
+        version is present. A trailing git commit is dropped.
+    """
+    match = _LIGHTHOUSE_VERSION_RE.search(text or "")
+    if not match:
+        return ""
+    version = match.group(0)
+    if version[0].isdigit():
+        version = "v" + version
+    return version
+
+
+def _lighthouse_binary(vc_content: str) -> str:
+    """Return the Lighthouse executable path from a validator unit.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+
+    Returns:
+        The first ExecStart token's binary (before a ``vc`` subcommand), or
+        ``""`` when the unit has no ExecStart.
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    if not args:
+        return ""
+    head = args[0].split()
+    return head[0] if head else ""
+
+
+def lighthouse_supports_builder_definitions(fs: EpbsFilesystem, vc_content: str) -> bool:
+    """True when this Lighthouse binary loads ``builder_definitions.yml``.
+
+    v8.3.0-rc.0 is the first release that reads that file (Sepolia Gloas
+    builders). Older stables such as v8.2.3 do not. GitHub ``latest`` skips
+    the pre-release, so a normal EthPillar install can still be too old.
+
+    Args:
+        fs: IO adapter; ``run_help`` short-circuits the version probe in tests.
+        vc_content: Current ``validator.service`` text (binary path).
+
+    Returns:
+        True when ``lighthouse --version`` is at least
+        :data:`LIGHTHOUSE_BUILDERS_MIN_VERSION`.
+    """
+    binary = _lighthouse_binary(vc_content)
+    if not binary:
+        return False
+    version = parse_lighthouse_version(_command_help(fs, [binary, "--version"]))
+    if not version:
+        return False
+    return compare_versions(version, LIGHTHOUSE_BUILDERS_MIN_VERSION) >= 0
+
+
+def lighthouse_builders_file(vc_content: str, override: str = "") -> str:
+    """Return the path of ``builder_definitions.yml`` for this validator unit.
+
+    Lighthouse reads ``<validators-dir>/builder_definitions.yml``. EthPillar
+    sets ``--datadir``, and the validators directory is ``<datadir>/validators``
+    unless ``--validators-dir`` is set.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        override: Explicit path (tests / ``--lighthouse-builders``). Empty
+            derives the path from the unit.
+
+    Returns:
+        Absolute or unit-relative path of the builders file.
+    """
+    if override:
+        return override
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    validators_dir = get_flag_value(args, "--validators-dir", "--validator-dir")
+    if not validators_dir:
+        datadir = get_flag_value(args, "--datadir") or (
+            f"{BASE_DATA_DIR}/lighthouse_validator"
+        )
+        validators_dir = os.path.join(datadir, LIGHTHOUSE_VALIDATORS_DIRNAME)
+    return os.path.join(validators_dir, LIGHTHOUSE_BUILDERS_FILENAME)
+
+
+def _load_yaml_mapping(text: Optional[str], label: str) -> dict:
+    """Parse *text* as a YAML mapping.
+
+    Args:
+        text: File contents. Empty or missing becomes ``{}``.
+        label: Operator-facing name used in errors.
+
+    Returns:
+        A dict. ``None`` (empty document) becomes ``{}``.
+
+    Raises:
+        EpbsError: If the document is not valid YAML or not a mapping.
+    """
+    if not text or not text.strip():
+        return {}
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        raise EpbsError(f"Invalid {label}: {exc}") from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise EpbsError(f"{label} must be a YAML mapping")
+    return loaded
+
+
+def _dump_lighthouse_builders(data: dict) -> str:
+    """Serialize a Lighthouse builder config to stable YAML.
+
+    Args:
+        data: Mapping written to ``builder_definitions.yml``.
+
+    Returns:
+        YAML text ending in a newline. Keys keep insertion order. Long relay
+        URLs are not folded.
+    """
+    text = yaml.safe_dump(
+        data,
+        sort_keys=False,
+        default_flow_style=False,
+        allow_unicode=False,
+        width=4096,
+    )
+    if not text.endswith("\n"):
+        text += "\n"
+    return text
+
+
+def lighthouse_has_builder_list(data: dict) -> bool:
+    """Return True when enabled builders include a non-sidecar URL.
+
+    Args:
+        data: Parsed ``builder_definitions.yml`` mapping.
+
+    Returns:
+        True when some enabled ``builders[].url`` is set and is not the local
+        sidecar. Disabled entries and an explicit empty list do not count.
+    """
+    entries = data.get("builders")
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("enabled") is not True:
+            continue
+        url = entry.get("url")
+        if isinstance(url, str) and url.strip() and not is_sidecar_url(url):
+            return True
+    return False
+
+
+def _yaml_tree_has_gas_limit(node: object) -> bool:
+    """Return True when a YAML tree sets a non-zero ``gas_limit``.
+
+    Args:
+        node: Parsed YAML value (mapping, list, or scalar).
+
+    Returns:
+        True if any mapping contains ``gas_limit`` other than empty or ``0``.
+    """
+    if isinstance(node, dict):
+        if "gas_limit" in node:
+            value = node.get("gas_limit")
+            if value is not None and str(value).strip() not in ("", "0"):
+                return True
+        return any(_yaml_tree_has_gas_limit(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_yaml_tree_has_gas_limit(value) for value in node)
+    return False
+
+
+def lighthouse_explicit_gas_limit(vc_content: str, definitions_text: Optional[str]) -> bool:
+    """Return True when the VC overrides Lighthouse's gas-limit schedule.
+
+    ``--gas-limit`` on the unit and ``gas_limit`` in ``validator_definitions.yml``
+    both take precedence over ``GAS_LIMIT_SCHEDULE``.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        definitions_text: ``validator_definitions.yml`` contents, or None.
+
+    Returns:
+        True when either override is set to a non-zero gas limit.
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    if get_flag_value(args, "--gas-limit").strip() not in ("", "0"):
+        return True
+    if not definitions_text or not definitions_text.strip():
+        return False
+    try:
+        loaded = yaml.safe_load(definitions_text)
+    except yaml.YAMLError:
+        return False
+    return _yaml_tree_has_gas_limit(loaded)
+
+
+def apply_relays_lighthouse(relays: RelaysConfig, existing_yaml: Optional[str]) -> str:
+    """Merge mev-boost relays into Lighthouse ``builder_definitions.yml``.
+
+    Writes a global ``builders`` list. Each entry is ``enabled: true``, ``url``
+    set to the relay URL, and ``max_execution_payment: 0`` (trustless-only:
+    collateral-backed bid value counts; a builder's promised execution-layer
+    payment does not). ``auth_data`` is omitted so Lighthouse signs the URL
+    hostname. Global ``min_bid`` is MEV-Boost ``-min-bid`` in integer Gwei, or
+    ``0`` when unset. An existing ``builder_boost_factor`` and
+    ``validator_configs`` map are kept. Does not write ``gas_limit``.
+
+    Args:
+        relays: Relay URLs and optional MEV-Boost min-bid (ETH).
+        existing_yaml: Current builders file, or None.
+
+    Returns:
+        Canonical YAML for ``builder_definitions.yml``.
+
+    Raises:
+        EpbsError: If the existing file is not a YAML mapping or
+            ``builder_boost_factor`` is not an integer.
+    """
+    data = _load_yaml_mapping(existing_yaml, "builder_definitions.yml")
+    boost = data.get("builder_boost_factor", 100)
+    try:
+        boost_int = int(boost)
+    except (TypeError, ValueError) as exc:
+        raise EpbsError(
+            "builder_definitions.yml builder_boost_factor must be an integer, "
+            f"got {boost!r}"
+        ) from exc
+    min_bid = int(eth_min_bid_to_gwei(relays.min_bid)) if relays.min_bid else 0
+    seen = set()
+    builders: List[dict] = []
+    for url in relays.urls:
+        if url in seen:
+            continue
+        seen.add(url)
+        builders.append(
+            {
+                "enabled": True,
+                "url": url,
+                "max_execution_payment": 0,
+            }
+        )
+    out: dict = {
+        "min_bid": min_bid,
+        "builder_boost_factor": boost_int,
+        "builders": builders,
+    }
+    validator_configs = data.get("validator_configs")
+    if isinstance(validator_configs, dict) and validator_configs:
+        out["validator_configs"] = validator_configs
+    known = {"min_bid", "builder_boost_factor", "builders", "validator_configs"}
+    for key, value in data.items():
+        if key not in known:
+            out[key] = value
+    return _dump_lighthouse_builders(out)
+
+
 def apply_relays_placeholder(client: str) -> str:
     """Return a planned-flag blurb; do not mutate units.
 
     Args:
-        client: Placeholder VC name (Lighthouse, Teku, Nimbus, Grandine).
+        client: Placeholder VC name (Teku, Nimbus, Grandine).
 
     Returns:
         Human-readable description of the unreleased relay-list surface.
     """
     planned = {
-        "Lighthouse": "--builder-relays=<urls> (not shipped; VC still --builder-proposals)",
         "Teku": "--validators-builder-relays=<urls> (not shipped; #11026 REST client unwired)",
         "Nimbus": "--payload-builder-relays=<urls> (not shipped; VC still --payload-builder=true)",
         "Grandine": "multi --builder-url list (not shipped; single --builder-url today)",
@@ -1304,6 +1603,62 @@ def _apply_vc_relays(
                 plan.warnings.append(
                     "Lodestar VC already has builder.urls; nothing to change."
                 )
+    elif vc_name == "Lighthouse":
+        if not lighthouse_supports_builder_definitions(fs, vc_content):
+            plan.actions.append(
+                PlanAction(
+                    "Lighthouse VC",
+                    "skipped: lighthouse --version is older than "
+                    f"{LIGHTHOUSE_BUILDERS_MIN_VERSION} (no builder_definitions.yml)",
+                )
+            )
+            plan.warnings.append(
+                "Prepare: no-op on this Lighthouse build — Complete will stop "
+                "MEV-Boost without a VC builder list. Install Lighthouse "
+                f"{LIGHTHOUSE_BUILDERS_MIN_VERSION} or later. EthPillar's normal "
+                "install tracks GitHub latest, which skips this pre-release "
+                "until v8.3.0 is stable."
+            )
+        else:
+            builders_path = lighthouse_builders_file(
+                vc_content, fs.lighthouse_builders_path
+            )
+            existing = fs.read_text(builders_path)
+            new_yaml = apply_relays_lighthouse(relays, existing)
+            definitions = fs.read_text(
+                os.path.join(os.path.dirname(builders_path), "validator_definitions.yml")
+            )
+            if relays.network == "sepolia":
+                if lighthouse_explicit_gas_limit(vc_content, definitions):
+                    plan.warnings.append(LIGHTHOUSE_SEPOLIA_GAS_OVERRIDE_NOTE)
+                else:
+                    plan.warnings.append(LIGHTHOUSE_SEPOLIA_GAS_NOTE)
+            changed = (existing or "") != new_yaml
+            plan.actions.append(
+                PlanAction(
+                    builders_path,
+                    "write builders[].url (builder_definitions.yml)",
+                )
+            )
+            if apply and changed:
+                if existing:
+                    _backup(builders_path, fs)
+                if fs.write_data is None:
+                    directory = os.path.dirname(builders_path)
+                    if directory:
+                        subprocess.run(["sudo", "mkdir", "-p", directory], check=True)
+                        subprocess.run(
+                            ["sudo", "chown", "validator:validator", directory],
+                            check=False,
+                        )
+                writer = fs.write_data or _default_write_data
+                writer(builders_path, new_yaml)
+            if changed:
+                plan.services_to_restart.append("validator")
+            else:
+                plan.warnings.append(
+                    "Lighthouse VC already has these builders; nothing to change."
+                )
     else:
         planned = apply_relays_placeholder(vc_name)
         plan.actions.append(PlanAction(f"{vc_name} VC (placeholder)", planned))
@@ -1322,8 +1677,10 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     """Copy mev-boost relays onto the VC. Keep the sidecar running.
 
     Prysm writes proposer-settings JSON and VC flags. Lodestar gets
-    ``--builder.urls`` when the binary documents that flag. Other VCs are
-    a documented no-op. When Charon is installed, VC relay writes are skipped
+    ``--builder.urls`` when the binary documents that flag. Lighthouse writes
+    ``builder_definitions.yml`` when ``lighthouse --version`` is at least
+    v8.3.0-rc.0. Other VCs are a documented no-op. When Charon is installed,
+    VC relay writes are skipped
     (Charon ``--builder-api`` owns the MEV path until complete).
     Beacon-node sidecar flags are not touched.
 
@@ -1496,9 +1853,12 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
 
     Returns:
         True for Prysm when ``default_config.builder.builders`` has a
-        non-sidecar URL, or for Lodestar when ``--builder.urls`` is set and
-        is not the sidecar. Legacy ``builder.relays`` does not count.
-        Always False for placeholder clients.
+        non-sidecar URL, for Lodestar when ``--builder.urls`` is set and
+        is not the sidecar, or for Lighthouse when ``builder_definitions.yml``
+        has an enabled non-sidecar ``builders[].url`` and the binary is
+        v8.3.0-rc.0+. Legacy ``builder.relays`` does not count.
+        Always False for placeholder clients and for a Lighthouse binary that
+        does not read ``builder_definitions.yml``.
     """
     if vc_name == "Prysm":
         data = _load_prysm_settings(fs, vc_content)
@@ -1507,6 +1867,18 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         args = normalize_cli_args(parse_unit(vc_content).exec_args)
         urls = get_flag_value(args, "--builder.urls")
         return bool(urls) and not is_sidecar_url(urls)
+    if vc_name == "Lighthouse":
+        if not lighthouse_supports_builder_definitions(fs, vc_content):
+            return False
+        path = lighthouse_builders_file(vc_content, fs.lighthouse_builders_path)
+        raw = fs.read_text(path)
+        if not raw:
+            return False
+        try:
+            loaded = _load_yaml_mapping(raw, "builder_definitions.yml")
+        except EpbsError:
+            return False
+        return lighthouse_has_builder_list(loaded)
     return False
 
 
@@ -1655,8 +2027,8 @@ def complete(
     if "consensus" in plan.services_to_restart and mode == "integrated_grandine":
         # Integrated Grandine restarts with consensus.service only.
         pass
-    elif vc_name == "Prysm" or vc_name == "Lodestar":
-        # VC flags do not change on complete; BN restart is enough.
+    elif vc_name in ("Prysm", "Lodestar", "Lighthouse"):
+        # VC flags / builder file do not change on complete; BN restart is enough.
         pass
 
     plan.applied = apply
@@ -1722,6 +2094,14 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
                 lines.append("VC relays: " + ("yes" if has_relays else "no"))
         else:
             lines.append("VC relays: " + ("yes" if has_relays else "no"))
+        if vc_name == "Lighthouse" and not lighthouse_supports_builder_definitions(
+            fs, vc_content
+        ):
+            lines.append(
+                "Lighthouse binary: older than "
+                f"{LIGHTHOUSE_BUILDERS_MIN_VERSION}; builder_definitions.yml "
+                "is not used. Prepare is a no-op."
+            )
         if charon_installed(fs):
             if charon_ready_for_complete(fs):
                 lines.append(
@@ -1860,6 +2240,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="Override Prysm proposer-settings.json path (tests).",
     )
+    parser.add_argument(
+        "--lighthouse-builders",
+        default=None,
+        help="Override Lighthouse builder_definitions.yml path (tests).",
+    )
     args = parser.parse_args(argv)
 
     fs = EpbsFilesystem()
@@ -1872,6 +2257,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         fs.exists = os.path.isfile
     if args.prysm_settings:
         fs.prysm_settings_path = args.prysm_settings
+    if args.lighthouse_builders:
+        fs.lighthouse_builders_path = args.lighthouse_builders
 
     try:
         if args.command == "status":

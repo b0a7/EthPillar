@@ -108,7 +108,8 @@ def test_tui_is_gated_to_full_support_only() -> None:
     """MEV-Boost TUI (``epbsTuiSupported``) matches ``support_level == full``."""
     assert support_level("Prysm") == "full"
     assert support_level("Lodestar") == "full"
-    for client in ("Lighthouse", "Teku", "Nimbus", "Grandine", ""):
+    assert support_level("Lighthouse") == "full"
+    for client in ("Teku", "Nimbus", "Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -514,15 +515,28 @@ def test_lodestar_prepare_adds_builder_urls(tmp_path: Path) -> None:
     assert has_flag(vc_args, "--builder.urls")
 
 
-def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) -> None:
-    """Lighthouse prepare is a no-op; complete requires ``--force`` to strip BN sidecar."""
+def _lighthouse_fs(tmp_path: Path, version: str) -> EpbsFilesystem:
+    """Filesystem whose Lighthouse version probe returns *version*."""
     fs = _fs(tmp_path)
-    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    fs.lighthouse_builders_path = str(tmp_path / "builder_definitions.yml")
+
+    def run_help(argv: list[str]) -> str:
+        if argv and argv[-1] == "--version":
+            return f"Lighthouse {version}\n"
+        return ""
+
+    fs.run_help = run_help
+    return fs
+
+
+def _write_lighthouse_stack(fs: EpbsFilesystem, network: str = "mainnet", extra: str = "--builder-proposals") -> None:
+    """Write MEV, Lighthouse BN sidecar, and VC units."""
+    _write(fs, "mevboost", generate_mevboost_service(network, "0.006", RELAYS))
     _write(
         fs,
         "consensus",
         generate_lighthouse_bn_service(
-            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            network, SYNC, JWT, "5052", "9000", "9001", "100",
             mev_parameters="--builder http://127.0.0.1:18550",
         ),
     )
@@ -530,18 +544,85 @@ def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) ->
         fs,
         "validator",
         generate_lighthouse_vc_service(
-            "mainnet",
+            network,
             "ep",
             "--beacon-nodes=http://127.0.0.1:5052",
-            extra_parameters="--builder-proposals",
+            extra_parameters=extra,
         ),
     )
+
+
+def test_lighthouse_prepare_writes_builder_definitions(tmp_path: Path) -> None:
+    """Lighthouse v8.3.0-rc.0 prepare writes builders[].url and keeps the sidecar."""
+    import yaml
+
+    fs = _lighthouse_fs(tmp_path, "v8.3.0-rc.0-4920af7")
+    _write_lighthouse_stack(fs, network="sepolia")
+    (tmp_path / "validator_definitions.yml").write_text(
+        "---\n- enabled: true\n  voting_public_key: \"0xabc\"\n  gas_limit: 30000000\n",
+        encoding="utf-8",
+    )
     plan = prepare(fs, apply=True)
-    assert plan.support == "placeholder"
+    assert plan.support == "full"
+    assert any("200000000" in w for w in plan.warnings)
+    assert any("overrides" in w for w in plan.warnings)
     vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
     assert "--builder-proposals" in vc
+    assert "--gas-limit" not in vc
     assert "boost-relay.flashbots.net" not in vc
-    assert any("no-op on this client" in w for w in plan.warnings)
+    raw = Path(fs.lighthouse_builders_path).read_text(encoding="utf-8")
+    data = yaml.safe_load(raw)
+    assert data["min_bid"] == 6000000
+    assert data["builder_boost_factor"] == 100
+    urls = [entry["url"] for entry in data["builders"]]
+    assert len(urls) == 2
+    assert all(entry["enabled"] is True for entry in data["builders"])
+    assert all(entry["max_execution_payment"] == 0 for entry in data["builders"])
+    assert "gas_limit" not in raw
+    assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+
+    again = prepare(fs, apply=True)
+    assert any("nothing to change" in w for w in again.warnings)
+    assert "validator" not in again.services_to_restart
+
+    complete(fs, apply=True)
+    bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" not in bn
+    assert Path(fs.lighthouse_builders_path).read_text(encoding="utf-8") == raw
+    assert "--builder-proposals" in Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+
+
+def test_lighthouse_prepare_preserves_validator_configs(tmp_path: Path) -> None:
+    """Existing per-validator builder config and boost factor survive prepare."""
+    import yaml
+
+    fs = _lighthouse_fs(tmp_path, "v8.3.0")
+    _write_lighthouse_stack(fs)
+    Path(fs.lighthouse_builders_path).write_text(
+        "min_bid: 1\nbuilder_boost_factor: 120\nbuilders: []\n"
+        "validator_configs:\n  '0xabc':\n    builders: []\n",
+        encoding="utf-8",
+    )
+    plan = prepare(fs, apply=True)
+    assert plan.support == "full"
+    assert not any("200000000" in w for w in plan.warnings)
+    data = yaml.safe_load(Path(fs.lighthouse_builders_path).read_text(encoding="utf-8"))
+    assert data["builder_boost_factor"] == 120
+    assert data["validator_configs"]["0xabc"]["builders"] == []
+    assert data["min_bid"] == 6000000
+    assert len(data["builders"]) == 2
+
+
+def test_lighthouse_old_binary_prepare_is_noop(tmp_path: Path) -> None:
+    """Lighthouse before v8.3.0-rc.0 does not write builder_definitions.yml."""
+    fs = _lighthouse_fs(tmp_path, "v8.2.3")
+    _write_lighthouse_stack(fs)
+    plan = prepare(fs, apply=True)
+    assert plan.support == "full"
+    assert not Path(fs.lighthouse_builders_path).exists()
+    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    assert "--builder-proposals" in vc
+    assert any("no-op on this Lighthouse build" in w for w in plan.warnings)
     with pytest.raises(EpbsError, match="Complete refused"):
         complete(fs, apply=False)
 
