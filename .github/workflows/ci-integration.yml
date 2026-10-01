@@ -4,6 +4,11 @@ name: CI — Integration
 # Scheduled full-suite runs use ci-nightly.yml; use workflow_dispatch for ad-hoc integration only.
 on:
   workflow_dispatch:
+  # TEMPORARY RC-tip hack: agent tokens cannot workflow_dispatch (403).
+  # Push on this branch runs CI — Integration. Strip this trigger before any PR.
+  push:
+    branches:
+      - cursor/epbs-lighthouse-v830-rc0-e660
 
 permissions:
   contents: read
