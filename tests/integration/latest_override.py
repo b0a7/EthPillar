@@ -18,12 +18,13 @@ Lifecycle:
   4. ``clear_override`` removes the remap file **before** upgrade so LATEST is
      real. A companion seeds manifest is left in place so the harness knows
      which clients were seeded and what official LATEST was at seed time.
-  5. When that manifest shows a **consensus** seed semver-newer than official
-     LATEST, ``test_updates.sh`` wipes the beacon DB (and leaves consensus
-     stopped) before ``ethpillar upgrade`` starts the older binary. A newer
-     on-disk schema would otherwise crash-loop the downgraded BN. Previous
-     stable seeds are older than LATEST and keep their DB so the forward
-     migration path still runs.
+  5. When that manifest shows a **consensus or execution** seed semver-newer
+     than official LATEST, ``test_updates.sh`` wipes that role's chain data
+     and leaves the unit stopped before ``ethpillar upgrade`` starts the
+     older binary. Consensus wipes the beacon DB; execution wipes the EL
+     datadir contents (``resync_execution.sh`` paths, not validator keys or
+     the JWT). Previous stable seeds are older than LATEST and keep their
+     DB so the forward migration path still runs.
 
 This module is integration-test scoped. Production CLI upgrade semantics are
 unchanged (always official LATEST; skip when already current).
@@ -58,6 +59,17 @@ CONSENSUS_CLIENTS = frozenset({
     "nimbus",
     "prysm",
     "grandine",
+})
+
+# Execution clients whose chaindata ``resync_execution.sh`` wipes.
+# Keep this aligned with ``resyncClient`` there (not CL / MEV / Charon).
+EXECUTION_CLIENTS = frozenset({
+    "nethermind",
+    "besu",
+    "geth",
+    "erigon",
+    "ethrex",
+    "reth",
 })
 
 
@@ -207,8 +219,18 @@ def load_seeds_manifest(path: str | None = None) -> dict[str, Any]:
     }
 
 
+def _manifest_seed_is_downgrade(client_key: str, path: str | None) -> bool:
+    """Return True when *client_key*'s seed tag is semver-newer than recorded LATEST."""
+    manifest = load_seeds_manifest(path)
+    seed = (manifest.get("clients") or {}).get(client_key) or ""
+    official = (manifest.get("latest") or {}).get(client_key) or ""
+    if not seed or not official:
+        return False
+    return _seed_is_newer(seed, official)
+
+
 def is_consensus_downgrade(client: str, path: str | None = None) -> bool:
-    """Return True when upgrading *client* to official LATEST downgrades the binary.
+    """Return True when upgrading *client* to official LATEST downgrades the BN.
 
     True only for a consensus client whose seed tag is semver-newer than the
     official LATEST stored in the seeds manifest (Lighthouse ``v8.3.0-rc.0``
@@ -219,12 +241,26 @@ def is_consensus_downgrade(client: str, path: str | None = None) -> bool:
     key = (client or "").strip().lower()
     if key not in CONSENSUS_CLIENTS:
         return False
-    manifest = load_seeds_manifest(path)
-    seed = (manifest.get("clients") or {}).get(key) or ""
-    official = (manifest.get("latest") or {}).get(key) or ""
-    if not seed or not official:
+    return _manifest_seed_is_downgrade(key, path)
+
+
+def is_execution_downgrade(client: str, path: str | None = None) -> bool:
+    """Return True when upgrading *client* to official LATEST downgrades the EL.
+
+    Same semver rule as :func:`is_consensus_downgrade`, for an execution client
+    (Reth ``v1.9.0-rc.1`` vs LATEST ``v1.8.0``). Previous-stable seeds keep
+    their chaindata. Consensus, MEV, and Charon seeds are ignored: this check
+    only gates an execution datadir wipe.
+    """
+    key = (client or "").strip().lower()
+    if key not in EXECUTION_CLIENTS:
         return False
-    return _seed_is_newer(seed, official)
+    return _manifest_seed_is_downgrade(key, path)
+
+
+def is_harness_downgrade(client: str, path: str | None = None) -> bool:
+    """Return True when a consensus or execution seed is newer than official LATEST."""
+    return is_consensus_downgrade(client, path) or is_execution_downgrade(client, path)
 
 
 def clear_override(path: str | None = None) -> None:
@@ -313,15 +349,20 @@ def log_rc_override_plan(rows: Iterable[dict[str, Any]]) -> None:
                 flush=True,
             )
             client_key = str(client).strip().lower()
+            wipe_note = ""
+            if client_key in CONSENSUS_CLIENTS:
+                wipe_note = "wipe the beacon DB before starting the older binary"
+            elif client_key in EXECUTION_CLIENTS:
+                wipe_note = "wipe execution chaindata before starting the older binary"
             if (
-                seed_kind == "rc"
-                and client_key in CONSENSUS_CLIENTS
+                wipe_note
+                and seed_kind == "rc"
                 and latest
                 and _seed_is_newer(str(seed_tag), latest)
             ):
                 print(
                     f"    {client}: binary downgrade vs LATEST — upgrade harness will "
-                    f"wipe the beacon DB before starting the older binary",
+                    f"{wipe_note}",
                     flush=True,
                 )
         else:
@@ -512,8 +553,8 @@ def main() -> int:
         choices=("prepare", "clear", "show", "seeds", "downgrade"),
         help="prepare: discover seeds and write override; clear: remove remap file; "
         "show: print remap file; seeds: print persistent seeds manifest; "
-        "downgrade: print yes when upgrading that consensus client to LATEST "
-        "would install an older binary",
+        "downgrade: print yes when upgrading that consensus or execution client "
+        "to LATEST would install an older binary",
     )
     parser.add_argument("clients", nargs="*", help="Client names for prepare (default: none)")
     parser.add_argument(
@@ -540,7 +581,7 @@ def main() -> int:
         if len(args.clients) != 1:
             print("downgrade requires exactly one client name", file=sys.stderr)
             return 2
-        print("yes" if is_consensus_downgrade(args.clients[0], path=args.seeds) else "no")
+        print("yes" if is_harness_downgrade(args.clients[0], path=args.seeds) else "no")
     else:
         data = load_override(target)
         json.dump(data, sys.stdout, indent=2, sort_keys=True)
