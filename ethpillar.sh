@@ -170,8 +170,7 @@ function testAndPluginCommand() {
 function buildMenu() {
   for (( i=0; i<${#_SERVICES[@]}; i++ )); do
     if [[ "${_SERVICES[i]}" == "validator" ]]; then
-      if [[ -f /etc/systemd/system/validator.service ]] \
-        || [[ "$(getValidatorMode)" == "integrated_grandine" ]]; then
+      if mainMenuShowsValidator; then
         OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
       fi
     else
@@ -546,8 +545,7 @@ while true; do
     getValidatorClient
     local _validator_mode _vc_menu_title
     _validator_mode=$(getValidatorMode)
-    _vc_menu_title="${VALIDATOR_CLIENT:-$VC}"
-    [[ "$_validator_mode" == "integrated_grandine" ]] && _vc_menu_title="Grandine (integrated)"
+    _vc_menu_title="$(validatorSubmenuTitle)"
 
     # Define the options for the submenu
     SUBOPTIONS=(
@@ -1277,12 +1275,9 @@ while true; do
         sleep 2
         ;;
       cc_rpc)
-        local _cl_rpc_port="${CL_REST_PORT:-5052}"
-        if [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]; then
-          getBeaconNodeEndpoint >/dev/null
-          _cl_rpc_port="${BEACON_NODE_ENDPOINT##*:}"
-        fi
-        sudo ufw allow from ${network_current} to any port "${_cl_rpc_port}" comment 'Allow local network to access consensus client RPC port'
+        local _cl_rpc_port
+        _cl_rpc_port="$(consensusRestPortForUfw)"
+        ufwAllowConsensusRest "${_cl_rpc_port}"
         ohai "Local network ${network_current} can access RPC port ${_cl_rpc_port}"
         sleep 2
         ;;
@@ -1894,7 +1889,7 @@ _csmFeeRecipientInUnits(){
 # Determine node configuration
 function setNodeMode(){
   local validator_mode csm_svc validator_svc consensus_svc exec_svc
-  exec_svc="/etc/systemd/system/execution.service"
+  exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
   consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
   validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
   csm_svc="${CSM_VALIDATOR_SERVICE_FILE:-/etc/systemd/system/csm_nimbusvalidator.service}"
