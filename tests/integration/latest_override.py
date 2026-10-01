@@ -17,7 +17,14 @@ Lifecycle:
      tags (base semver ± commit; missing ``-rc.N`` on the binary is OK).
   4. ``clear_override`` removes the remap file **before** upgrade so LATEST is
      real. A companion seeds manifest is left in place so the harness knows
-     which clients were seeded.
+     which clients were seeded and what official LATEST was at seed time.
+  5. When that manifest shows a **consensus or execution** seed semver-newer
+     than official LATEST, ``test_updates.sh`` wipes that role's chain data
+     and leaves the unit stopped before ``ethpillar upgrade`` starts the
+     older binary. Consensus wipes the beacon DB; execution wipes the EL
+     datadir contents (``resync_execution.sh`` paths, not validator keys or
+     the JWT). Previous stable seeds are older than LATEST and keep their
+     DB so the forward migration path still runs.
 
 This module is integration-test scoped. Production CLI upgrade semantics are
 unchanged (always official LATEST; skip when already current).
@@ -42,6 +49,28 @@ if _INTEGRATION_DIR not in sys.path:
 
 # Role / combo tokens that are not GitHub-released clients.
 _SKIP_NAMES = frozenset({"", "caplin", "same as cc", "same", "none"})
+
+# Consensus clients whose beacon DB ``resync_consensus.sh`` can wipe.
+# Keep this aligned with ``beacon_datadir_for_client`` (not EL / MEV / Charon).
+CONSENSUS_CLIENTS = frozenset({
+    "lighthouse",
+    "lodestar",
+    "teku",
+    "nimbus",
+    "prysm",
+    "grandine",
+})
+
+# Execution clients whose chaindata ``resync_execution.sh`` wipes.
+# Keep this aligned with ``resyncClient`` there (not CL / MEV / Charon).
+EXECUTION_CLIENTS = frozenset({
+    "nethermind",
+    "besu",
+    "geth",
+    "erigon",
+    "ethrex",
+    "reth",
+})
 
 
 def override_path(path: str | None = None) -> str:
@@ -125,17 +154,34 @@ def write_override(
     return payload
 
 
+def _empty_seeds() -> dict[str, Any]:
+    """Return the empty seeds-manifest shape."""
+    return {"clients": {}, "kinds": {}, "skipped": {}, "latest": {}}
+
+
 def write_seeds_manifest(
     clients: dict[str, str],
     kinds: dict[str, str],
     skipped: dict[str, str],
     path: str | None = None,
+    latest: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Persist which clients were seeded so the harness can assert after clear."""
+    """Persist which clients were seeded so the harness can assert after clear.
+
+    ``latest`` is the official LATEST tag observed while choosing the seed.
+    The upgrade harness compares it with the seed tag to detect a consensus
+    binary downgrade.
+    """
+    client_map = {name.lower(): tag for name, tag in clients.items() if tag}
     payload = {
-        "clients": {name.lower(): tag for name, tag in clients.items() if tag},
+        "clients": client_map,
         "kinds": {name.lower(): kind for name, kind in kinds.items() if kind},
         "skipped": {name.lower(): reason for name, reason in skipped.items() if reason},
+        "latest": {
+            name.lower(): tag
+            for name, tag in (latest or {}).items()
+            if tag and name.lower() in client_map
+        },
     }
     target = path or seeds_path()
     with open(target, "w", encoding="utf-8") as handle:
@@ -151,19 +197,70 @@ def load_seeds_manifest(path: str | None = None) -> dict[str, Any]:
         with open(target, encoding="utf-8") as handle:
             data = json.load(handle)
     except FileNotFoundError:
-        return {"clients": {}, "kinds": {}, "skipped": {}}
+        return _empty_seeds()
     except (OSError, json.JSONDecodeError):
-        return {"clients": {}, "kinds": {}, "skipped": {}}
+        return _empty_seeds()
     if not isinstance(data, dict):
-        return {"clients": {}, "kinds": {}, "skipped": {}}
+        return _empty_seeds()
     clients = data.get("clients") if isinstance(data.get("clients"), dict) else {}
     kinds = data.get("kinds") if isinstance(data.get("kinds"), dict) else {}
     skipped = data.get("skipped") if isinstance(data.get("skipped"), dict) else {}
+    latest = data.get("latest") if isinstance(data.get("latest"), dict) else {}
+    client_map = {str(key).lower(): str(value) for key, value in clients.items() if value}
     return {
-        "clients": {str(key).lower(): str(value) for key, value in clients.items() if value},
+        "clients": client_map,
         "kinds": {str(key).lower(): str(value) for key, value in kinds.items() if value},
         "skipped": {str(key).lower(): str(value) for key, value in skipped.items() if value},
+        "latest": {
+            str(key).lower(): str(value)
+            for key, value in latest.items()
+            if value and str(key).lower() in client_map
+        },
     }
+
+
+def _manifest_seed_is_downgrade(client_key: str, path: str | None) -> bool:
+    """Return True when *client_key*'s seed tag is semver-newer than recorded LATEST."""
+    manifest = load_seeds_manifest(path)
+    seed = (manifest.get("clients") or {}).get(client_key) or ""
+    official = (manifest.get("latest") or {}).get(client_key) or ""
+    if not seed or not official:
+        return False
+    return _seed_is_newer(seed, official)
+
+
+def is_consensus_downgrade(client: str, path: str | None = None) -> bool:
+    """Return True when upgrading *client* to official LATEST downgrades the BN.
+
+    True only for a consensus client whose seed tag is semver-newer than the
+    official LATEST stored in the seeds manifest (Lighthouse ``v8.3.0-rc.0``
+    vs LATEST ``v8.2.3``). Previous-stable seeds are older, so they stay a
+    forward upgrade and keep the beacon DB. Execution, MEV, and Charon seeds
+    are ignored: this check only gates a consensus beacon wipe.
+    """
+    key = (client or "").strip().lower()
+    if key not in CONSENSUS_CLIENTS:
+        return False
+    return _manifest_seed_is_downgrade(key, path)
+
+
+def is_execution_downgrade(client: str, path: str | None = None) -> bool:
+    """Return True when upgrading *client* to official LATEST downgrades the EL.
+
+    Same semver rule as :func:`is_consensus_downgrade`, for an execution client
+    (Reth ``v1.9.0-rc.1`` vs LATEST ``v1.8.0``). Previous-stable seeds keep
+    their chaindata. Consensus, MEV, and Charon seeds are ignored: this check
+    only gates an execution datadir wipe.
+    """
+    key = (client or "").strip().lower()
+    if key not in EXECUTION_CLIENTS:
+        return False
+    return _manifest_seed_is_downgrade(key, path)
+
+
+def is_harness_downgrade(client: str, path: str | None = None) -> bool:
+    """Return True when a consensus or execution seed is newer than official LATEST."""
+    return is_consensus_downgrade(client, path) or is_execution_downgrade(client, path)
 
 
 def clear_override(path: str | None = None) -> None:
@@ -240,26 +337,51 @@ def log_rc_override_plan(rows: Iterable[dict[str, Any]]) -> None:
         printed = True
         client = row.get("client") or "unknown"
         status = row.get("status") or "skip"
-        latest = row.get("latest") or "?"
+        latest = str(row.get("latest") or "")
         seed_tag, seed_kind = _seed_from_row(row)
         reason = row.get("reason") or ""
+        latest_label = latest or "?"
         if status == "ok" and seed_tag:
             kind_label = "RC" if seed_kind == "rc" else "previous stable"
             print(
-                f"  {client}: {kind_label} {seed_tag} (official LATEST is {latest}) "
+                f"  {client}: {kind_label} {seed_tag} (official LATEST is {latest_label}) "
                 f"— deploy will install seed, then upgrade to LATEST",
                 flush=True,
             )
+            client_key = str(client).strip().lower()
+            wipe_note = ""
+            if client_key in CONSENSUS_CLIENTS:
+                wipe_note = "wipe the beacon DB before starting the older binary"
+            elif client_key in EXECUTION_CLIENTS:
+                wipe_note = "wipe execution chaindata before starting the older binary"
+            if (
+                wipe_note
+                and seed_kind == "rc"
+                and latest
+                and _seed_is_newer(str(seed_tag), latest)
+            ):
+                print(
+                    f"    {client}: binary downgrade vs LATEST — upgrade harness will "
+                    f"{wipe_note}",
+                    flush=True,
+                )
         else:
             detail = reason or "no resolvable RC or previous stable"
             print(
-                f"  {client}: no sane upgrade seed ({detail}) — deploy official LATEST {latest} "
+                f"  {client}: no sane upgrade seed ({detail}) — deploy official LATEST {latest_label} "
                 f"(real-upgrade assert will soft-skip)",
                 flush=True,
             )
     if not printed:
         print("  (no clients to consider)", flush=True)
     print("=========================================", flush=True)
+
+
+def _seed_is_newer(seed_tag: str, latest: str) -> bool:
+    """Return True when *seed_tag* is semver-newer than official *latest*."""
+    from find_client_rc import is_newer_than_latest
+
+    return is_newer_than_latest(seed_tag, latest)
 
 
 def _accept_seed(seed_tag: str, seed_kind: str | None, latest: str) -> bool:
@@ -287,7 +409,7 @@ def prepare_rc_overrides(
     omitted so deploy stays on official LATEST.
 
     Returns a dict with ``rows``, ``clients``, ``repos``, ``kinds``,
-    ``skipped``, and ``payload``.
+    ``latest`` (official LATEST at seed time), ``skipped``, and ``payload``.
     """
     from find_client_rc import CLIENT_REPOS, find_upgrade_seed
 
@@ -299,6 +421,7 @@ def prepare_rc_overrides(
     rows: list[dict[str, Any]] = []
     client_map: dict[str, str] = {}
     kind_map: dict[str, str] = {}
+    latest_map: dict[str, str] = {}
     skipped: dict[str, str] = {}
     for client in clients:
         client = client.lower()
@@ -320,12 +443,14 @@ def prepare_rc_overrides(
             client_map[client] = str(seed_tag)
             if seed_kind:
                 kind_map[client] = seed_kind
+            if latest:
+                latest_map[client] = latest
         else:
             skipped[client] = str(row.get("reason") or "no usable upgrade seed")
 
     log_rc_override_plan(rows)
     manifest_path = seeds_dest or seeds_path(override=override_path(path))
-    write_seeds_manifest(client_map, kind_map, skipped, path=manifest_path)
+    write_seeds_manifest(client_map, kind_map, skipped, path=manifest_path, latest=latest_map)
 
     if not client_map:
         clear_override(path)
@@ -339,6 +464,7 @@ def prepare_rc_overrides(
             "clients": {},
             "repos": {},
             "kinds": {},
+            "latest": {},
             "skipped": skipped,
             "payload": _empty_override(),
         }
@@ -354,6 +480,7 @@ def prepare_rc_overrides(
         "clients": payload["clients"],
         "repos": payload["repos"],
         "kinds": payload.get("kinds") or {},
+        "latest": latest_map,
         "skipped": skipped,
         "payload": payload,
     }
@@ -423,15 +550,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Manage Upgrade-case LATEST→seed overrides")
     parser.add_argument(
         "action",
-        choices=("prepare", "clear", "show", "seeds"),
+        choices=("prepare", "clear", "show", "seeds", "downgrade"),
         help="prepare: discover seeds and write override; clear: remove remap file; "
-        "show: print remap file; seeds: print persistent seeds manifest",
+        "show: print remap file; seeds: print persistent seeds manifest; "
+        "downgrade: print yes when upgrading that consensus or execution client "
+        "to LATEST would install an older binary",
     )
     parser.add_argument("clients", nargs="*", help="Client names for prepare (default: none)")
     parser.add_argument(
         "--path",
         default=None,
         help=f"Override file path (default: ${ENV_VAR} or {OVERRIDE_PATH})",
+    )
+    parser.add_argument(
+        "--seeds",
+        default=None,
+        help=f"Seeds manifest for downgrade (default: ${SEEDS_ENV} or {SEEDS_PATH})",
     )
     args = parser.parse_args()
     target = override_path(args.path)
@@ -443,6 +577,11 @@ def main() -> int:
         data = load_seeds_manifest(seeds_path(override=target))
         json.dump(data, sys.stdout, indent=2, sort_keys=True)
         sys.stdout.write("\n")
+    elif args.action == "downgrade":
+        if len(args.clients) != 1:
+            print("downgrade requires exactly one client name", file=sys.stderr)
+            return 2
+        print("yes" if is_harness_downgrade(args.clients[0], path=args.seeds) else "no")
     else:
         data = load_override(target)
         json.dump(data, sys.stdout, indent=2, sort_keys=True)

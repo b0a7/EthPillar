@@ -14,6 +14,13 @@
 #   2. Second upgrade must skip (skip message + check-updates exit 0; PID unchanged)
 # Unseeded clients soft-skip the real-upgrade assert and only prove skip-when-latest.
 #
+# Consensus or execution seed newer than official LATEST is a binary downgrade.
+# The newer process has already written chain data the older binary may not
+# open. Before that upgrade, wipe the beacon DB (consensus) or EL datadir
+# contents (execution) and leave the unit stopped so the older binary creates
+# a compatible DB. Previous stable seeds are older than LATEST and keep their
+# DB (forward migration).
+#
 # Install detection matches CLI: unit file on disk, not `systemctl list-unit-files`
 # (the latter needs dbus and failed as non-root epstaker unless a Java client
 # pulled dbus in as a side effect).
@@ -84,6 +91,35 @@ seed_skip_reason() {
     if [[ -f "$SEEDS_FILE" ]]; then
         jq -r --arg k "$client" '.skipped[$k] // empty' "$SEEDS_FILE" 2>/dev/null || true
     fi
+}
+
+# Print yes or no. yes means upgrading this consensus or execution client to
+# official LATEST installs an older binary than the seed.
+binary_downgrade_answer() {
+    local client="${1,,}"
+    local answer
+    answer=$(python3 /ethpillar/tests/integration/latest_override.py downgrade "$client")
+    if [[ "$answer" != "yes" && "$answer" != "no" ]]; then
+        echo "❌ binary downgrade check for ${client} returned '${answer}' (expected yes or no)" >&2
+        exit 1
+    fi
+    echo "$answer"
+}
+
+# Stop consensus and delete the beacon DB. Do not start it; the upgrade does.
+wipe_consensus_beacon_for_downgrade() {
+    local client="${1,,}"
+    echo "⚠️  ${client} seed is newer than official LATEST (consensus binary downgrade)."
+    echo "    Wiping the beacon DB before ethpillar upgrade so the older binary does not open a newer schema."
+    bash /ethpillar/tests/integration/wipe_consensus_beacon.sh "$client"
+}
+
+# Stop execution and delete chaindata. Do not start it; the upgrade does.
+wipe_execution_datadir_for_downgrade() {
+    local client="${1,,}"
+    echo "⚠️  ${client} seed is newer than official LATEST (execution binary downgrade)."
+    echo "    Wiping execution chaindata before ethpillar upgrade so the older binary does not open a newer DB."
+    bash /ethpillar/tests/integration/wipe_execution_datadir.sh "$client"
 }
 
 upgrade_skipped() {
@@ -210,6 +246,16 @@ exercise_upgrade_target() {
     if client_was_seeded "$client"; then
         echo "Seeded ${client}: expecting a real upgrade, then skip-when-latest"
         capture_pids "${services[@]}"
+        # After PIDs are captured: a downgrade stops the unit, so the
+        # pre-wipe PID must be recorded first. The upgrade then starts a new PID.
+        if [[ "$target" == "consensus" || "$target" == "execution" ]]; then
+            downgrade_answer=$(binary_downgrade_answer "$client")
+            if [[ "$downgrade_answer" == "yes" && "$target" == "consensus" ]]; then
+                wipe_consensus_beacon_for_downgrade "$client"
+            elif [[ "$downgrade_answer" == "yes" && "$target" == "execution" ]]; then
+                wipe_execution_datadir_for_downgrade "$client"
+            fi
+        fi
         run_upgrade "$target" "$log1"
         assert_real_upgrade "$target" "$log1" "${services[@]}"
         verify_binaries_and_health "${services[@]}"

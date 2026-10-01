@@ -72,6 +72,10 @@ custom_tests = [
 # Upgrade lane: deploy seeds RC-if-newer-than-LATEST else previous stable
 # (see latest_override.py / find_upgrade_seed). First ethpillar upgrade must
 # move to official LATEST; second must skip. No sane seed → soft-skip.
+# Consensus seed newer than LATEST: wipe the beacon DB before that upgrade
+# (wipe_consensus_beacon.sh). Execution seed newer than LATEST: wipe EL
+# chaindata the same way (wipe_execution_datadir.sh). The older binary must
+# not open a newer schema. Previous-stable seeds keep their DB.
 upgrade_tests = [
     ("Upgrade-Reth-Lighthouse", f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --network SEPOLIA --config 'Full Node Only' --test-updates"),
     ("Upgrade-Besu-Teku", f"{RUN_TEST} deploy/deploy-node.py --ec Besu --cc Teku --network SEPOLIA --config 'Full Node Only' --test-updates"),
