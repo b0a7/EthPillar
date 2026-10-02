@@ -10,8 +10,15 @@ def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str
                             cl_p2p_port: str, cl_rest_port: str, cl_max_peer_count: str,
                             sync_url: str,
                             network_override: Optional[str] = None, sync_parameters: str = '',
-                            mev_parameters: str = '') -> str:
+                            mev_parameters: str = '',
+                            cl_quic_port: str = '9001') -> str:
     """Generate Erigon+Caplin integrated execution-consensus systemd service file content.
+
+    QUIC uses ``--caplin.discovery.quicport``. Caplin's native default is UDP
+    4001, which is also the native TCP port default, so leaving both unset
+    makes v3.7.1 refuse to start. EthPillar already pins discovery UDP/TCP to
+    ``CL_P2P_PORT`` (9000). This follows eth-docker #2836: QUIC is
+    ``CL_P2P_PORT_2`` (CL P2P + 1, default 9001), not Caplin's 4001.
 
     Args:
         eth_network: Network name
@@ -26,6 +33,7 @@ def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str
         network_override: Optional network flag override (for ephemery)
         sync_parameters: Optional sync/prune parameters
         mev_parameters: Optional MEV relay URL parameter
+        cl_quic_port: Caplin QUIC UDP port (``CL_P2P_PORT_2``, default 9001)
 
     Returns:
         Service file content as a string
@@ -60,6 +68,7 @@ def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str
         "--caplin.discovery.addr=0.0.0.0",
         f"--caplin.discovery.port={cl_p2p_port}",
         f"--caplin.discovery.tcpport={cl_p2p_port}",
+        f"--caplin.discovery.quicport={cl_quic_port}",
         f"--caplin.max-peer-count={cl_max_peer_count}",
         "--beacon.api.addr=127.0.0.1",
         f"--beacon.api.port={cl_rest_port}",
@@ -164,7 +173,8 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
 
 def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port: str, el_max_peer_count: str, 
                                  jwtsecret_path: str, cl_p2p_port: str, cl_rest_port: str, cl_max_peer_count_cl: str,
-                                 checkpoint_sync_url: str, mev_parameters: str = '') -> Tuple[str, str]:
+                                 checkpoint_sync_url: str, mev_parameters: str = '',
+                                 cl_quic_port: str = '9001') -> Tuple[str, str]:
     """Download and install Erigon binary and service.
 
     Returns:
@@ -199,7 +209,8 @@ def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port:
     service_content = generate_erigon_service(
         eth_network, el_p2p_port, el_rpc_port, el_max_peer_count,
         jwtsecret_path, cl_p2p_port, cl_rest_port, cl_max_peer_count_cl,
-        checkpoint_sync_url, mev_parameters=mev_parameters
+        checkpoint_sync_url, mev_parameters=mev_parameters,
+        cl_quic_port=cl_quic_port or '9001',
     )
     
     service_file_path = '/etc/systemd/system/execution.service'

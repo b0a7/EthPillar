@@ -474,6 +474,8 @@ class TestErigonService:
         assert "After=network-online.target mevboost.service" in result
         assert "Requires=mevboost.service" in result
         assert f"--caplin.discovery.port={CL_P2P_PORT}" in result
+        # eth-docker #2836: QUIC is CL_P2P+1 (9001), not Caplin's native UDP 4001.
+        assert f"--caplin.discovery.quicport={CL_P2P_PORT_2}" in result
         assert f"--beacon.api.port={CL_REST_PORT}" in result
         assert f"--caplin.checkpoint-sync-url={SYNC_URL}/eth/v2/debug/beacon/states/finalized" in result
 
