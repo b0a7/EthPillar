@@ -1,9 +1,40 @@
 import os
+import re
 import subprocess
 from typing import Optional, Tuple
 from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, install_system_binary, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
+
+# First Erigon release that defines ``--caplin.discovery.quicport`` (v3.7.1).
+_CAPLIN_QUIC_MIN = (3, 7, 1)
+
+
+def caplin_quic_flag_supported(version: str) -> bool:
+    """Return True when the unit should pin ``--caplin.discovery.quicport``.
+
+    v3.7.1 is the first release that accepts the flag. An empty *version*
+    means the caller is emitting the current default (fresh installs and unit
+    tests), so the flag stays. A parsed version below 3.7.1 omits it: the
+    upgrade harness installs previous-stable v3.7.0, and that binary exits on
+    the unknown flag before ports 30303 and 9000 bind.
+
+    Args:
+        version: Erigon tag or ``erigon version`` text. Prerelease suffixes
+            are ignored. Empty keeps the v3.7.1+ default.
+
+    Returns:
+        True when the QUIC pin is safe for this binary.
+    """
+    text = (version or "").strip()
+    if not text:
+        return True
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+    if not match:
+        return True
+    got = tuple(int(part) for part in match.groups())
+    return got >= _CAPLIN_QUIC_MIN
+
 
 def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str,
                             el_max_peer_count: str, jwtsecret_path: str,
@@ -11,14 +42,16 @@ def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str
                             sync_url: str,
                             network_override: Optional[str] = None, sync_parameters: str = '',
                             mev_parameters: str = '',
-                            cl_quic_port: str = '9001') -> str:
+                            cl_quic_port: str = '9001',
+                            erigon_version: str = '') -> str:
     """Generate Erigon+Caplin integrated execution-consensus systemd service file content.
 
-    QUIC uses ``--caplin.discovery.quicport``. Caplin's native default is UDP
-    4001, which is also the native TCP port default, so leaving both unset
-    makes v3.7.1 refuse to start. EthPillar already pins discovery UDP/TCP to
-    ``CL_P2P_PORT`` (9000). This follows eth-docker #2836: QUIC is
-    ``CL_P2P_PORT_2`` (CL P2P + 1, default 9001), not Caplin's 4001.
+    QUIC uses ``--caplin.discovery.quicport`` on v3.7.1+. Caplin's native QUIC
+    default is UDP 4001. If discovery is also pinned to 4001, v3.7.1 refuses
+    to start. EthPillar pins discovery UDP/TCP to ``CL_P2P_PORT`` (9000) and,
+    when the binary supports it, QUIC to ``CL_P2P_PORT_2`` (CL P2P + 1,
+    default 9001), matching eth-docker #2836. Older binaries omit the QUIC
+    flag; see :func:`caplin_quic_flag_supported`.
 
     Args:
         eth_network: Network name
@@ -34,6 +67,8 @@ def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str
         sync_parameters: Optional sync/prune parameters
         mev_parameters: Optional MEV relay URL parameter
         cl_quic_port: Caplin QUIC UDP port (``CL_P2P_PORT_2``, default 9001)
+        erigon_version: Installed Erigon version. Empty includes the QUIC pin.
+            Below v3.7.1 the pin is omitted.
 
     Returns:
         Service file content as a string
@@ -62,19 +97,23 @@ def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str
     if sync_parameters:
         _args.append(sync_parameters.strip())
     
-    # Caplin flags
-    _args.extend([
+    # Caplin flags. QUIC is v3.7.1+ only; v3.7.0 exits on the unknown flag.
+    caplin_args = [
         "--caplin.enable-upnp",
         "--caplin.discovery.addr=0.0.0.0",
         f"--caplin.discovery.port={cl_p2p_port}",
         f"--caplin.discovery.tcpport={cl_p2p_port}",
-        f"--caplin.discovery.quicport={cl_quic_port}",
+    ]
+    if caplin_quic_flag_supported(erigon_version):
+        caplin_args.append(f"--caplin.discovery.quicport={cl_quic_port}")
+    caplin_args.extend([
         f"--caplin.max-peer-count={cl_max_peer_count}",
         "--beacon.api.addr=127.0.0.1",
         f"--beacon.api.port={cl_rest_port}",
         "--beacon.api=beacon,validator,builder,config,debug,events,node,lighthouse",
         f"--caplin.checkpoint-sync-url={sync_url}/eth/v2/debug/beacon/states/finalized"
     ])
+    _args.extend(caplin_args)
 
     if mev_parameters:
         _args.append(mev_parameters.strip())
@@ -211,6 +250,7 @@ def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port:
         jwtsecret_path, cl_p2p_port, cl_rest_port, cl_max_peer_count_cl,
         checkpoint_sync_url, mev_parameters=mev_parameters,
         cl_quic_port=cl_quic_port or '9001',
+        erigon_version=erigon_version,
     )
     
     service_file_path = '/etc/systemd/system/execution.service'
