@@ -91,7 +91,7 @@ def complete_rollback_hint(fs: "EpbsFilesystem") -> str:
     restore: List[str] = []
     if fs.exists(fs.unit_path("consensus")):
         restore.append("consensus.service.bak.epbs.* over consensus.service")
-    if _execution_is_caplin(fs):
+    if _execution_has_caplin(fs):
         restore.append("execution.service.bak.epbs.* over execution.service")
     if fs.exists(fs.unit_path("charon")):
         restore.append("charon.service.bak.epbs.* over charon.service")
@@ -105,7 +105,7 @@ def complete_rollback_hint(fs: "EpbsFilesystem") -> str:
         name
         for name in ("execution", "consensus", "charon", "validator")
         if fs.exists(fs.unit_path(name))
-        and (name != "execution" or _execution_is_caplin(fs))
+        and (name != "execution" or _execution_has_caplin(fs))
     ]
     if restart:
         steps.append("sudo systemctl restart " + " ".join(restart))
@@ -554,7 +554,7 @@ def _read_required_unit(fs: EpbsFilesystem, key: str) -> Tuple[str, str]:
     return path, content
 
 
-def _execution_is_caplin(fs: EpbsFilesystem) -> bool:
+def _execution_has_caplin(fs: EpbsFilesystem) -> bool:
     """Return True when ``execution.service`` is integrated Erigon-Caplin.
 
     Args:
@@ -609,7 +609,7 @@ def detect_clients(fs: EpbsFilesystem) -> Tuple[str, str, str]:
         if "keystore-dir" in content:
             return "Grandine", bn_name or "Grandine", "integrated_grandine"
 
-    caplin = _execution_is_caplin(fs)
+    caplin = _execution_has_caplin(fs)
     if caplin and not bn_name:
         bn_name = "Erigon-Caplin"
 
