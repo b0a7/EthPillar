@@ -4,12 +4,6 @@ name: CI — Integration
 # Scheduled full-suite runs use ci-nightly.yml; use workflow_dispatch for ad-hoc integration only.
 on:
   workflow_dispatch:
-  # TEMPORARY tip hack: agent tokens cannot workflow_dispatch (403).
-  # Push on this branch runs CI — Integration so the Caplin v3.7.1 prepare
-  # case is exercised. Strip this trigger before any PR.
-  push:
-    branches:
-      - cursor/epbs-caplin-erigon-v371-b463
 
 permissions:
   contents: read
