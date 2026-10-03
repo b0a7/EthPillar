@@ -22,6 +22,7 @@ from manage.epbs import (
     MIGRATION_FORMAT,
     MIGRATION_VERSION,
     EpbsError,
+    caplin_supports_epbs,
     complete_rollback_hint,
     EpbsFilesystem,
     charon_has_builder_api,
@@ -162,6 +163,18 @@ def test_caplin_prepare_and_complete(tmp_path: Path) -> None:
     assert "execution" in done.services_to_restart
     kept = json.loads(Path(fs.caplin_builders_path).read_text(encoding="utf-8"))
     assert len(kept["builders"]) == 2
+
+
+def test_caplin_prerelease_meets_v371_floor(tmp_path: Path) -> None:
+    """A v3.7.1 prerelease meets the Caplin builder floor; v3.7.0 does not."""
+    fs = _fs(tmp_path)
+    unit = generate_erigon_service(
+        "sepolia", "30303", "8545", "50", JWT, "9000", "5052", "100", SYNC,
+    )
+    fs.run_version = lambda _argv: "erigon version 3.7.1-rc.0\n"
+    assert caplin_supports_epbs(fs, unit) is True
+    fs.run_version = lambda _argv: "erigon version 3.7.0-rc.1\n"
+    assert caplin_supports_epbs(fs, unit) is False
 
 
 def test_caplin_prepare_skips_older_than_v371(tmp_path: Path) -> None:

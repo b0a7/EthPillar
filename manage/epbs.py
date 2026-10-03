@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from client_requirements import compare_versions, parse_version
 from deploy.common import BASE_DATA_DIR, write_service_file
 from manage.service_parse import (
     SERVICE_FILES,
@@ -982,33 +983,32 @@ def lodestar_has_builder_urls_flag(fs: EpbsFilesystem, vc_content: str) -> bool:
     return "--builder.urls" in _command_help(fs, help_cmd)
 
 
-def _parse_semver_tuple(text: str) -> Optional[Tuple[int, int, int]]:
-    """Return ``(major, minor, patch)`` from the first semver in *text*.
+def _version_meets_floor(text: str, minimum: str) -> bool:
+    """Return True when the first ``X.Y.Z`` in *text* is at least *minimum*.
+
+    Prerelease suffixes do not lower the binary: ``3.7.1-rc.0`` meets floor
+    ``3.7.1``. The base triple is compared with
+    :func:`client_requirements.compare_versions`.
 
     Args:
-        text: Version command output. Prerelease suffixes are ignored.
+        text: Version command output or a tag.
+        minimum: Floor such as ``3.7.1``.
 
     Returns:
-        Parsed tuple, or None when no ``X.Y.Z`` is present.
+        False when either side has no ``X.Y.Z``.
     """
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text or "")
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+    def base(raw: str) -> Optional[str]:
+        match = re.search(r"(\d+\.\d+\.\d+)", raw or "")
+        if not match:
+            return None
+        major, minor, patch, _prerelease = parse_version(match.group(1))
+        return f"{major}.{minor}.{patch}"
 
-
-def _version_at_least(text: str, minimum: str) -> bool:
-    """Return True when *text* contains a semver greater than or equal to *minimum*.
-
-    Args:
-        text: Command output that includes a version.
-        minimum: Minimum ``X.Y.Z`` (prerelease on *text* does not lower it).
-    """
-    got = _parse_semver_tuple(text)
-    need = _parse_semver_tuple(minimum)
+    got = base(text)
+    need = base(minimum)
     if got is None or need is None:
         return False
-    return got >= need
+    return compare_versions(got, need) >= 0
 
 
 def _binary_version(fs: EpbsFilesystem, argv: Sequence[str]) -> str:
@@ -1039,7 +1039,7 @@ def caplin_supports_epbs(fs: EpbsFilesystem, unit_content: str) -> bool:
         return False
     binary = args[0].split()[0]
     text = _binary_version(fs, [binary, "--version"])
-    return _version_at_least(text, CAPLIN_BUILDERS_MIN_VERSION)
+    return _version_meets_floor(text, CAPLIN_BUILDERS_MIN_VERSION)
 
 
 def apply_relays_caplin(relays: RelaysConfig, existing: Optional[str]) -> str:
