@@ -866,6 +866,13 @@ getClient(){
         CL=$(grep Description= "$consensus_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
     getValidatorClient >/dev/null || true
+    # Integrated Caplin has no validator unit. getValidatorClient still
+    # returns Erigon-Caplin for ePBS; VC here is a separate unit or
+    # integrated Grandine. Leaving Erigon-Caplin in VC makes --version
+    # call getClVcCurrentVersion on an unknown client and exit.
+    if [[ "${VC:-}" == "Erigon-Caplin" && ! -f "$validator_svc" ]]; then
+        VC=""
+    fi
     if [ -f "$csm_svc" ]; then
         CSM_VC=$(grep Description= "$csm_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
     fi
