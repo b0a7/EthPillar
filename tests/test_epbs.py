@@ -21,6 +21,9 @@ from manage.epbs import (
     COMPLETE_REFUSED,
     MIGRATION_FORMAT,
     MIGRATION_VERSION,
+    TEKU_BOOST_FACTOR_UINT64_MAX,
+    TEKU_EPBS_BUILD_FACTOR_ENV,
+    TEKU_XBUILDER_MIN_VERSION,
     EpbsError,
     caplin_supports_epbs,
     complete_rollback_hint,
@@ -38,6 +41,8 @@ from manage.epbs import (
     strip_bn_sidecar,
     strip_charon_builder_api,
     support_level,
+    teku_supports_epbs,
+    teku_xbuilder_boost_factor,
 )
 from manage.service_parse import get_flag_value, has_flag, normalize_cli_args, parse_unit
 
@@ -110,8 +115,9 @@ def test_tui_is_gated_to_full_support_only() -> None:
     """MEV-Boost TUI (``epbsTuiSupported``) matches ``support_level == full``."""
     assert support_level("Prysm") == "full"
     assert support_level("Lodestar") == "full"
+    assert support_level("Teku") == "full"
     assert support_level("Erigon-Caplin") == "full"
-    for client in ("Lighthouse", "Teku", "Nimbus", "Grandine", ""):
+    for client in ("Lighthouse", "Nimbus", "Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -681,69 +687,306 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
         complete(fs, apply=False)
 
 
-@pytest.mark.parametrize(
-    "client,bn_unit,vc_unit,sidecar_token",
-    [
-        (
-            "Teku",
-            generate_teku_bn_service(
-                "mainnet", SYNC, JWT, "5052", "9000", "100",
-                fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
-                mev_parameters="--validators-builder-registration-default-enabled=true --builder-endpoint=http://127.0.0.1:18550",
-            ),
-            generate_teku_vc_service(
-                "mainnet",
-                "ep",
-                "--beacon-node-api-endpoint=http://127.0.0.1:5052",
-                fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
-                extra_parameters="--validators-builder-registration-default-enabled=true",
-            ),
-            "--builder-endpoint",
-        ),
-        (
-            "Nimbus",
-            generate_nimbus_bn_service(
-                "mainnet", JWT, "5052", "9000", "9001", "100",
-                mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
-            ),
-            generate_nimbus_vc_service(
-                "mainnet",
-                "ep",
-                "--beacon-node=http://127.0.0.1:5052",
-                extra_parameters="--payload-builder=true",
-            ),
-            "--payload-builder-url",
-        ),
-    ],
-    ids=["Teku", "Nimbus"],
-)
-def test_placeholder_clients_complete_strips_sidecar(
-    tmp_path: Path,
-    client: str,
-    bn_unit: str,
-    vc_unit: str,
-    sidecar_token: str,
-) -> None:
-    """Teku/Nimbus prepare is a no-op; complete is refused without ``--force``."""
+def test_nimbus_prepare_is_placeholder_complete_strips_sidecar(tmp_path: Path) -> None:
+    """Nimbus prepare is a no-op; complete is refused without ``--force``."""
     fs = _fs(tmp_path)
     _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
-    _write(fs, "consensus", bn_unit)
-    _write(fs, "validator", vc_unit)
+    _write(
+        fs,
+        "consensus",
+        generate_nimbus_bn_service(
+            "mainnet", JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://127.0.0.1:5052",
+            extra_parameters="--payload-builder=true",
+        ),
+    )
     plan = prepare(fs, apply=True)
     assert plan.support == "placeholder"
-    assert client.lower() in plan.client.lower() or plan.client == client
+    assert plan.client == "Nimbus"
     with pytest.raises(EpbsError, match="Complete refused"):
         complete(fs, apply=False)
 
     complete(fs, apply=True, force=True)
     bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
-    assert not has_flag(bn_args, sidecar_token)
-    # VC builder-enable flags stay
+    assert not has_flag(bn_args, "--payload-builder-url")
     vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
-    if client == "Teku":
-        assert "validators-builder-registration-default-enabled" in vc
-    if client == "Nimbus":
-        assert "payload-builder=true" in vc or "--payload-builder=true" in vc
+    assert "payload-builder=true" in vc or "--payload-builder=true" in vc
+
+
+def _teku_stack(fs: EpbsFilesystem, *, bn_extra: str = "", vc_extra: str = "") -> None:
+    """Write a Teku BN + VC + MEV-Boost stack and mark the binary as v26.9.1."""
+    fs.run_version = lambda _argv: "teku/v26.9.1/linux-x86_64/openjdk-java-25\n"
+    mev = (
+        "--validators-builder-registration-default-enabled=true "
+        "--builder-endpoint=http://127.0.0.1:18550"
+    )
+    if bn_extra:
+        mev = f"{mev} {bn_extra}"
+    vc_flags = "--validators-builder-registration-default-enabled=true"
+    if vc_extra:
+        vc_flags = f"{vc_flags} {vc_extra}"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+            mev_parameters=mev,
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:5052",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+            extra_parameters=vc_flags,
+        ),
+    )
+
+
+def test_teku_xbuilder_boost_factor_mapping() -> None:
+    """eth-docker build-factor tokens become Teku ``--Xbuilder-boost-factor``."""
+    assert teku_xbuilder_boost_factor("") == (None, None)
+    assert teku_xbuilder_boost_factor("   ") == (None, None)
+    assert teku_xbuilder_boost_factor("0") == ("0", None)
+    assert teku_xbuilder_boost_factor("000") == ("0", None)
+    assert teku_xbuilder_boost_factor("local") == ("0", None)
+    assert teku_xbuilder_boost_factor("always") == (TEKU_BOOST_FACTOR_UINT64_MAX, None)
+    assert teku_xbuilder_boost_factor("BUILDER_ALWAYS") == (TEKU_BOOST_FACTOR_UINT64_MAX, None)
+    assert teku_xbuilder_boost_factor("maxprofit") == ("100", None)
+    assert teku_xbuilder_boost_factor("100") == ("100", None)
+    assert teku_xbuilder_boost_factor("0100") == ("100", None)
+    assert teku_xbuilder_boost_factor("90") == ("90", None)
+    capped, warning = teku_xbuilder_boost_factor("18446744073709551616")
+    assert capped == TEKU_BOOST_FACTOR_UINT64_MAX
+    assert warning and "capping" in warning
+    omitted, invalid = teku_xbuilder_boost_factor("nope")
+    assert omitted is None
+    assert invalid and "invalid" in invalid
+    # Keywords are case-sensitive, matching eth-docker.
+    omitted, invalid = teku_xbuilder_boost_factor("Always")
+    assert omitted is None
+    assert invalid
+
+
+def test_teku_prepare_writes_xbuilder_flags_and_complete_keeps_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teku v26.9.1 prepare installs builder URLs, min-bid, and boost factor."""
+    fs = _fs(tmp_path)
+    _teku_stack(fs)
+    monkeypatch.setenv(TEKU_EPBS_BUILD_FACTOR_ENV, "maxprofit")
+    assert teku_supports_epbs(fs, Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+
+    dry = prepare(fs, apply=False)
+    assert dry.support == "full"
+    assert dry.client == "Teku"
+    assert not any("--Xbuilder-urls" in line for line in Path(fs.unit_path("validator")).read_text(encoding="utf-8").splitlines())
+
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    assert "validator" in plan.services_to_restart
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    urls = get_flag_value(vc_args, "--Xbuilder-urls")
+    assert "boost-relay.flashbots.net" in urls
+    assert "relay.ultrasound.money" in urls
+    assert "18550" not in urls
+    assert "," in urls and " " not in urls.split("=", 1)[-1]
+    assert get_flag_value(vc_args, "--Xbuilder-min-bid") == "6000000"
+    assert get_flag_value(vc_args, "--Xbuilder-boost-factor") == "100"
+    assert has_flag(vc_args, "--validators-builder-registration-default-enabled")
+    bn_text = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "--builder-endpoint=http://127.0.0.1:18550" in bn_text
+
+    again = prepare(fs, apply=True)
+    assert any("nothing to change" in w for w in again.warnings)
+
+    done = complete(fs, apply=True)
+    assert done.applied
+    assert done.disable_mevboost is True
+    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
+    assert not has_flag(bn_args, "--builder-endpoint")
+    kept = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert "boost-relay.flashbots.net" in get_flag_value(kept, "--Xbuilder-urls")
+    assert get_flag_value(kept, "--Xbuilder-boost-factor") == "100"
+    assert has_flag(kept, "--validators-builder-registration-default-enabled")
+    after = status(fs)
+    assert "VC relays: yes" in after
+    assert "already removed" in after
+
+
+def test_teku_prepare_reads_bn_compare_factor_when_env_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BN ``BUILDER_ALWAYS`` becomes uint64 max; unset factor omits the flag."""
+    monkeypatch.delenv(TEKU_EPBS_BUILD_FACTOR_ENV, raising=False)
+    fs = _fs(tmp_path)
+    _teku_stack(fs, bn_extra="--builder-bid-compare-factor=BUILDER_ALWAYS")
+    prepare(fs, apply=True)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(vc_args, "--Xbuilder-boost-factor") == TEKU_BOOST_FACTOR_UINT64_MAX
+
+    plain = _fs(tmp_path / "plain")
+    _teku_stack(plain)
+    prepare(plain, apply=True)
+    plain_args = _args(Path(plain.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(plain_args, "--Xbuilder-boost-factor")
+    assert has_flag(plain_args, "--Xbuilder-urls")
+    assert get_flag_value(plain_args, "--Xbuilder-min-bid") == "6000000"
+
+
+def test_teku_prepare_skips_binary_older_than_xbuilder_release(tmp_path: Path) -> None:
+    """Teku before 26.9.0 is a prepare no-op; complete stays refused."""
+    fs = _fs(tmp_path)
+    fs.run_version = lambda _argv: "teku/v26.8.0/linux-x86_64/openjdk-java-25\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:5052",
+            extra_parameters="--validators-builder-registration-default-enabled=true",
+        ),
+    )
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    assert not teku_supports_epbs(fs, before)
+    plan = prepare(fs, apply=True)
+    assert plan.support == "full"
+    assert plan.applied
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+    assert any(TEKU_XBUILDER_MIN_VERSION in a.detail for a in plan.actions)
+    st = status(fs)
+    assert "older than" in st
+    assert "Prepare is a no-op" in st
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
+
+
+def test_teku_invalid_build_factor_still_writes_urls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bad boost-factor token warns and does not block builder URLs."""
+    fs = _fs(tmp_path)
+    _teku_stack(fs)
+    monkeypatch.setenv(TEKU_EPBS_BUILD_FACTOR_ENV, "nope")
+    plan = prepare(fs, apply=True)
+    assert any("invalid" in w for w in plan.warnings)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert has_flag(vc_args, "--Xbuilder-urls")
+    assert not has_flag(vc_args, "--Xbuilder-boost-factor")
+
+
+def test_teku_prepare_keeps_existing_boost_factor_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator-set boost factor stays when no new source is configured."""
+    monkeypatch.delenv(TEKU_EPBS_BUILD_FACTOR_ENV, raising=False)
+    fs = _fs(tmp_path)
+    _teku_stack(fs, vc_extra="--Xbuilder-boost-factor=90")
+    prepare(fs, apply=True)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(vc_args, "--Xbuilder-boost-factor") == "90"
+    assert has_flag(vc_args, "--Xbuilder-urls")
+
+
+def test_teku_charon_prepare_skips_vc_builder_urls(tmp_path: Path) -> None:
+    """Charon + Teku: prepare must not write --Xbuilder-urls on the signer VC."""
+    fs = _fs(tmp_path)
+    fs.run_version = lambda _argv: "teku/v26.9.1/linux-x86_64/openjdk-java-25\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "100",
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "charon",
+        generate_charon_service("mainnet", "http://127.0.0.1:5052", builder_api=True),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:3600",
+            extra_parameters="--validators-builder-registration-default-enabled=true",
+        ),
+    )
+    prep = prepare(fs, apply=True)
+    assert any("Charon DVT owns builder path" in a.detail for a in prep.actions)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(vc_args, "--Xbuilder-urls")
+    done = complete(fs, apply=True)
+    assert done.applied
+    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
+    assert not has_flag(bn_args, "--builder-endpoint")
+
+
+def test_teku_import_applies_xbuilder_urls(tmp_path: Path) -> None:
+    """Import writes Teku --Xbuilder-urls from a migration file."""
+    mev_fs = _fs(tmp_path / "mev")
+    _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    out = tmp_path / "mig.ethpillar.epbs-migration"
+    export_migration(mev_fs, output=str(out), hostname="bn")
+
+    vc_fs = _fs(tmp_path / "vc")
+    vc_fs.run_version = lambda _argv: "teku/v26.9.1/linux-x86_64/openjdk-java-25\n"
+    _write(
+        vc_fs,
+        "validator",
+        generate_teku_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node-api-endpoint=http://10.0.0.1:5052",
+            fee_parameters=f"--validators-proposer-default-fee-recipient={FEE}",
+        ),
+    )
+    plan = import_migration(str(out), vc_fs, apply=True)
+    assert plan.applied
+    assert plan.support == "full"
+    args = _args(Path(vc_fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert "boost-relay.flashbots.net" in get_flag_value(args, "--Xbuilder-urls")
+    assert get_flag_value(args, "--Xbuilder-min-bid") == "6000000"
+
+
+def test_teku_env_overrides_bn_compare_factor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``TEKU_EPBS_BUILD_FACTOR`` wins over the beacon-node compare factor."""
+    fs = _fs(tmp_path)
+    _teku_stack(fs, bn_extra="--builder-bid-compare-factor=50")
+    monkeypatch.setenv(TEKU_EPBS_BUILD_FACTOR_ENV, "local")
+    prepare(fs, apply=True)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(vc_args, "--Xbuilder-boost-factor") == "0"
 
 
 def test_grandine_integrated_placeholder_and_complete(tmp_path: Path) -> None:

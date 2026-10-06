@@ -40,10 +40,11 @@ setup() {
   grep -q 'charon_epbs_supported' manage/epbs.py
 }
 
-@test "integration matrix has Prysm, Lodestar, and Caplin ePBS migration cases" {
+@test "integration matrix has Prysm, Lodestar, Caplin, and Teku ePBS migration cases" {
     grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Caplin-Erigon-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
+    grep -q 'Teku-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_inside_docker.py
   grep -q -- '--force-validator' tests/integration/run_inside_docker.py

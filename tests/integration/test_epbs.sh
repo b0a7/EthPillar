@@ -1,6 +1,6 @@
 #!/bin/bash
 # EthPillar ePBS migration integration test.
-# Prysm or Lodestar: VC + MEV-Boost, empty-wallet VC start.
+# Prysm, Lodestar, or Teku: VC + MEV-Boost, empty-wallet VC start.
 # Erigon-Caplin v3.7.1: integrated execution.service, no separate VC.
 # Runs inside the Docker container after a MEV node is deployed.
 
@@ -44,9 +44,9 @@ assert_supported_vc() {
         exit 1
     fi
     case "$VC_CLIENT" in
-        Prysm|Lodestar) ;;
+        Prysm|Lodestar|Teku) ;;
         *)
-            echo "❌ ePBS integration test requires a Prysm or Lodestar validator client"
+            echo "❌ ePBS integration test requires a Prysm, Lodestar, or Teku validator client"
             grep Description= "$VC_UNIT" || true
             exit 1
             ;;
@@ -147,6 +147,19 @@ assert_vc_process_has_epbs_flags() {
             fi
             echo "✅ running VC pid=${pid} has --builder.urls (not sidecar)"
             ;;
+        Teku)
+            if [[ "$cmdline" != *"--Xbuilder-urls"* ]]; then
+                echo "❌ running VC is missing --Xbuilder-urls"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            if [[ "$cmdline" == *"$SIDECAR"* ]]; then
+                echo "❌ running VC --Xbuilder-urls still points at the MEV-Boost sidecar"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            echo "✅ running VC pid=${pid} has --Xbuilder-urls (not sidecar)"
+            ;;
     esac
 }
 
@@ -168,6 +181,15 @@ assert_prepare_units() {
                 exit 1
             fi
             ;;
+        Teku)
+            assert_unit_has "$VC_UNIT" "--Xbuilder-urls"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            if ! grep -qE -- '--Xbuilder-min-bid=[0-9]+' "$VC_UNIT"; then
+                echo "❌ Teku VC --Xbuilder-min-bid must be integer Gwei (not ETH decimal)"
+                cat "$VC_UNIT"
+                exit 1
+            fi
+            ;;
     esac
     assert_unit_has "$BN_UNIT" "$SIDECAR"
 }
@@ -184,6 +206,11 @@ assert_complete_units() {
         Lodestar)
             assert_unit_has "$VC_UNIT" "--builder.urls"
             assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            ;;
+        Teku)
+            assert_unit_has "$VC_UNIT" "--Xbuilder-urls"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            assert_unit_lacks "$BN_UNIT" "--builder-endpoint"
             ;;
     esac
 }

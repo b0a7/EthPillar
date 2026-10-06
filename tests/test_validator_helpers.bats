@@ -201,6 +201,23 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "epbsTuiSupported is true for Teku VC" {
+  cat > "$VALIDATOR_SERVICE_FILE" <<EOF
+[Unit]
+Description=Teku Validator Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/teku/bin/teku validator-client --network=mainnet
+EOF
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsTuiSupported
+  [ "$status" -eq 0 ]
+  run epbsImportUnderValidator
+  [ "$status" -eq 0 ]
+}
+
 @test "epbsTuiSupported is false for Lighthouse VC" {
   write_lighthouse_validator_service
   rm -f "$CHARON_SERVICE_FILE"
