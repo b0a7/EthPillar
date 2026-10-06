@@ -49,7 +49,8 @@ setup() {
   grep -q -- '--builder-boost-factor' manage/epbs.py
   grep -q 'v7.2.1' docs/ePBS-migration.md
   grep -q '200000000' docs/ePBS-migration.md
-  grep -q 'Fork activation does not remove them' docs/ePBS-migration.md
+  grep -q 'staging window' docs/ePBS-migration.md
+  grep -q 'After Gloas Fork' docs/ePBS-migration.md
 }
 
 @test "integration matrix has Prysm, Lodestar, Caplin, and Teku ePBS migration cases" {

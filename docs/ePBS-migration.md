@@ -1,8 +1,8 @@
 # ePBS / Gloas MEV migration
 
-Gloas (the consensus-layer half of [Glamsterdam](https://docs.ethstaker.org/upgrades/glamsterdam-features/)) can move builder relay configuration **off MEV-Boost and onto the validator client**. ePBS is optional. Classic MEV-Boost stays in place until you explicitly migrate. A network fork does not do that for you.
+Gloas (the consensus-layer half of [Glamsterdam](https://docs.ethstaker.org/upgrades/glamsterdam-features/)) can move builder relay configuration **off MEV-Boost and onto the validator client**. ePBS is optional: if you never run **Before Gloas Fork**, classic MEV-Boost stays as it is. The fork does not change that, and it does not run complete for you.
 
-EthPillar follows a two-step cutover so you do not drop MEV until you choose to.
+If you do run **Before Gloas Fork** (prepare), that only stages validator relays beside MEV-Boost. After Gloas is live on that network, run **After Gloas Fork** (complete) yourself. Complete stops MEV-Boost and strips the beacon-node sidecar. Having both at once is the staging window between those two menu steps, not a setup to leave in place.
 
 Most operators only need [Solo node (everything on one host)](#solo-node-everything-on-one-host). Read the Charon or split-host sections only if they apply to you.
 
@@ -14,10 +14,10 @@ This section is the TUI only. You do not need to run Python yourself.
 
 ### The two steps (all setups)
 
-1. **Prepare** — get relays onto the validator’s ePBS builder path. Keep MEV-Boost running. The beacon node still talks to local MEV-Boost on every network, including after Gloas.
-2. **Complete** — only when you choose to: stop MEV-Boost and remove the beacon-node setting that pointed at the local sidecar (`127.0.0.1:18550`).
+1. **Before Gloas Fork (prepare)** — stage relays onto the validator’s ePBS builder path. Keep MEV-Boost running. The beacon node still talks to the local sidecar.
+2. **After Gloas Fork (complete)** — after Gloas on that network, run this yourself. It stops MEV-Boost and removes the beacon-node sidecar (`127.0.0.1:18550`).
 
-The fork does not run complete for you. Doing complete before the validator can use its builder list means the beacon node no longer talks to MEV-Boost.
+The fork does not run **After Gloas Fork** for you. If you never prepared, classic MEV stays. If you did prepare, run complete after the fork; do not leave MEV-Boost and the VC builder flags both enabled past that point. Completing before the validator can use its builder list means the beacon node no longer talks to MEV-Boost.
 
 ---
 
@@ -33,9 +33,11 @@ That item appears when the local validator fully supports migration (**Prysm**, 
 
 | Menu item | When to use it |
 |-----------|----------------|
-| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork |
-| After Gloas Fork — Complete ePBS migration | After the Gloas fork |
+| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork. Stages VC relays. MEV-Boost stays up. |
+| After Gloas Fork — Complete ePBS migration | After Gloas on this network. Run this yourself if you prepared. Stops MEV-Boost and strips the BN sidecar. |
 | Show current ePBS status | Anytime (read-only) |
+
+Those labels are the order. Prepare does not finish the migration. After the fork, **After Gloas Fork** is the step that does.
 
 #### What you see
 
@@ -54,21 +56,21 @@ That item appears when the local validator fully supports migration (**Prysm**, 
 
 | Your validator | What EthPillar does |
 |----------------|---------------------|
-| **Prysm** (v7.2.1+) | Writes `--builder-urls`, `--builder-min-bid` (integer Gwei), and `--builder-boost-factor` on the validator (`EPBS_BUILD_FACTOR`: `0`/`local` → `0`, `always` → uint64 max, `maxprofit` → `100`). Removes deprecated `--enable-builder`. The beacon node keeps `--http-mev-relay` until you run the after step, on every network including Sepolia. A fork by itself does not remove classic MEV. v7.2.0 still uses the proposer-settings file instead of these flags. **Does not** stop MEV-Boost. |
+| **Prysm** (v7.2.1+) | Writes `--builder-urls`, `--builder-min-bid` (integer Gwei), and `--builder-boost-factor` on the validator (`EPBS_BUILD_FACTOR`: `0`/`local` → `0`, `always` → uint64 max, `maxprofit` → `100`). Removes deprecated `--enable-builder`. Leaves beacon `--http-mev-relay` in place on every network, including Sepolia, until you run **After Gloas Fork**. The fork does not strip it. v7.2.0 still uses the proposer-settings file instead of these flags. **Does not** stop MEV-Boost. |
 | **Lodestar** (v1.47.0+) | Writes `--builder.urls` and `--builder.minBid` on the validator. Older Lodestar builds skip this so the client can still start. **Does not** stop MEV-Boost. |
 | **Teku** (v26.9.0+) | Writes `--Xbuilder-urls` and `--Xbuilder-min-bid` (integer Gwei) on the validator client. `--Xbuilder-boost-factor` is written only when a build factor is set (`TEKU_EPBS_BUILD_FACTOR`, else `EPBS_BUILD_FACTOR`, else the beacon node's `--builder-bid-compare-factor`): `0`/`local` → `0`, `always`/`BUILDER_ALWAYS` → uint64 max, `maxprofit` → `100`, a number as-is. Unset leaves Teku's default (90). On Sepolia, sets `--validators-builder-registration-default-gas-limit=200000000` unless you already set that flag (Teku still has no 200M schedule). Older Teku builds skip this so the client can still start. **Does not** stop MEV-Boost. The beacon node keeps `--builder-endpoint` until the after-fork step. |
 | **Erigon-Caplin** (v3.7.1+) | Writes each MEV-Boost relay URL into `/var/lib/erigon/caplin-builders.json` (`builders[].url`, `max_execution_payment` `"0"`). Keeps `--caplin.mev-relay-url` pointed at local MEV-Boost. Older Erigon builds skip this so the node can still start. **Does not** stop MEV-Boost. v3.7.1 already schedules Sepolia's 200M gas limit; EthPillar does not set one. |
 | **Lighthouse, Nimbus, Grandine** | Not offered in the TUI. |
 
-After this step, the beacon node still uses local MEV-Boost on every network. Fork activation does not remove that sidecar. It stays until you run complete.
+After **Before Gloas Fork**, the beacon node still uses local MEV-Boost. That overlap is only the staging window. After Gloas on this network, run **After Gloas Fork** yourself. The fork does not strip the sidecar.
 
 If an older EthPillar already wrote `builder.relays` (and `--enable-builder`), run the before-fork step again. Prysm ignores `relays`. Complete stays refused until `--builder-urls` or a `builders` list is present.
 
 **Sepolia gas limit.** Prysm v7.2.1 includes the 200M `GAS_LIMIT_SCHEDULE`, so EthPillar does not write a Prysm gas limit. `--suggested-gas-limit` overrides that schedule from Gloas onward and the client warns if it is set; remove it to follow the schedule. Prysm before v7.2.1 still defaults to 60M. Teku still has no 200M schedule: on Sepolia, prepare sets `--validators-builder-registration-default-gas-limit=200000000` unless that flag is already present.
 
-ePBS builders are optional. Classic MEV-Boost stays configured until you explicitly complete the migration. No builders were onboarded on Sepolia before the fork (ACDT #99); a successful prepare does not mean a live builder bid will arrive.
+If you never run **Before Gloas Fork**, classic MEV-Boost stays; ePBS is optional. If you did prepare, run **After Gloas Fork** after the fork so both paths are not left on. No builders were onboarded on Sepolia before the fork (ACDT #99); a successful prepare does not mean a live builder bid will arrive.
 
-**Complete** (after prepare succeeded; you choose when)
+**After Gloas Fork (complete)** — run this yourself after Gloas, once prepare has succeeded
 
 - Stops and disables MEV-Boost (the service file stays on disk).
 - Removes the beacon-node setting that pointed at local MEV-Boost (`127.0.0.1:18550`). Other builder URLs are left alone.
@@ -196,7 +198,7 @@ Relays and `-min-bid` are read from `mevboost.service` (or from a migration file
 | **Erigon-Caplin** (v3.7.1+, no separate VC) | Writes `/var/lib/erigon/caplin-builders.json` **only when** `erigon --version` is at least v3.7.1. Each MEV-Boost relay becomes `builders[].url` with `max_execution_payment` `"0"` (trustless-only). `min_bid` is MEV-Boost `-min-bid` in integer Gwei. Does **not** replace `--caplin.mev-relay-url` (that flag is a single pre-Gloas sidecar; Caplin v3.7.1 has no multi-relay CLI flag). Complete removes it, which switches Caplin from the legacy relay client to the Gloas dynamic builder client. A validator client still supplies builder URLs on each block-production request; this file is the list EthPillar requires before that switch. Older binaries are skipped. |
 | **Lighthouse, Nimbus, Grandine** | Documented no-op; units are not mutated. |
 
-BN sidecar flags stay until `complete` on every network. Fork activation does not remove them.
+Prepare leaves BN sidecar flags in place on every network. Fork activation does not remove them. After prepare, run `complete` yourself once Gloas is live on that network. MEV-Boost plus VC builder flags together is only the staging window between the two steps. If you never prepare, classic MEV stays.
 
 #### `complete`
 

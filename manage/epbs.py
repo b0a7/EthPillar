@@ -2,14 +2,17 @@
 
 Two-step operator flow (EthStaker Glamsterdam guidance):
 
-1. **prepare** — copy mev-boost relays (and min-bid where the VC supports it)
-   onto the validator client. Keep ``mevboost.service`` and BN sidecar flags.
-   Fork activation does not remove classic MEV; only ``complete`` does.
-2. **complete** — stop/disable MEV-Boost and strip BN flags that pointed at
-   ``http://127.0.0.1:18550``. Keep the VC builder list from step 1 (Prysm
-   ``builders`` entries, Lodestar ``--builder.urls``). Refused unless the VC
-   already has that list (or ``--force`` / ``--remote-vc-prepared`` for split
-   LXC).
+1. **prepare** (Before Gloas Fork) — copy mev-boost relays (and min-bid
+   where the VC supports it) onto the validator client. Keep
+   ``mevboost.service`` and BN sidecar flags. That overlap is only the
+   staging window until complete.
+2. **complete** (After Gloas Fork) — the operator runs this after Gloas on
+   that network. It stops/disables MEV-Boost and strips BN flags that
+   pointed at ``http://127.0.0.1:18550``. The fork does not run this step.
+   If prepare was never run, classic MEV stays (ePBS is optional). Keep
+   the VC builder list from step 1 (Prysm ``builders`` entries, Lodestar
+   ``--builder.urls``). Refused unless the VC already has that list (or
+   ``--force`` / ``--remote-vc-prepared`` for split LXC).
 
 **Split LXC:** when CC/MEV and VC (or Charon+VC) live on different hosts,
 ``export`` writes a ``.ethpillar.epbs-migration`` file from MEV relays and
@@ -216,8 +219,8 @@ SUPPORT_NOTES: Dict[str, str] = {
         "An existing proposer-settings file is kept in sync (0x-hex "
         "auth_data / builder_pubkeys; hostname-less URLs are rejected). "
         "v7.2.0 falls back to the settings-file builders list. Prepare "
-        "removes deprecated --enable-builder. BN --http-mev-relay stays "
-        "until complete on every network; the fork does not remove it."
+        "removes deprecated --enable-builder and leaves BN --http-mev-relay. "
+        "After Gloas, run complete to strip it. The fork does not."
     ),
     "Lodestar": (
         "Full: VC flags --builder.urls / --builder.minBid (v1.47.0+). "
@@ -242,7 +245,7 @@ SUPPORT_NOTES: Dict[str, str] = {
         f"{TEKU_SEPOLIA_GAS_FLAG}={SEPOLIA_GLOAS_GAS_LIMIT} unless already set "
         "(Teku has no 200M schedule). EthPillar uses a separate validator "
         "client, so the flags go on validator.service. BN --builder-endpoint "
-        "stays until complete."
+        "stays through prepare; run complete after Gloas to remove it."
     ),
     "Nimbus": (
         "Placeholder: VC has --payload-builder=true only. Prepare is a no-op. "
@@ -2330,8 +2333,9 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     ``--caplin.mev-relay-url`` in place. Other VCs are a documented no-op.
     When Charon is installed, VC relay writes are skipped (Charon
     ``--builder-api`` owns the MEV path until complete). Beacon-node
-    sidecar flags stay until complete on every network. Fork activation
-    does not remove them.
+    sidecar flags stay through prepare on every network. The fork does
+    not strip them; after prepare, the operator runs complete once Gloas
+    is live. If prepare never runs, classic MEV stays.
 
     Args:
         fs: IO adapter; production defaults if omitted.
@@ -2359,8 +2363,10 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     )
     via_charon = charon_installed(fs)
     plan.warnings.append(
-        "Do not stop MEV-Boost yet. The beacon-node sidecar stays until "
-        "complete. Fork activation does not migrate the node."
+        "Do not stop MEV-Boost yet. Prepare only stages VC relays. "
+        "After Gloas on this network, run complete yourself to stop "
+        "MEV-Boost and strip the beacon-node sidecar. The fork does not "
+        "run complete for you."
     )
     if via_charon:
         charon_path = fs.unit_path("charon")
