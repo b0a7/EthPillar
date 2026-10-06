@@ -327,7 +327,13 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             cl_path = grandine.install_grandine_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, is_integrated_vc=is_integrated_vc, network_override=cl_override)
         elif cc_name == 'Prysm':
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            mev_params = '--http-mev-relay=http://127.0.0.1:18550' if flags['mevboost'] else ''
+            # Classic MEV-Boost only before Glamsterdam. Sepolia is post-fork.
+            from manage.epbs import network_before_glamsterdam
+            mev_params = (
+                '--http-mev-relay=http://127.0.0.1:18550'
+                if flags['mevboost'] and network_before_glamsterdam(network)
+                else ''
+            )
             cl_ver = prysm.download_prysm(network)
             cl_path = prysm.install_prysm_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, network_override=cl_override)
 
@@ -448,8 +454,16 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else prysm.download_prysm(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
+            from manage.epbs import network_before_glamsterdam
+            if network_before_glamsterdam(network):
+                # Pre-fork: classic registration. Builder URLs arrive at prepare.
+                builder_flag = '--enable-builder' if use_builder else ''
+            else:
+                # Post-fork (Sepolia): do not set --enable-builder. ePBS is off
+                # until prepare writes --builder-urls, so prefer local blocks.
+                builder_flag = '--builder-boost-factor=0'
             extra_params = _with_dvt_params(
-                '--enable-builder' if use_builder else '',
+                builder_flag,
                 vc_name,
                 charon_enabled,
             )

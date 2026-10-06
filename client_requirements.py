@@ -19,6 +19,8 @@ FUSAKA_MIN_VERSIONS = {
     'nimbus': 'v25.9.2',
     'lodestar': 'v1.35.0',
     'grandine': 'v2.0.0',
+    # Fusaka/PeerDAS floor only. Sepolia ePBS builder CLI is Prysm v7.2.1+
+    # (manage.epbs.PRYSM_BUILDER_CLI_MIN_VERSION), not this table.
     'prysm': 'v7.0.0',
     # Execution clients
     'reth': 'v1.7.0',

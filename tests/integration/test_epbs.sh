@@ -127,12 +127,18 @@ assert_vc_process_has_epbs_flags() {
                 echo "  cmdline: $cmdline"
                 exit 1
             fi
-            if [[ "$cmdline" != *"--proposer-settings-file"* ]]; then
-                echo "❌ running VC is missing --proposer-settings-file"
+            # v7.2.1+ uses --builder-urls. Older binaries keep the settings file.
+            if [[ "$cmdline" != *"--builder-urls"* && "$cmdline" != *"--proposer-settings-file"* ]]; then
+                echo "❌ running VC is missing --builder-urls and --proposer-settings-file"
                 echo "  cmdline: $cmdline"
                 exit 1
             fi
-            echo "✅ running VC pid=${pid} has --proposer-settings-file and no --enable-builder"
+            if [[ "$cmdline" == *"--builder-urls"* && "$cmdline" == *"$SIDECAR"* ]]; then
+                echo "❌ running VC --builder-urls still points at the MEV-Boost sidecar"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            echo "✅ running VC pid=${pid} has ePBS builder config and no --enable-builder"
             ;;
         Lodestar)
             if [[ "$cmdline" != *"--builder.urls"* ]]; then
@@ -163,13 +169,24 @@ assert_vc_process_has_epbs_flags() {
     esac
 }
 
-# Client-specific unit checks after prepare (BN sidecar still present).
+# Client-specific unit checks after prepare.
+# Pre-fork clients still have the BN sidecar. Sepolia Prysm does not.
 assert_prepare_units() {
     case "$VC_CLIENT" in
         Prysm)
             assert_unit_lacks "$VC_UNIT" "--enable-builder"
-            assert_unit_has "$VC_UNIT" "--proposer-settings-file"
-            assert_proposer_settings
+            if grep -qF -- "--builder-urls" "$VC_UNIT"; then
+                assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+                if ! grep -qE -- '--builder-min-bid=[0-9]+' "$VC_UNIT"; then
+                    echo "❌ Prysm VC --builder-min-bid must be integer Gwei (not ETH decimal)"
+                    cat "$VC_UNIT"
+                    exit 1
+                fi
+                echo "✅ Prysm v7.2.1+ --builder-urls (no live-bid check)"
+            else
+                assert_unit_has "$VC_UNIT" "--proposer-settings-file"
+                assert_proposer_settings
+            fi
             ;;
         Lodestar)
             assert_unit_has "$VC_UNIT" "--builder"
@@ -191,7 +208,11 @@ assert_prepare_units() {
             fi
             ;;
     esac
-    assert_unit_has "$BN_UNIT" "$SIDECAR"
+    if [[ "$VC_CLIENT" == "Prysm" ]] && grep -q 'SEPOLIA' "$BN_UNIT"; then
+        assert_unit_lacks "$BN_UNIT" "$SIDECAR"
+    else
+        assert_unit_has "$BN_UNIT" "$SIDECAR"
+    fi
 }
 
 # Client-specific unit checks after complete (BN sidecar gone, VC relays kept).
@@ -200,8 +221,12 @@ assert_complete_units() {
     case "$VC_CLIENT" in
         Prysm)
             assert_unit_lacks "$VC_UNIT" "--enable-builder"
-            assert_unit_has "$VC_UNIT" "--proposer-settings-file"
-            assert_proposer_settings
+            if grep -qF -- "--builder-urls" "$VC_UNIT"; then
+                assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            else
+                assert_unit_has "$VC_UNIT" "--proposer-settings-file"
+                assert_proposer_settings
+            fi
             ;;
         Lodestar)
             assert_unit_has "$VC_UNIT" "--builder.urls"
@@ -362,7 +387,14 @@ echo "  VC client: ${VC_CLIENT:-unknown}"
 
 assert_supported_vc
 assert_mev_installed
-assert_unit_has "$BN_UNIT" "$SIDECAR"
+# Sepolia Prysm installs do not point the BN at classic MEV-Boost.
+if [[ "$VC_CLIENT" == "Prysm" ]] && grep -q 'SEPOLIA' "$BN_UNIT"; then
+    assert_unit_lacks "$BN_UNIT" "--http-mev-relay"
+    assert_unit_lacks "$VC_UNIT" "--enable-builder"
+    echo "✅ Pre-migration: Sepolia Prysm has no classic MEV-Boost flags"
+else
+    assert_unit_has "$BN_UNIT" "$SIDECAR"
+fi
 
 if ! sudo systemctl is-active --quiet mevboost; then
     echo "❌ mevboost is not active before prepare"

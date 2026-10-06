@@ -21,9 +21,16 @@ from manage.epbs import (
     COMPLETE_REFUSED,
     MIGRATION_FORMAT,
     MIGRATION_VERSION,
+    EPBS_BUILD_FACTOR_ENV,
+    PRYSM_BUILDER_CLI_MIN_VERSION,
+    PRYSM_SUGGESTED_GAS_LIMIT_NOTE,
     TEKU_BOOST_FACTOR_UINT64_MAX,
     TEKU_EPBS_BUILD_FACTOR_ENV,
+    TEKU_SEPOLIA_GAS_FLAG,
     TEKU_XBUILDER_MIN_VERSION,
+    default_auth_data_hex,
+    map_epbs_build_factor,
+    network_before_glamsterdam,
     EpbsError,
     caplin_supports_epbs,
     complete_rollback_hint,
@@ -390,9 +397,15 @@ def test_prysm_prepare_migrates_legacy_relays_and_preserves_other_fields(tmp_pat
     )
 
 
+def _prysm_version(fs: EpbsFilesystem, version: str = "v7.2.1") -> None:
+    """Stub ``prysm-validator --version`` so prepare takes the CLI or file path."""
+    fs.run_version = lambda _argv: f"Prysm/{version}/linux-amd64\n"
+
+
 def test_prysm_sepolia_gas_limit_is_documented_not_written(tmp_path: Path) -> None:
-    """Sepolia prepare warns about 200M and does not write gas_limit."""
+    """Prysm before v7.2.1 on Sepolia warns about 200M and does not write gas_limit."""
     fs = _fs(tmp_path)
+    _prysm_version(fs, "v7.2.0")
     _write(fs, "mevboost", generate_mevboost_service("sepolia", "0.006", RELAYS))
     _write(
         fs,
@@ -426,6 +439,298 @@ def test_prysm_sepolia_gas_limit_is_documented_not_written(tmp_path: Path) -> No
     kept = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
     assert kept["default_config"]["gas_limit"] == "200000000"
     assert kept["default_config"]["builder"]["builders"]
+    # Post-fork Sepolia drops the classic sidecar even on the v7.2.0 file path.
+    assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+
+
+def test_map_epbs_build_factor_shared_and_disabled() -> None:
+    """Prysm and Teku share one token table; ePBS off is always factor 0."""
+    assert network_before_glamsterdam("hoodi")
+    assert network_before_glamsterdam("MAINNET")
+    assert not network_before_glamsterdam("sepolia")
+    assert not network_before_glamsterdam("")
+    assert map_epbs_build_factor("always", enabled=False, client="Prysm") == ("0", None)
+    assert map_epbs_build_factor("local", client="Prysm") == ("0", None)
+    assert map_epbs_build_factor("always", client="Prysm") == (TEKU_BOOST_FACTOR_UINT64_MAX, None)
+    assert map_epbs_build_factor("maxprofit", client="Prysm") == ("100", None)
+    capped, warning = map_epbs_build_factor("18446744073709551616", client="Prysm")
+    assert capped == TEKU_BOOST_FACTOR_UINT64_MAX
+    assert warning and "capping" in warning
+    assert map_epbs_build_factor("", client="Prysm") == (None, None)
+    assert default_auth_data_hex("https://User:pass@Boost-Relay.Example/path") == (
+        "0x" + b"boost-relay.example".hex()
+    )
+
+
+def test_prysm_v721_prepare_uses_builder_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """v7.2.1 writes builder CLI flags and does not create a settings file."""
+    monkeypatch.setenv(EPBS_BUILD_FACTOR_ENV, "maxprofit")
+    fs = _fs(tmp_path)
+    _prysm_version(fs, PRYSM_BUILDER_CLI_MIN_VERSION)
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--enable-builder --builder-boost-factor=0",
+        ),
+    )
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    assert not Path(fs.prysm_settings_path).exists()
+    args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(args, "--enable-builder")
+    assert not has_flag(args, "--proposer-settings-file")
+    urls = get_flag_value(args, "--builder-urls")
+    assert "boost-relay.flashbots.net" in urls
+    assert "18550" not in urls
+    assert get_flag_value(args, "--builder-min-bid") == "6000000"
+    assert get_flag_value(args, "--builder-boost-factor") == "100"
+    assert get_flag_value(args, "--builder-max-execution-payment") == "0"
+    # Hoodi/mainnet keep the sidecar until complete.
+    assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    done = complete(fs, apply=True)
+    assert done.disable_mevboost
+    kept = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert "boost-relay.flashbots.net" in get_flag_value(kept, "--builder-urls")
+    assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+
+
+def test_prysm_v721_sepolia_drops_sidecar_and_gas_workaround(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sepolia v7.2.1 follows the 200M schedule and does not keep classic MEV."""
+    monkeypatch.delenv(EPBS_BUILD_FACTOR_ENV, raising=False)
+    fs = _fs(tmp_path)
+    _prysm_version(fs)
+    _write(fs, "mevboost", generate_mevboost_service("sepolia", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "sepolia", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "sepolia",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters="--enable-builder --builder-boost-factor=0 --suggested-gas-limit=60000000",
+        ),
+    )
+    plan = prepare(fs, apply=True)
+    assert not Path(fs.prysm_settings_path).exists()
+    assert not any("60M" in w for w in plan.warnings)
+    assert any(PRYSM_SUGGESTED_GAS_LIMIT_NOTE in w for w in plan.warnings)
+    assert any("past Glamsterdam" in w for w in plan.warnings)
+    args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(args, "--enable-builder")
+    assert has_flag(args, "--builder-urls")
+    # Empty factor clears the ePBS-off sentinel so Prysm's default 100 applies.
+    assert not has_flag(args, "--builder-boost-factor")
+    assert has_flag(args, "--suggested-gas-limit")
+    assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "consensus" in plan.services_to_restart
+
+
+def test_prysm_v721_syncs_existing_settings_hex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An existing settings file is rewritten to 0x-hex and matches the CLI."""
+    monkeypatch.setenv(EPBS_BUILD_FACTOR_ENV, "always")
+    fs = _fs(tmp_path)
+    _prysm_version(fs)
+    pubkey_bytes = bytes(range(48))
+    pubkey_b64 = __import__("base64").b64encode(pubkey_bytes).decode("ascii")
+    auth_b64 = __import__("base64").b64encode(b"relay.example").decode("ascii")
+    legacy = {
+        "version": 2,
+        "default_config": {
+            "fee_recipient": FEE,
+            "builder": {
+                "builders": [
+                    {
+                        "url": RELAYS[0]["url"],
+                        "pubkeys": [pubkey_b64],
+                        "auth_data": auth_b64,
+                    }
+                ],
+                "relays": ["https://old.example"],
+            },
+        },
+    }
+    Path(fs.prysm_settings_path).write_text(json.dumps(legacy), encoding="utf-8")
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:5052",
+            extra_parameters=f"--proposer-settings-file={fs.prysm_settings_path}",
+        ),
+    )
+    prepare(fs, apply=True)
+    settings = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
+    builders = settings["default_config"]["builder"]["builders"]
+    first = builders[0]
+    assert "pubkeys" not in first
+    assert first["builder_pubkeys"] == ["0x" + pubkey_bytes.hex()]
+    assert first["auth_data"] == "0x" + b"relay.example".hex()
+    assert "relays" not in settings["default_config"]["builder"]
+    assert settings["default_config"]["builder"]["builder_boost_factor"] == TEKU_BOOST_FACTOR_UINT64_MAX
+    args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(args, "--builder-boost-factor") == TEKU_BOOST_FACTOR_UINT64_MAX
+    assert has_flag(args, "--builder-urls")
+
+
+def test_prysm_v721_caps_oversized_build_factor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A factor above uint64 max is capped on the CLI and in a synced settings file."""
+    monkeypatch.setenv(EPBS_BUILD_FACTOR_ENV, "18446744073709551616")
+    fs = _fs(tmp_path)
+    _prysm_version(fs)
+    Path(fs.prysm_settings_path).write_text("{}\n", encoding="utf-8")
+    _write(fs, "mevboost", generate_mevboost_service("hoodi", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service(
+            "hoodi", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--http-mev-relay=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "hoodi",
+            "ep",
+            "--beacon-rest-api-provider=http://127.0.0.1:5052",
+            extra_parameters=f"--proposer-settings-file={fs.prysm_settings_path}",
+        ),
+    )
+    plan = prepare(fs, apply=True)
+    assert any("capping" in w for w in plan.warnings)
+    args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(args, "--builder-boost-factor") == TEKU_BOOST_FACTOR_UINT64_MAX
+    settings = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
+    assert (
+        settings["default_config"]["builder"]["builder_boost_factor"]
+        == TEKU_BOOST_FACTOR_UINT64_MAX
+    )
+    # Hoodi is still pre-Glamsterdam, so the sidecar stays until complete.
+    assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+
+
+def test_prysm_rejects_hostname_less_builder_url(tmp_path: Path) -> None:
+    """Prysm v7.2.1 rejects builder URLs with an empty hostname."""
+    fs = _fs(tmp_path)
+    _prysm_version(fs)
+    bad = [{"name": "bad", "url": "https://:8080"}]
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", bad))
+    _write(
+        fs,
+        "consensus",
+        generate_prysm_bn_service("mainnet", SYNC, JWT, "5052", "9000", "9001", "100"),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_prysm_vc_service(
+            "mainnet", "ep", "--beacon-rest-api-provider=http://127.0.0.1:5052"
+        ),
+    )
+    with pytest.raises(EpbsError, match="no hostname"):
+        prepare(fs, apply=True)
+
+
+def test_teku_sepolia_sets_explicit_200m_gas(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Teku on Sepolia still needs an explicit 200M gas limit."""
+    monkeypatch.delenv(TEKU_EPBS_BUILD_FACTOR_ENV, raising=False)
+    monkeypatch.delenv(EPBS_BUILD_FACTOR_ENV, raising=False)
+    fs = _fs(tmp_path)
+    fs.run_version = lambda _argv: "teku/v26.9.1/linux-x86_64/openjdk-java-25\n"
+    _write(fs, "mevboost", generate_mevboost_service("sepolia", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_teku_bn_service(
+            "sepolia", SYNC, JWT, "5052", "9000", "100",
+            mev_parameters="--builder-endpoint=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_teku_vc_service(
+            "sepolia",
+            "ep",
+            "--beacon-node-api-endpoint=http://127.0.0.1:5052",
+            extra_parameters="--validators-builder-registration-default-enabled=true",
+        ),
+    )
+    plan = prepare(fs, apply=True)
+    args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(args, TEKU_SEPOLIA_GAS_FLAG) == "200000000"
+    assert any("200000000" in w for w in plan.warnings)
+    again = prepare(fs, apply=True)
+    assert not any("sets" in w and "200000000" in w for w in again.warnings)
+
+
+def test_lodestar_build_factor_selection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lodestar maps the shared build factor onto selection flags."""
+    monkeypatch.setenv(EPBS_BUILD_FACTOR_ENV, "local")
+    fs = _fs(tmp_path)
+    fs.run_help = lambda _argv: "--builder.urls --builder.minBid\n"
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _write(
+        fs,
+        "consensus",
+        generate_lodestar_bn_service(
+            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            mev_parameters="--builder --builder.urls http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_lodestar_vc_service(
+            "mainnet",
+            "ep",
+            "--beaconNodes=http://127.0.0.1:5052",
+            extra_parameters="--builder",
+        ),
+    )
+    prepare(fs, apply=True)
+    args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(args, "--builder.selection") == "executionalways"
+    assert not has_flag(args, "--builder.boostFactor")
 
 
 def test_eth_min_bid_to_gwei() -> None:
@@ -833,6 +1138,7 @@ def test_teku_prepare_reads_bn_compare_factor_when_env_unset(
 ) -> None:
     """BN ``BUILDER_ALWAYS`` becomes uint64 max; unset factor omits the flag."""
     monkeypatch.delenv(TEKU_EPBS_BUILD_FACTOR_ENV, raising=False)
+    monkeypatch.delenv(EPBS_BUILD_FACTOR_ENV, raising=False)
     fs = _fs(tmp_path)
     _teku_stack(fs, bn_extra="--builder-bid-compare-factor=BUILDER_ALWAYS")
     prepare(fs, apply=True)
@@ -904,6 +1210,7 @@ def test_teku_prepare_keeps_existing_boost_factor_when_unset(
 ) -> None:
     """An operator-set boost factor stays when no new source is configured."""
     monkeypatch.delenv(TEKU_EPBS_BUILD_FACTOR_ENV, raising=False)
+    monkeypatch.delenv(EPBS_BUILD_FACTOR_ENV, raising=False)
     fs = _fs(tmp_path)
     _teku_stack(fs, vc_extra="--Xbuilder-boost-factor=90")
     prepare(fs, apply=True)
