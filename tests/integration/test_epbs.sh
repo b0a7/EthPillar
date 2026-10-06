@@ -169,8 +169,7 @@ assert_vc_process_has_epbs_flags() {
     esac
 }
 
-# Client-specific unit checks after prepare.
-# Pre-fork clients still have the BN sidecar. Sepolia Prysm does not.
+# Client-specific unit checks after prepare (BN sidecar still present).
 assert_prepare_units() {
     case "$VC_CLIENT" in
         Prysm)
@@ -208,11 +207,7 @@ assert_prepare_units() {
             fi
             ;;
     esac
-    if [[ "$VC_CLIENT" == "Prysm" ]] && grep -q 'SEPOLIA' "$BN_UNIT"; then
-        assert_unit_lacks "$BN_UNIT" "$SIDECAR"
-    else
-        assert_unit_has "$BN_UNIT" "$SIDECAR"
-    fi
+    assert_unit_has "$BN_UNIT" "$SIDECAR"
 }
 
 # Client-specific unit checks after complete (BN sidecar gone, VC relays kept).
@@ -387,14 +382,7 @@ echo "  VC client: ${VC_CLIENT:-unknown}"
 
 assert_supported_vc
 assert_mev_installed
-# Sepolia Prysm installs do not point the BN at classic MEV-Boost.
-if [[ "$VC_CLIENT" == "Prysm" ]] && grep -q 'SEPOLIA' "$BN_UNIT"; then
-    assert_unit_lacks "$BN_UNIT" "--http-mev-relay"
-    assert_unit_lacks "$VC_UNIT" "--enable-builder"
-    echo "✅ Pre-migration: Sepolia Prysm has no classic MEV-Boost flags"
-else
-    assert_unit_has "$BN_UNIT" "$SIDECAR"
-fi
+assert_unit_has "$BN_UNIT" "$SIDECAR"
 
 if ! sudo systemctl is-active --quiet mevboost; then
     echo "❌ mevboost is not active before prepare"

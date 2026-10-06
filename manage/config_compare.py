@@ -133,15 +133,7 @@ def _fee_params_for_client(client: str, fee_recipient: str, role: str) -> str:
     return mapping.get(client, "")
 
 
-def _mev_params_for_client(client: str, role: str, enabled: bool, network: str = "") -> str:
-    # Prysm classic MEV is pre-Glamsterdam only. Post-fork VC gets boost
-    # factor 0 (local blocks) until ePBS prepare writes --builder-urls.
-    if client == "Prysm":
-        from manage.epbs import network_before_glamsterdam
-        if not network_before_glamsterdam(network):
-            if role == "bn":
-                return ""
-            return "--builder-boost-factor=0"
+def _mev_params_for_client(client: str, role: str, enabled: bool) -> str:
     if not enabled:
         return ""
     if role == "bn":
@@ -371,7 +363,7 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
             # Caplin is folded into execution.service; no separate consensus default.
             raise RuntimeError("Erigon-Caplin has no separate consensus.service")
         fee_params = _fee_params_for_client(cl, fee, "bn")
-        mev_params = _mev_params_for_client(cl, "bn", mev, network)
+        mev_params = _mev_params_for_client(cl, "bn", mev)
         cl_rest, cl_p2p, cl_p2p_2, cl_peers = (
             str(ctx["cl_rest"]),
             str(ctx["cl_p2p"]),
@@ -419,7 +411,7 @@ def generate_default_unit(service_key: str, ctx: Dict[str, object]) -> str:
     if service_key == "validator":
         vc = str(ctx["vc_client"])
         fee_params = _fee_params_for_client(vc, fee, "vc")
-        extra_params = _mev_params_for_client(vc, "vc", mev, network)
+        extra_params = _mev_params_for_client(vc, "vc", mev)
         # Match install: Charon adds per-VC DVT flags and After=charon.service.
         contents = ctx.get("contents") or {}
         charon_enabled = (

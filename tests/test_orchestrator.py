@@ -394,8 +394,8 @@ class TestRunInstallRouting:
         assert mev_params_expected in call_kwargs.kwargs.get('mev_parameters', ''), \
             f"Expected MEV params '{mev_params_expected}' in grandine install, got: {call_kwargs}"
 
-    def test_prysm_sepolia_skips_classic_mev(self):
-        """Post-Glamsterdam Sepolia must not install Prysm MEV-Boost sidecar flags."""
+    def test_prysm_sepolia_installs_classic_mev(self):
+        """Sepolia installs the same classic Prysm MEV flags as other networks."""
         mocks = self._run(
             "Custom Setup", "Reth", "Prysm", "Prysm",
             flags_override={"validator": True, "mevboost": True},
@@ -403,10 +403,10 @@ class TestRunInstallRouting:
         )
         self._verify_only_called(mocks, ['reth', 'pr_dl', 'pr_bn', 'pr_vc', 'mev'])
         bn_mev = mocks['pr_bn'].call_args.kwargs.get('mev_parameters', '')
-        assert "--http-mev-relay" not in bn_mev
+        assert "--http-mev-relay=http://127.0.0.1:18550" in bn_mev
         extra = mocks['pr_vc'].call_args.args[6]
-        assert "--enable-builder" not in extra
-        assert "--builder-boost-factor=0" in extra
+        assert "--enable-builder" in extra
+        assert "--builder-boost-factor=0" not in extra
 
     def test_switch_consensus_client_prysm_with_mevboost(self):
         # Verify Prysm gets MEV params when switching with mevboost enabled

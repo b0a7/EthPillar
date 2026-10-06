@@ -3,8 +3,8 @@
 Two-step operator flow (EthStaker Glamsterdam guidance):
 
 1. **prepare** — copy mev-boost relays (and min-bid where the VC supports it)
-   onto the validator client. Keep ``mevboost.service`` and BN sidecar flags so
-   pre-Gloas proposals still work.
+   onto the validator client. Keep ``mevboost.service`` and BN sidecar flags.
+   Fork activation does not remove classic MEV; only ``complete`` does.
 2. **complete** — stop/disable MEV-Boost and strip BN flags that pointed at
    ``http://127.0.0.1:18550``. Keep the VC builder list from step 1 (Prysm
    ``builders`` entries, Lodestar ``--builder.urls``). Refused unless the VC
@@ -96,10 +96,6 @@ TEKU_BOOST_FACTOR_UINT64_MAX = BOOST_FACTOR_UINT64_MAX
 # for Teku. Neither is a TUI setting; unset omits the flag when builders are on.
 EPBS_BUILD_FACTOR_ENV = "EPBS_BUILD_FACTOR"
 TEKU_EPBS_BUILD_FACTOR_ENV = "TEKU_EPBS_BUILD_FACTOR"
-# Classic MEV-Boost (--enable-builder, BN --http-mev-relay) only on networks
-# that have not activated Glamsterdam. Sepolia forked 2026-10-06; do not
-# add it back. Hoodi and mainnet are still pre-fork.
-PRE_GLAMSTERDAM_NETWORKS = frozenset({"hoodi", "mainnet"})
 TEKU_SEPOLIA_GAS_FLAG = "--validators-builder-registration-default-gas-limit"
 MIGRATION_FORMAT = "ethpillar.epbs-migration"
 MIGRATION_VERSION = 1
@@ -203,14 +199,6 @@ TEKU_SEPOLIA_GAS_NOTE = (
     f"{TEKU_SEPOLIA_GAS_FLAG}={SEPOLIA_GLOAS_GAS_LIMIT} unless that flag is "
     "already present."
 )
-POST_FORK_PRYSM_NOTE = (
-    "This network is past Glamsterdam. Classic Prysm MEV-Boost "
-    "(--enable-builder and beacon --http-mev-relay) is not configured. "
-    "Prepare writes ePBS builder flags and removes leftover sidecar flags. "
-    "MEV-Boost stays installed until complete. Sepolia had no builders "
-    "onboarded before the fork (ACDT #99); do not expect live bids until "
-    "a builder is listed."
-)
 
 # v7.2.0 still accepts these builder keys but ignores or warns on them.
 # ``relays`` is unread; ``enabled`` is legacy mev-boost content dropped at
@@ -228,8 +216,8 @@ SUPPORT_NOTES: Dict[str, str] = {
         "An existing proposer-settings file is kept in sync (0x-hex "
         "auth_data / builder_pubkeys; hostname-less URLs are rejected). "
         "v7.2.0 falls back to the settings-file builders list. Prepare "
-        "removes deprecated --enable-builder. Post-Glamsterdam networks "
-        "(Sepolia) do not keep BN --http-mev-relay."
+        "removes deprecated --enable-builder. BN --http-mev-relay stays "
+        "until complete on every network; the fork does not remove it."
     ),
     "Lodestar": (
         "Full: VC flags --builder.urls / --builder.minBid (v1.47.0+). "
@@ -754,30 +742,6 @@ def _write_unit_if_changed(
     return True
 
 
-def network_before_glamsterdam(network: str) -> bool:
-    """Return True when *network* has not activated Glamsterdam.
-
-    Hoodi and mainnet are pre-fork. Sepolia activated Gloas on 2026-10-06
-    and is not in this set. An empty name is not treated as pre-fork; callers
-    that strip sidecar flags should require a known post-fork name.
-
-    Args:
-        network: Network slug (``sepolia``, ``hoodi``, ``mainnet``, …).
-    """
-    return (network or "").strip().lower() in PRE_GLAMSTERDAM_NETWORKS
-
-
-def network_after_glamsterdam(network: str) -> bool:
-    """Return True when *network* is a known name past Glamsterdam.
-
-    Args:
-        network: Network slug. Empty is False so a missing description does
-            not strip a pre-fork sidecar by accident.
-    """
-    text = (network or "").strip().lower()
-    return bool(text) and text not in PRE_GLAMSTERDAM_NETWORKS
-
-
 def map_epbs_build_factor(
     raw: str,
     *,
@@ -1176,8 +1140,7 @@ def _apply_prysm_boost_flag(args: List[str], raw: str) -> Tuple[List[str], Optio
     """Set ``--builder-boost-factor`` for an ePBS-on Prysm VC.
 
     A mapped value is written. An empty token removes a leftover ``0``
-    (the ePBS-off sentinel written at install on post-fork networks) so
-    Prysm's default of 100 applies. Any other existing value is kept.
+    so Prysm's default of 100 applies. Any other existing value is kept.
     Set ``EPBS_BUILD_FACTOR=0`` or ``local`` to keep local preference
     while builder URLs are configured.
 
@@ -2215,26 +2178,6 @@ def _apply_vc_relays(
                 written = {}
             if isinstance(written, dict) and not _prysm_explicit_gas_limit(written):
                 plan.warnings.append(SEPOLIA_GAS_LIMIT_NOTE)
-        bn_key = "consensus"
-        if fs.exists(fs.unit_path(bn_key)):
-            bn_path, bn_content = _read_required_unit(fs, bn_key)
-            bn_unit = parse_unit(bn_content)
-            # Prefer the beacon unit's network over the relay source so a
-            # Sepolia node is not left on classic MEV because a migration
-            # file omitted the network.
-            fork_name = bn_unit.network or relays.network
-            if network_after_glamsterdam(fork_name):
-                bn_name = bn_unit.client or "Prysm"
-                new_bn = strip_bn_sidecar(bn_content, bn_name)
-                if _write_unit_if_changed(fs, bn_path, bn_content, new_bn, apply):
-                    plan.actions.append(
-                        PlanAction(
-                            bn_path,
-                            "remove classic MEV-Boost sidecar "
-                            f"(post-Glamsterdam {fork_name})",
-                        )
-                    )
-                    plan.services_to_restart.append("consensus")
         if apply:
             if changed_vc:
                 _write_unit_if_changed(fs, vc_path, vc_content, new_vc, True)
@@ -2245,7 +2188,7 @@ def _apply_vc_relays(
                 writer(settings_path, settings_json)
         if changed_vc or changed_json:
             plan.services_to_restart.append("validator")
-        elif "consensus" not in plan.services_to_restart:
+        else:
             plan.warnings.append("Prysm VC already has these relays; nothing to change.")
     elif vc_name == "Lodestar":
         if not lodestar_has_builder_urls_flag(fs, vc_content):
@@ -2386,9 +2329,9 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     ``erigon --version`` is at least v3.7.1 and leaves
     ``--caplin.mev-relay-url`` in place. Other VCs are a documented no-op.
     When Charon is installed, VC relay writes are skipped (Charon
-    ``--builder-api`` owns the MEV path until complete). On post-Glamsterdam
-    networks, Prysm prepare also strips BN ``--http-mev-relay``. Other
-    beacon-node sidecar flags stay until complete.
+    ``--builder-api`` owns the MEV path until complete). Beacon-node
+    sidecar flags stay until complete on every network. Fork activation
+    does not remove them.
 
     Args:
         fs: IO adapter; production defaults if omitted.
@@ -2415,16 +2358,10 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
         notes=SUPPORT_NOTES.get(vc_name, ""),
     )
     via_charon = charon_installed(fs)
-    if (
-        vc_name == "Prysm"
-        and not via_charon
-        and network_after_glamsterdam(relays.network)
-    ):
-        plan.warnings.append(POST_FORK_PRYSM_NOTE)
-    else:
-        plan.warnings.append(
-            "Do not stop MEV-Boost yet. Pre-Gloas proposals still use the sidecar."
-        )
+    plan.warnings.append(
+        "Do not stop MEV-Boost yet. The beacon-node sidecar stays until "
+        "complete. Fork activation does not migrate the node."
+    )
     if via_charon:
         charon_path = fs.unit_path("charon")
         ch_content = fs.read_text(charon_path) or ""

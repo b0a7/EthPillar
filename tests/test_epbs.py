@@ -30,7 +30,6 @@ from manage.epbs import (
     TEKU_XBUILDER_MIN_VERSION,
     default_auth_data_hex,
     map_epbs_build_factor,
-    network_before_glamsterdam,
     EpbsError,
     caplin_supports_epbs,
     complete_rollback_hint,
@@ -439,16 +438,12 @@ def test_prysm_sepolia_gas_limit_is_documented_not_written(tmp_path: Path) -> No
     kept = json.loads(Path(fs.prysm_settings_path).read_text(encoding="utf-8"))
     assert kept["default_config"]["gas_limit"] == "200000000"
     assert kept["default_config"]["builder"]["builders"]
-    # Post-fork Sepolia drops the classic sidecar even on the v7.2.0 file path.
-    assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    # Sepolia keeps the classic sidecar until complete, same as Hoodi.
+    assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
 
 
 def test_map_epbs_build_factor_shared_and_disabled() -> None:
     """Prysm and Teku share one token table; ePBS off is always factor 0."""
-    assert network_before_glamsterdam("hoodi")
-    assert network_before_glamsterdam("MAINNET")
-    assert not network_before_glamsterdam("sepolia")
-    assert not network_before_glamsterdam("")
     assert map_epbs_build_factor("always", enabled=False, client="Prysm") == ("0", None)
     assert map_epbs_build_factor("local", client="Prysm") == ("0", None)
     assert map_epbs_build_factor("always", client="Prysm") == (TEKU_BOOST_FACTOR_UINT64_MAX, None)
@@ -499,7 +494,7 @@ def test_prysm_v721_prepare_uses_builder_cli(tmp_path: Path, monkeypatch: pytest
     assert get_flag_value(args, "--builder-min-bid") == "6000000"
     assert get_flag_value(args, "--builder-boost-factor") == "100"
     assert get_flag_value(args, "--builder-max-execution-payment") == "0"
-    # Hoodi/mainnet keep the sidecar until complete.
+    # The beacon-node sidecar stays until complete.
     assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
     done = complete(fs, apply=True)
     assert done.disable_mevboost
@@ -508,10 +503,10 @@ def test_prysm_v721_prepare_uses_builder_cli(tmp_path: Path, monkeypatch: pytest
     assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
 
 
-def test_prysm_v721_sepolia_drops_sidecar_and_gas_workaround(
+def test_prysm_v721_sepolia_keeps_sidecar_until_complete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Sepolia v7.2.1 follows the 200M schedule and does not keep classic MEV."""
+    """Sepolia v7.2.1 follows the 200M schedule and keeps classic BN MEV until complete."""
     monkeypatch.delenv(EPBS_BUILD_FACTOR_ENV, raising=False)
     fs = _fs(tmp_path)
     _prysm_version(fs)
@@ -539,15 +534,19 @@ def test_prysm_v721_sepolia_drops_sidecar_and_gas_workaround(
     assert not Path(fs.prysm_settings_path).exists()
     assert not any("60M" in w for w in plan.warnings)
     assert any(PRYSM_SUGGESTED_GAS_LIMIT_NOTE in w for w in plan.warnings)
-    assert any("past Glamsterdam" in w for w in plan.warnings)
+    assert not any("past Glamsterdam" in w for w in plan.warnings)
+    assert "Do not stop MEV-Boost" in plan.warnings[0]
     args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
     assert not has_flag(args, "--enable-builder")
     assert has_flag(args, "--builder-urls")
-    # Empty factor clears the ePBS-off sentinel so Prysm's default 100 applies.
+    # Empty factor clears a leftover 0 so Prysm's default 100 applies.
     assert not has_flag(args, "--builder-boost-factor")
     assert has_flag(args, "--suggested-gas-limit")
-    assert "18550" not in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
-    assert "consensus" in plan.services_to_restart
+    assert has_flag(_args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8")), "--http-mev-relay")
+    assert "consensus" not in plan.services_to_restart
+    done = complete(fs, apply=True)
+    assert done.disable_mevboost
+    assert not has_flag(_args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8")), "--http-mev-relay")
 
 
 def test_prysm_v721_syncs_existing_settings_hex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

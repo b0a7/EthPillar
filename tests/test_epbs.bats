@@ -40,15 +40,16 @@ setup() {
   grep -q 'charon_epbs_supported' manage/epbs.py
 }
 
-@test "Prysm v7.2.1 build-factor and post-fork MEV gate are documented" {
+@test "Prysm v7.2.1 build factor is documented and classic MEV waits for complete" {
   grep -q 'PRYSM_BUILDER_CLI_MIN_VERSION = "7.2.1"' manage/epbs.py
   grep -q 'def map_epbs_build_factor' manage/epbs.py
-  grep -q 'def network_before_glamsterdam' manage/epbs.py
-  grep -q 'PRE_GLAMSTERDAM_NETWORKS' manage/epbs.py
+  ! grep -q 'PRE_GLAMSTERDAM_NETWORKS' manage/epbs.py
+  ! grep -q 'network_before_glamsterdam' manage/epbs.py
   grep -q 'builder_pubkeys' manage/epbs.py
   grep -q -- '--builder-boost-factor' manage/epbs.py
   grep -q 'v7.2.1' docs/ePBS-migration.md
   grep -q '200000000' docs/ePBS-migration.md
+  grep -q 'Fork activation does not remove them' docs/ePBS-migration.md
 }
 
 @test "integration matrix has Prysm, Lodestar, Caplin, and Teku ePBS migration cases" {
