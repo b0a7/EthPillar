@@ -258,6 +258,16 @@ PY
     echo "✅ test-only: added --keymanager so Lodestar can start with an empty wallet"
 }
 
+# Teku fatals when --validator-keys=DIR:DIR points at a missing path.
+# Test-only: empty-wallet smoke; not part of operator prepare/complete.
+enable_teku_empty_wallet() {
+    local keys_dir="/var/lib/teku_validator/validator_keys"
+    sudo mkdir -p "$keys_dir"
+    sudo chown validator:validator "$keys_dir"
+    sudo chmod 700 "$keys_dir"
+    echo "✅ test-only: created empty $keys_dir so Teku can start without keystores"
+}
+
 # daemon-reload then restart each listed systemd unit (exits 1 on failure).
 reload_and_restart() {
     local svc
@@ -405,6 +415,8 @@ echo "✅ prepare: VC ePBS flags written; BN sidecar and MEV-Boost still present
 
 if [[ "$VC_CLIENT" == "Lodestar" ]]; then
     enable_lodestar_empty_wallet
+elif [[ "$VC_CLIENT" == "Teku" ]]; then
+    enable_teku_empty_wallet
 fi
 
 reload_and_restart validator

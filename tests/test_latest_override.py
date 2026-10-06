@@ -160,6 +160,84 @@ def test_prepare_reuses_find_upgrade_seed(tmp_path):
     assert result["kinds"]["teku"] == "rc"
 
 
+def test_prepare_soft_skips_pre_gloas_seed_on_sepolia(tmp_path):
+    path = str(tmp_path / "override.json")
+
+    def fake_find_rc(client: str, _repo):
+        if client == "lodestar":
+            return {
+                "client": "lodestar",
+                "rc_tag": None,
+                "seed_tag": "v1.48.0",
+                "seed_kind": "stable",
+                "latest": "v1.49.0",
+                "status": "ok",
+                "reason": "previous stable",
+            }
+        if client == "teku":
+            return {
+                "client": "teku",
+                "rc_tag": None,
+                "seed_tag": "26.9.0",
+                "seed_kind": "stable",
+                "latest": "26.9.1",
+                "status": "ok",
+                "reason": "previous stable",
+            }
+        return {
+            "client": client,
+            "status": "skip",
+            "reason": "unused",
+            "latest": None,
+            "seed_tag": None,
+            "rc_tag": None,
+        }
+
+    result = prepare_rc_overrides(
+        ["lodestar", "teku"],
+        path=path,
+        find_rc_fn=fake_find_rc,
+        network="SEPOLIA",
+    )
+    assert result["clients"] == {}
+    assert "Gloas" in result["skipped"]["lodestar"]
+    assert "Gloas" in result["skipped"]["teku"]
+    assert not Path(path).exists()
+
+
+def test_prepare_soft_skips_lighthouse_rc_downgrade_on_sepolia(tmp_path):
+    path = str(tmp_path / "override.json")
+
+    def fake_find_rc(client: str, _repo):
+        return {
+            "client": "lighthouse",
+            "rc_tag": "v8.3.0-rc.0",
+            "seed_tag": "v8.3.0-rc.0",
+            "seed_kind": "rc",
+            "latest": "v8.2.3",
+            "status": "ok",
+            "reason": "prerelease resolvable via release_info",
+        }
+
+    skipped = prepare_rc_overrides(
+        ["lighthouse"],
+        path=path,
+        find_rc_fn=fake_find_rc,
+        network="sepolia",
+    )
+    assert skipped["clients"] == {}
+    assert "cannot sync Sepolia Gloas" in skipped["skipped"]["lighthouse"]
+
+    # Same seed is accepted when the network is not Sepolia.
+    kept = prepare_rc_overrides(
+        ["lighthouse"],
+        path=path,
+        find_rc_fn=fake_find_rc,
+        network="hoodi",
+    )
+    assert kept["clients"]["lighthouse"] == "v8.3.0-rc.0"
+
+
 def test_install_github_release_hook_remaps_latest(tmp_path):
     path = str(tmp_path / "override.json")
     write_override({"nimbus": "v25.9.0-rc1"}, path=path)

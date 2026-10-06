@@ -382,7 +382,7 @@ def run_install(args: Any, fee_address: str):
                 mev=bool(args.mev),
                 charon=bool(getattr(args, "charon", False)),
             )
-            prepare_rc_overrides(clients)
+            prepare_rc_overrides(clients, network=args.network)
             os.environ[LATEST_OVERRIDE_ENV] = override_path()
         subprocess.run(cmd, capture_output=False, check=True, env=integration_subprocess_env())
     except subprocess.CalledProcessError as e:

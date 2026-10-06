@@ -1164,17 +1164,65 @@ def release_info_from_github(
     return info
 
 
-def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
+def _detect_runtime_network() -> str:
+    """Best-effort network slug for LATEST remapping (env or installed units).
+
+    Order: ``NETWORK`` / ``ETH_NETWORK`` env, then ``Description=`` / ``--network=``
+    on consensus then validator systemd units.
+    """
+    for key in ("NETWORK", "ETH_NETWORK"):
+        raw = (os.environ.get(key) or "").strip()
+        if raw:
+            return raw.lower()
+
+    for unit_name in ("consensus", "validator"):
+        path = f"/etc/systemd/system/{unit_name}.service"
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError:
+            continue
+        for line in text.splitlines():
+            if line.startswith("Description="):
+                # e.g. "Lighthouse Consensus Client service for SEPOLIA"
+                match = re.search(
+                    r"\b(mainnet|hoodi|holesky|sepolia|ephemery)\b",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    return match.group(1).lower()
+            stripped = line.strip().rstrip("\\").strip()
+            if stripped.startswith("--network="):
+                return stripped.split("=", 1)[1].strip().lower()
+            if stripped.startswith("--network "):
+                return stripped.split(None, 1)[1].strip().lower()
+    return ""
+
+
+def get_client_release_info(
+    client: str,
+    version_tag: str = "LATEST",
+    network: Optional[str] = None,
+) -> dict:
     """Get the correct release version, download URL(s), and filename(s) for a given client.
+
+    When *version_tag* is ``LATEST`` and the resolved GitHub latest fails the
+    network floor (e.g. Sepolia Gloas), a preferred install tag is substituted
+    when :func:`client_requirements.preferred_install_tag` returns one.
 
     Args:
         client: The name of the client (case-insensitive).
         version_tag: 'LATEST' or a specific tag name.
+        network: Optional network slug (``sepolia``, …). When omitted, best-effort
+            detection uses ``NETWORK`` / ``ETH_NETWORK`` or installed unit files.
 
     Returns:
         A dictionary with keys ``version``, ``download_urls``, ``filenames``, and
         optionally ``commit`` (git SHA of the release tag when resolvable).
     """
+    from client_requirements import preferred_install_tag
+
     client = client.lower()
     
     # Normalize client name to module name
@@ -1195,10 +1243,24 @@ def get_client_release_info(client: str, version_tag: str = "LATEST") -> dict:
     raw_arch = platform.machine().lower()
     arch_amd64 = raw_arch in ['x86_64', 'amd64']
 
-    if hasattr(module, "get_release_info"):
-        return module.get_release_info(version_tag, arch_amd64)
-    else:
+    if not hasattr(module, "get_release_info"):
         raise ValueError(f"Client module deploy.{module_name} does not implement get_release_info")
+
+    resolved_tag = version_tag
+    info = module.get_release_info(resolved_tag, arch_amd64)
+
+    if str(version_tag).upper() == "LATEST":
+        net = (network or _detect_runtime_network() or "").strip().lower()
+        preferred = preferred_install_tag(client, net, info.get("version", ""))
+        if preferred:
+            print(
+                f"WARNING: GitHub LATEST {client} {info.get('version')} is not compatible with "
+                f"{net}; resolving {preferred} instead",
+                flush=True,
+            )
+            info = module.get_release_info(preferred, arch_amd64)
+
+    return info
 
 
 def extract_and_install(archive_path: str, client_name: str, dest: str, target_type: str, strip_components: int = 0, binary_name: Optional[str] = None) -> None:
@@ -1278,6 +1340,12 @@ if __name__ == '__main__':
     info_parser = subparsers.add_parser("release_info", help="Get client release version and download URLs")
     info_parser.add_argument("client", type=str, help="Client name")
     info_parser.add_argument("version_tag", type=str, nargs="?", default="LATEST", help="Version tag or LATEST")
+    info_parser.add_argument(
+        "--network",
+        type=str,
+        default=None,
+        help="Network slug for LATEST remapping (e.g. sepolia); defaults to NETWORK env or installed units",
+    )
 
     extract_parser = subparsers.add_parser("extract_and_install", help="Extract and install client files")
     extract_parser.add_argument("archive_path", type=str, help="Path to archive file")
@@ -1292,7 +1360,7 @@ if __name__ == '__main__':
         download_file(args.url, args.dest, args.label)
     elif args.command == "release_info":
         try:
-            info = get_client_release_info(args.client, args.version_tag)
+            info = get_client_release_info(args.client, args.version_tag, network=args.network)
             print(json.dumps(info))
         except Exception as e:
             print(f"Error: {e}", file=sys.stderr)

@@ -99,7 +99,12 @@ function updateClient(){
     local _client_lower
     _client_lower=$(echo "$CLIENT" | tr '[:upper:]' '[:lower:]')
 
-    RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "$_client_lower" "$_target_tag")
+    # Pass network when known so Sepolia can remap Lighthouse LATEST to a Gloas-capable tag.
+    local _network_args=()
+    if [[ -n "${NETWORK:-}" ]]; then
+        _network_args=(--network "${NETWORK}")
+    fi
+    RELEASE_DATA=$(PYTHONPATH="${BASE_DIR}" python3 -m deploy.common release_info "$_client_lower" "$_target_tag" "${_network_args[@]}")
     TAG=$(echo "$RELEASE_DATA" | jq -r .version)
 
     case "$CLIENT" in

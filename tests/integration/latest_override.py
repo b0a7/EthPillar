@@ -396,17 +396,63 @@ def _accept_seed(seed_tag: str, seed_kind: str | None, latest: str) -> bool:
     return is_newer_than_latest(seed_tag, latest)
 
 
+def _network_rejects_seed(
+    client: str,
+    seed_tag: str,
+    seed_kind: str | None,
+    latest: str,
+    network: str,
+) -> str | None:
+    """Return a skip reason when *seed_tag* is unsafe for *network*, else ``None``.
+
+    On Sepolia Gloas: reject seeds below the client floor, and reject Lighthouse
+    RC→stable downgrades when GitHub LATEST itself cannot sync Sepolia.
+    """
+    import sys
+
+    repo_root = os.path.dirname(os.path.dirname(_INTEGRATION_DIR))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from client_requirements import validate_version_for_network
+
+    net = (network or "").strip().lower()
+    if net != "sepolia":
+        return None
+
+    ok_seed, _ = validate_version_for_network(client, seed_tag, net)
+    if not ok_seed:
+        return (
+            f"seed {seed_tag} does not meet Sepolia Gloas floor "
+            f"(soft-skip; deploy official LATEST)"
+        )
+
+    # Lighthouse: RC seed newer than a pre-Gloas GitHub LATEST would wipe the
+    # beacon DB and install an incompatible binary on Sepolia.
+    if client == "lighthouse" and latest:
+        ok_latest, _ = validate_version_for_network(client, latest, net)
+        if not ok_latest and seed_kind == "rc":
+            return (
+                f"GitHub LATEST {latest} cannot sync Sepolia Gloas; "
+                f"skipping RC seed {seed_tag} downgrade (soft-skip; deploy remapped LATEST)"
+            )
+    return None
+
+
 def prepare_rc_overrides(
     clients: list[str],
     path: str | None = None,
     find_rc_fn: Callable[[str, str | None], dict[str, Any]] | None = None,
     seeds_dest: str | None = None,
+    network: str | None = None,
 ) -> dict[str, Any]:
     """Discover upgrade seeds for *clients* and write the LATEST remap file.
 
     Defaults to :func:`find_client_rc.find_upgrade_seed` (RC-if-newer, else
     previous stable). Clients with ``status != ok`` or no usable seed are
     omitted so deploy stays on official LATEST.
+
+    When *network* is Sepolia, seeds that fail the Gloas floor (and Lighthouse
+    RC downgrades onto a pre-Gloas GitHub LATEST) are soft-skipped.
 
     Returns a dict with ``rows``, ``clients``, ``repos``, ``kinds``,
     ``latest`` (official LATEST at seed time), ``skipped``, and ``payload``.
@@ -417,6 +463,7 @@ def prepare_rc_overrides(
     # and make the finder skip the candidate as "same as latest".
     clear_override(path)
 
+    net = (network or os.environ.get("NETWORK") or "").strip()
     finder = find_rc_fn or find_upgrade_seed
     rows: list[dict[str, Any]] = []
     client_map: dict[str, str] = {}
@@ -436,9 +483,28 @@ def prepare_rc_overrides(
                 "status": "skip",
                 "reason": f"error: {exc}",
             }
-        rows.append(row)
         seed_tag, seed_kind = _seed_from_row(row)
         latest = str(row.get("latest") or "")
+        reject = None
+        if (
+            row.get("status") == "ok"
+            and seed_tag
+            and _accept_seed(str(seed_tag), seed_kind, latest)
+        ):
+            reject = _network_rejects_seed(
+                client, str(seed_tag), seed_kind, latest, net
+            )
+        if reject:
+            row = {
+                **row,
+                "status": "skip",
+                "reason": reject,
+                "seed_tag": None,
+                "rc_tag": None,
+                "seed_kind": None,
+            }
+            seed_tag, seed_kind = None, None
+        rows.append(row)
         if row.get("status") == "ok" and seed_tag and _accept_seed(str(seed_tag), seed_kind, latest):
             client_map[client] = str(seed_tag)
             if seed_kind:
