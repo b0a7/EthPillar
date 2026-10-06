@@ -1133,7 +1133,7 @@ if __name__ == "__main__":
         '--test-epbs',
         action='store_true',
         default=False,
-        help='After a Prysm/Lodestar or Erigon-Caplin+MEV install, apply ePBS prepare/complete',
+        help='After a Prysm/Lodestar/Teku or Erigon-Caplin+MEV install, apply ePBS prepare/complete',
     )
     parser.add_argument(
         '--rpc-exposure-el',

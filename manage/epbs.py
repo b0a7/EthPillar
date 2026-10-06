@@ -27,12 +27,14 @@ support (same gate as ``charonEpbsSupported`` in the TUI).
 Support levels:
 
 * ``full`` — Prysm v7.2.0+ (proposer-settings schema v2 ``builders`` list),
-  Lodestar v1.47.0+ (VC ``--builder.urls`` / ``--builder.minBid``), and
-  Erigon-Caplin v3.7.1+ (``caplin-builders.json`` plus the existing
-  ``--caplin.mev-relay-url`` sidecar). Lodestar prepare still probes
-  ``lodestar validator --help`` and Caplin prepare still probes
-  ``erigon --version`` so older binaries are skipped.
-* ``placeholder`` — Lighthouse, Teku, Nimbus, Grandine: no released VC relay
+  Lodestar v1.47.0+ (VC ``--builder.urls`` / ``--builder.minBid``),
+  Teku v26.9.0+ (VC ``--Xbuilder-urls`` / ``--Xbuilder-min-bid`` /
+  ``--Xbuilder-boost-factor``), and Erigon-Caplin v3.7.1+
+  (``caplin-builders.json`` plus the existing ``--caplin.mev-relay-url``
+  sidecar). Lodestar prepare still probes ``lodestar validator --help``.
+  Teku and Caplin prepare probe ``--version`` (Teku's ``--Xbuilder-*`` flags
+  are hidden from ``--help``) so older binaries are skipped.
+* ``placeholder`` — Lighthouse, Nimbus, Grandine: no released VC relay
   list; prepare is a documented no-op. Complete is refused without
   ``--force``.
 """
@@ -74,6 +76,13 @@ PRYSM_SETTINGS_PATH = f"{BASE_DATA_DIR}/prysm_validator/proposer-settings.json"
 # this file is the prepared builder list (see :func:`apply_relays_caplin`).
 CAPLIN_BUILDERS_PATH = f"{BASE_DATA_DIR}/erigon/caplin-builders.json"
 CAPLIN_BUILDERS_MIN_VERSION = "3.7.1"
+# Teku 26.9.0 is the first release with hidden VC flags --Xbuilder-urls,
+# --Xbuilder-min-bid, and --Xbuilder-boost-factor (BuilderOptions.java).
+TEKU_XBUILDER_MIN_VERSION = "26.9.0"
+# eth-docker EPBS_BUILD_FACTOR=always → Teku uint64 max (prefer the bid).
+TEKU_BOOST_FACTOR_UINT64_MAX = "18446744073709551615"
+# Optional operator override. Not a TUI setting; unset omits the flag.
+TEKU_EPBS_BUILD_FACTOR_ENV = "TEKU_EPBS_BUILD_FACTOR"
 MIGRATION_FORMAT = "ethpillar.epbs-migration"
 MIGRATION_VERSION = 1
 MIGRATION_EXTENSION = ".ethpillar.epbs-migration"
@@ -186,9 +195,16 @@ SUPPORT_NOTES: Dict[str, str] = {
         "(would stop MEV-Boost with no VC relay replacement)."
     ),
     "Teku": (
-        "Placeholder: Staked Builder API REST client (Consensys/teku#11026) is "
-        "not wired into proposing. Prepare is a no-op. Complete is refused "
-        "without --force."
+        "Full: VC flags --Xbuilder-urls, --Xbuilder-min-bid (ETH min-bid as "
+        "integer Gwei), and --Xbuilder-boost-factor (Teku 26.9.0+). Prepare "
+        "writes them only when `teku --version` is at least 26.9.0 (the flags "
+        "are hidden, so --help is not a probe). Boost factor is read from "
+        f"{TEKU_EPBS_BUILD_FACTOR_ENV} or the beacon node's "
+        "--builder-bid-compare-factor: 0/local → 0, always/BUILDER_ALWAYS → "
+        "uint64 max, maxprofit → 100, numeric as-is. Unset omits the flag "
+        "(Teku default 90). EthPillar uses a separate validator client, so "
+        "the flags go on validator.service. BN --builder-endpoint stays until "
+        "complete."
     ),
     "Nimbus": (
         "Placeholder: VC has --payload-builder=true only. Prepare is a no-op. "
@@ -632,13 +648,13 @@ def support_level(client: str) -> str:
         client: Validator client name (``Prysm``, ``Lodestar``, …).
 
     Returns:
-        ``full`` (Prysm, Lodestar, Erigon-Caplin) or ``placeholder``.
+        ``full`` (Prysm, Lodestar, Teku, Erigon-Caplin) or ``placeholder``.
         The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) mirrors
-        this for local validators (shown for Prysm, Lodestar, and integrated
-        Caplin), but is always shown on MEV hosts without a local validator
-        (split LXC) and hidden when Charon is enabled.
+        this for local validators (shown for Prysm, Lodestar, Teku, and
+        integrated Caplin), but is always shown on MEV hosts without a local
+        validator (split LXC) and hidden when Charon is enabled.
     """
-    if client in ("Prysm", "Lodestar", "Erigon-Caplin"):
+    if client in ("Prysm", "Lodestar", "Teku", "Erigon-Caplin"):
         return "full"
     return "placeholder"
 
@@ -939,6 +955,100 @@ def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
     return _rebuild_unit(vc_content, args)
 
 
+def teku_xbuilder_boost_factor(raw: str) -> Tuple[Optional[str], Optional[str]]:
+    """Map a Teku build-factor token to ``--Xbuilder-boost-factor``.
+
+    Mirrors eth-docker's Teku VC entrypoint (``EPBS_BUILD_FACTOR``):
+
+    * empty → omit the flag (Teku's default is 90)
+    * ``0`` or ``local`` → ``0`` (prefer the local payload)
+    * ``always`` or Teku's BN value ``BUILDER_ALWAYS`` → uint64 max
+    * ``maxprofit`` → ``100``
+    * a positive integer → that value, capped at uint64 max
+
+    Leading zeros on a numeric token are stripped (``0100`` → ``100``).
+    Keywords are case-sensitive, matching the eth-docker script.
+
+    Args:
+        raw: Factor from :func:`resolve_teku_build_factor`, or empty.
+
+    Returns:
+        ``(flag_value, warning)``. ``flag_value`` is None when the flag
+        should be left unset. ``warning`` is set for an invalid token or a
+        value capped at uint64 max.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None, None
+    if re.fullmatch(r"0*[0-9]+", text):
+        text = str(int(text))
+    if text in ("0", "local"):
+        return "0", None
+    if text in ("always", "BUILDER_ALWAYS"):
+        return TEKU_BOOST_FACTOR_UINT64_MAX, None
+    if text == "maxprofit":
+        return "100", None
+    if re.fullmatch(r"[1-9][0-9]{0,19}", text):
+        value = int(text)
+        if value > int(TEKU_BOOST_FACTOR_UINT64_MAX):
+            return (
+                TEKU_BOOST_FACTOR_UINT64_MAX,
+                f"Teku build factor {text} exceeds the 64-bit maximum; "
+                f"capping to {TEKU_BOOST_FACTOR_UINT64_MAX}",
+            )
+        return text, None
+    return None, (
+        f'Teku build factor has an invalid value of "{raw}"; '
+        "leaving --Xbuilder-boost-factor unset"
+    )
+
+
+def apply_relays_teku(
+    vc_content: str,
+    relays: RelaysConfig,
+    build_factor: str = "",
+) -> Tuple[str, Optional[str]]:
+    """Add Teku VC ``--Xbuilder-*`` flags (v26.9.0+).
+
+    Builder URLs are the MEV-Boost relay list (sidecar URLs dropped).
+    ``--Xbuilder-min-bid`` is MEV-Boost ``-min-bid`` in integer Gwei.
+    ``--Xbuilder-boost-factor`` is written only when *build_factor* maps to
+    a value; an existing factor flag is left alone when the source is empty.
+    Pre-Gloas ``--validators-builder-registration-default-enabled`` is kept.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        relays: Relays and optional min-bid from MEV-Boost. ``min_bid`` is ETH.
+        build_factor: Raw factor token (env, BN compare-factor, or empty).
+
+    Returns:
+        ``(new_unit, warning)``. ``warning`` is set when the factor is
+        invalid or was capped.
+
+    Raises:
+        EpbsError: If no non-sidecar relay URL remains.
+    """
+    unit = parse_unit(vc_content)
+    args = normalize_cli_args(unit.exec_args)
+    urls: List[str] = []
+    seen = set()
+    for url in relays.urls:
+        cleaned = url.strip()
+        if not cleaned or is_sidecar_url(cleaned) or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        urls.append(cleaned)
+    if not urls:
+        raise EpbsError("No non-sidecar relay URLs to write as --Xbuilder-urls")
+    args = upsert_flag(args, "--Xbuilder-urls", ",".join(urls))
+    if relays.min_bid:
+        args = upsert_flag(args, "--Xbuilder-min-bid", eth_min_bid_to_gwei(relays.min_bid))
+    factor, warning = teku_xbuilder_boost_factor(build_factor)
+    if factor is not None:
+        args = upsert_flag(args, "--Xbuilder-boost-factor", factor)
+    return _rebuild_unit(vc_content, args), warning
+
+
 def _command_help(fs: EpbsFilesystem, argv: Sequence[str]) -> str:
     """Return ``--help`` text for *argv*, or empty string on failure.
 
@@ -1040,6 +1150,69 @@ def caplin_supports_epbs(fs: EpbsFilesystem, unit_content: str) -> bool:
     binary = args[0].split()[0]
     text = _binary_version(fs, [binary, "--version"])
     return _version_meets_floor(text, CAPLIN_BUILDERS_MIN_VERSION)
+
+
+def teku_supports_epbs(fs: EpbsFilesystem, unit_content: str) -> bool:
+    """True when the Teku binary is at least v26.9.0 (``--Xbuilder-*``).
+
+    The flags are picocli-hidden, so ``--help`` does not list them. The
+    version floor matches the first tagged release that ships
+    ``BuilderOptions``.
+
+    Args:
+        fs: IO adapter used to run ``teku --version``.
+        unit_content: ``validator.service`` text (binary path).
+
+    Returns:
+        True for Teku v26.9.0 or newer. Older or unreadable binaries are
+        False so prepare does not write flags the release will reject.
+    """
+    args = normalize_cli_args(parse_unit(unit_content).exec_args)
+    if not args:
+        return False
+    binary = args[0].split()[0]
+    text = _binary_version(fs, [binary, "--version"])
+    return _version_meets_floor(text, TEKU_XBUILDER_MIN_VERSION)
+
+
+def resolve_teku_build_factor(fs: EpbsFilesystem) -> str:
+    """Return the raw Teku build-factor token, or empty when unset.
+
+    ``TEKU_EPBS_BUILD_FACTOR`` wins when set. Otherwise the beacon node's
+    ``--builder-bid-compare-factor`` is used when that unit is Teku (the
+    pre-Gloas factor eth-docker stores on the CL). There is no global
+    always/local/maxprofit menu; an empty result omits
+    ``--Xbuilder-boost-factor``.
+
+    Args:
+        fs: IO adapter used to read ``consensus.service``.
+    """
+    env = os.environ.get(TEKU_EPBS_BUILD_FACTOR_ENV, "").strip()
+    if env:
+        return env
+    path = fs.unit_path("consensus")
+    if not fs.exists(path):
+        return ""
+    content = fs.read_text(path) or ""
+    unit = parse_unit(content)
+    if unit.client != "Teku":
+        return ""
+    args = normalize_cli_args(unit.exec_args)
+    return get_flag_value(args, "--builder-bid-compare-factor").strip()
+
+
+def teku_has_builder_urls(vc_content: str) -> bool:
+    """Return True when ``--Xbuilder-urls`` includes a non-sidecar URL.
+
+    Args:
+        vc_content: ``validator.service`` text.
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    raw = get_flag_value(args, "--Xbuilder-urls")
+    if not raw:
+        return False
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    return any(not is_sidecar_url(part) for part in parts)
 
 
 def apply_relays_caplin(relays: RelaysConfig, existing: Optional[str]) -> str:
@@ -1156,14 +1329,13 @@ def apply_relays_placeholder(client: str) -> str:
     """Return a planned-flag blurb; do not mutate units.
 
     Args:
-        client: Placeholder VC name (Lighthouse, Teku, Nimbus, Grandine).
+        client: Placeholder VC name (Lighthouse, Nimbus, Grandine).
 
     Returns:
         Human-readable description of the unreleased relay-list surface.
     """
     planned = {
         "Lighthouse": "--builder-relays=<urls> (not shipped; VC still --builder-proposals)",
-        "Teku": "--validators-builder-relays=<urls> (not shipped; #11026 REST client unwired)",
         "Nimbus": "--payload-builder-relays=<urls> (not shipped; VC still --payload-builder=true)",
         "Grandine": "multi --builder-url list (not shipped; single --builder-url today)",
     }
@@ -1585,6 +1757,41 @@ def _apply_vc_relays(
                 plan.warnings.append(
                     "Caplin already has these builders; nothing to change."
                 )
+    elif vc_name == "Teku":
+        if not teku_supports_epbs(fs, vc_content):
+            plan.actions.append(
+                PlanAction(
+                    "Teku VC",
+                    "skipped: teku --version is older than "
+                    f"{TEKU_XBUILDER_MIN_VERSION} (no --Xbuilder-urls)",
+                )
+            )
+            plan.warnings.append(
+                "Prepare: no-op on this Teku build — Complete will stop "
+                "MEV-Boost without a VC relay replacement. Install Teku "
+                f"{TEKU_XBUILDER_MIN_VERSION} or later (first release with "
+                "--Xbuilder-urls / --Xbuilder-min-bid / --Xbuilder-boost-factor)."
+            )
+        else:
+            factor_raw = resolve_teku_build_factor(fs)
+            new_vc, factor_warning = apply_relays_teku(
+                vc_content, relays, factor_raw
+            )
+            if factor_warning:
+                plan.warnings.append(factor_warning)
+            factor_value, _ = teku_xbuilder_boost_factor(factor_raw)
+            detail_parts = ["add --Xbuilder-urls"]
+            if relays.min_bid:
+                detail_parts.append("--Xbuilder-min-bid")
+            if factor_value is not None:
+                detail_parts.append(f"--Xbuilder-boost-factor={factor_value}")
+            if _write_unit_if_changed(fs, vc_path, vc_content, new_vc, apply):
+                plan.actions.append(PlanAction(vc_path, " ".join(detail_parts)))
+                plan.services_to_restart.append("validator")
+            else:
+                plan.warnings.append(
+                    "Teku VC already has these builder flags; nothing to change."
+                )
     else:
         planned = apply_relays_placeholder(vc_name)
         plan.actions.append(PlanAction(f"{vc_name} VC (placeholder)", planned))
@@ -1603,10 +1810,12 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     """Copy mev-boost relays onto the VC. Keep the sidecar running.
 
     Prysm writes proposer-settings JSON and VC flags. Lodestar gets
-    ``--builder.urls`` when the binary documents that flag. Erigon-Caplin
-    writes ``caplin-builders.json`` when ``erigon --version`` is at least
-    v3.7.1 and leaves ``--caplin.mev-relay-url`` in place. Other VCs are
-    a documented no-op. When Charon is installed, VC relay writes are skipped
+    ``--builder.urls`` when the binary documents that flag. Teku gets
+    ``--Xbuilder-urls`` (plus min-bid and boost factor when known) when
+    ``teku --version`` is at least v26.9.0. Erigon-Caplin writes
+    ``caplin-builders.json`` when ``erigon --version`` is at least v3.7.1
+    and leaves ``--caplin.mev-relay-url`` in place. Other VCs are a
+    documented no-op. When Charon is installed, VC relay writes are skipped
     (Charon ``--builder-api`` owns the MEV path until complete).
     Beacon-node sidecar flags are not touched.
 
@@ -1780,11 +1989,12 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
     Returns:
         True for Prysm when ``default_config.builder.builders`` has a
         non-sidecar URL, for Lodestar when ``--builder.urls`` is set and
-        is not the sidecar, or for Erigon-Caplin when ``caplin-builders.json``
-        has a non-sidecar ``builders[].url`` and the binary is v3.7.1+.
-        Legacy ``builder.relays`` does not count.
-        Always False for placeholder clients and for an Erigon binary older
-        than v3.7.1.
+        is not the sidecar, for Teku when ``--Xbuilder-urls`` has a
+        non-sidecar URL and the binary is v26.9.0+, or for Erigon-Caplin
+        when ``caplin-builders.json`` has a non-sidecar ``builders[].url``
+        and the binary is v3.7.1+. Legacy ``builder.relays`` does not count.
+        Always False for placeholder clients, for a Teku binary older than
+        v26.9.0, and for an Erigon binary older than v3.7.1.
     """
     if vc_name == "Prysm":
         data = _load_prysm_settings(fs, vc_content)
@@ -1793,6 +2003,10 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         args = normalize_cli_args(parse_unit(vc_content).exec_args)
         urls = get_flag_value(args, "--builder.urls")
         return bool(urls) and not is_sidecar_url(urls)
+    if vc_name == "Teku":
+        if not teku_supports_epbs(fs, vc_content):
+            return False
+        return teku_has_builder_urls(vc_content)
     if vc_name == "Erigon-Caplin":
         if not caplin_supports_epbs(fs, vc_content):
             return False
@@ -1952,7 +2166,7 @@ def complete(
     if "consensus" in plan.services_to_restart and mode == "integrated_grandine":
         # Integrated Grandine restarts with consensus.service only.
         pass
-    elif vc_name in ("Prysm", "Lodestar", "Erigon-Caplin"):
+    elif vc_name in ("Prysm", "Lodestar", "Teku", "Erigon-Caplin"):
         # VC flags / builder file do not change on complete; BN restart is enough.
         pass
 
@@ -2019,6 +2233,12 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
                 lines.append("VC relays: " + ("yes" if has_relays else "no"))
         else:
             lines.append("VC relays: " + ("yes" if has_relays else "no"))
+        if vc_name == "Teku" and not teku_supports_epbs(fs, vc_content):
+            lines.append(
+                "Teku binary: older than "
+                f"{TEKU_XBUILDER_MIN_VERSION}; --Xbuilder-* is not used. "
+                "Prepare is a no-op."
+            )
         if charon_installed(fs):
             if charon_ready_for_complete(fs):
                 lines.append(
