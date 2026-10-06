@@ -213,7 +213,8 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
 def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port: str, el_max_peer_count: str, 
                                  jwtsecret_path: str, cl_p2p_port: str, cl_rest_port: str, cl_max_peer_count_cl: str,
                                  checkpoint_sync_url: str, mev_parameters: str = '',
-                                 cl_quic_port: str = '9001') -> Tuple[str, str]:
+                                 cl_quic_port: str = '9001',
+                                 network_override: Optional[str] = None) -> Tuple[str, str]:
     """Download and install Erigon binary and service.
 
     Returns:
@@ -251,6 +252,7 @@ def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port:
         checkpoint_sync_url, mev_parameters=mev_parameters,
         cl_quic_port=cl_quic_port or '9001',
         erigon_version=erigon_version,
+        network_override=network_override,
     )
     
     service_file_path = '/etc/systemd/system/execution.service'
@@ -260,7 +262,8 @@ def download_and_install_erigon(eth_network: str, el_p2p_port: str, el_rpc_port:
 
 
 def download_and_install_erigon_standalone(eth_network: str, el_p2p_port: str, el_rpc_port: str, el_max_peer_count: str, 
-                                           jwtsecret_path: str) -> Tuple[str, str]:
+                                           jwtsecret_path: str,
+                                           network_override: Optional[str] = None) -> Tuple[str, str]:
     """Download and install Erigon binary and service as a standalone execution client.
 
     Returns:
@@ -293,7 +296,8 @@ def download_and_install_erigon_standalone(eth_network: str, el_p2p_port: str, e
 
     # Generate Service File Content
     service_content = generate_erigon_standalone_service(
-        eth_network, el_p2p_port, el_rpc_port, el_max_peer_count, jwtsecret_path
+        eth_network, el_p2p_port, el_rpc_port, el_max_peer_count, jwtsecret_path,
+        network_override=network_override,
     )
     
     service_file_path = '/etc/systemd/system/execution.service'

@@ -204,6 +204,99 @@ EOF
 	[[ "$(ufwFirewallMenuAction 10)" == "disable" ]]
 }
 
+@test "ufwAllowConsensusRest allows the scraped CL port not the 5052 default" {
+	cat > "$CONSENSUS_SERVICE_FILE" <<'EOF'
+[Unit]
+Description=Lighthouse Beacon Node Consensus Client service for MAINNET
+[Service]
+ExecStart=/usr/local/bin/lighthouse bn --http-address=0.0.0.0 --http-port=16052
+EOF
+	export CL_REST_PORT=5052
+	export CL=Lighthouse
+	export network_current="192.168.50.0/24"
+	run ufwAllowConsensusRest
+	[ "$status" -eq 0 ]
+	[ "$CL_REST_PORT" = "5052" ]
+	grep -q "ufw allow from 192.168.50.0/24 to any port 16052 comment Allow local network to access consensus client RPC port" "$COMMAND_LOG"
+	if grep -q "port 5052" "$COMMAND_LOG"; then
+		echo "allow used the 5052 fallback" >&2
+		cat "$COMMAND_LOG" >&2
+		return 1
+	fi
+}
+
+@test "ufwAllowConsensusRest allows scraped Teku rest-api-port when CL_REST_PORT is 5052" {
+	cat > "$CONSENSUS_SERVICE_FILE" <<'EOF'
+[Unit]
+Description=Teku Beacon Node Consensus Client service for MAINNET
+[Service]
+ExecStart=/usr/local/bin/teku --rest-api-interface=127.0.0.1 --rest-api-port=16099
+EOF
+	export CL_REST_PORT=5052
+	export CL=""
+	export network_current="10.0.0.0/24"
+	run ufwAllowConsensusRest
+	[ "$status" -eq 0 ]
+	grep -q "to any port 16099" "$COMMAND_LOG"
+	if grep -q "port 5052" "$COMMAND_LOG"; then
+		echo "Teku allow used 5052" >&2
+		cat "$COMMAND_LOG" >&2
+		return 1
+	fi
+}
+
+@test "ufwAllowConsensusRest allows scraped Nimbus rest-port from the unit description" {
+	cat > "$CONSENSUS_SERVICE_FILE" <<'EOF'
+[Unit]
+Description=Nimbus Beacon Node Consensus Client service for MAINNET
+[Service]
+ExecStart=/usr/local/bin/nimbus_beacon_node --rest-address=127.0.0.1 --rest-port=15052
+EOF
+	export CL=""
+	export CL_REST_PORT=5052
+	export network_current="10.1.0.0/24"
+	[ "$(consensusRestPortForUfw)" = "15052" ]
+	run ufwAllowConsensusRest
+	[ "$status" -eq 0 ]
+	grep -q "to any port 15052" "$COMMAND_LOG"
+	if grep -q "port 5052" "$COMMAND_LOG"; then
+		echo "Nimbus allow used 5052" >&2
+		cat "$COMMAND_LOG" >&2
+		return 1
+	fi
+}
+
+@test "ufwAllowConsensusRest falls back to 5052 when the consensus unit has no REST port" {
+	rm -f "$CONSENSUS_SERVICE_FILE"
+	export CONSENSUS_SERVICE_FILE="$TEST_DIR/missing-consensus.service"
+	unset CL_REST_PORT
+	export network_current="192.168.1.0/24"
+	[ "$(consensusRestPortForUfw)" = "5052" ]
+	run ufwAllowConsensusRest
+	[ "$status" -eq 0 ]
+	grep -q "to any port 5052 comment Allow local network to access consensus client RPC port" "$COMMAND_LOG"
+}
+
+@test "ufwAllowConsensusRest uses CL_REST_PORT when the unit has no REST port flag" {
+	cat > "$CONSENSUS_SERVICE_FILE" <<'EOF'
+[Unit]
+Description=Lighthouse Beacon Node Consensus Client service for MAINNET
+[Service]
+ExecStart=/usr/local/bin/lighthouse bn --port=9000
+EOF
+	export CL_REST_PORT=17052
+	export network_current="192.168.1.0/24"
+	[ "$(consensusRestPortForUfw)" = "17052" ]
+	run ufwAllowConsensusRest
+	[ "$status" -eq 0 ]
+	grep -q "to any port 17052" "$COMMAND_LOG"
+	if grep -q "port 5052" "$COMMAND_LOG"; then
+		echo "allow ignored CL_REST_PORT" >&2
+		cat "$COMMAND_LOG" >&2
+		return 1
+	fi
+}
+
 @test "UFW menu shows Charon P2P only when charon.service exists" {
 	write_charon
 	labels="$(menu_labels)"

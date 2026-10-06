@@ -221,6 +221,7 @@ class TestRunInstallRouting:
             
             mv_dl = stack.enter_context(patch('deploy.mevboost.install_mevboost', return_value=("v1", "p")))
             ch_dl = stack.enter_context(patch('deploy.charon.install_charon', return_value=("v1", "p")))
+            ch_json = stack.enter_context(patch('deploy.charon.patch_json_requests_feature', return_value=False))
             
             stack.enter_context(patch('deploy.common.setup_node'))
             stack.enter_context(patch('deploy.common.finish_install'))
@@ -237,6 +238,7 @@ class TestRunInstallRouting:
                 'gr_bn': gr_bn, 'gr_dl': gr_dl,
                 'pr_bn': pr_bn, 'pr_vc': pr_vc, 'pr_dl': pr_dl,
                 'mev': mv_dl, 'charon': ch_dl,
+                '_charon_json': ch_json,
             }
     def _verify_only_called(self, mocks, expected_keys):
         """
@@ -244,6 +246,8 @@ class TestRunInstallRouting:
         and every other mock was NOT called.
         """
         for key, mock in mocks.items():
+            if key.startswith('_'):
+                continue
             if key in expected_keys:
                 mock.assert_called_once()
             else:
@@ -439,6 +443,27 @@ class TestRunInstallRouting:
         extra_params = mocks['tk_vc'].call_args.args[6]
         assert "--Xobol-dvt-integration-enabled=true" in extra_params
         assert "--Xvalidator-client-beacon-api-executor-threads=50" in extra_params
+
+    def test_switch_consensus_nimbus_charon_patches_json_requests(self):
+        mocks = self._run(
+            "Switch Consensus Client", None, "Nimbus", None,
+            flags_override={"validator": False, "charon": True, "switch_client": "consensus"},
+        )
+        self._verify_only_called(mocks, ['nb_dl', 'nb_bn'])
+        mocks['_charon_json'].assert_called_once()
+        assert mocks['_charon_json'].call_args.kwargs.get("enable") is True
+        assert mocks['charon'].call_count == 0
+
+    def test_switch_consensus_teku_charon_companion_flags(self):
+        mocks = self._run(
+            "Switch Consensus Client", None, "Teku", None,
+            flags_override={"validator": False, "charon": True, "switch_client": "consensus"},
+        )
+        self._verify_only_called(mocks, ['tk_dl', 'tk_bn'])
+        fee_params = mocks['tk_bn'].call_args.kwargs.get('fee_parameters', '')
+        assert "--validators-graffiti-client-append-format=DISABLED" in fee_params
+        mocks['_charon_json'].assert_called_once()
+        assert mocks['_charon_json'].call_args.kwargs.get("enable") is False
 
     def test_charon_rejects_grandine_integrated(self):
         with pytest.raises(ValueError, match="incompatible with Grandine"):

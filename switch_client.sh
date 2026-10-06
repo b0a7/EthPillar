@@ -174,7 +174,11 @@ function switchClient(){
     if [ "$TARGET_CLIENT" == "execution" ]; then
         runScript deploy/install-node.sh deploy/deploy-node.py --switch_client execution --cc "$CL" $NETWORK_ARG $AUTO_ARGS
     elif [ "$TARGET_CLIENT" == "consensus" ]; then
-        runScript deploy/install-node.sh deploy/deploy-node.py --switch_client consensus --ec "$EL" $MEVBOOST_FLAG $NETWORK_ARG $AUTO_ARGS
+        CHARON_FLAG=""
+        if isCharonEnabled; then
+            CHARON_FLAG="--with_charon"
+        fi
+        runScript deploy/install-node.sh deploy/deploy-node.py --switch_client consensus --ec "$EL" $MEVBOOST_FLAG $CHARON_FLAG $NETWORK_ARG $AUTO_ARGS
 
         # Reconnect separate VC to the new beacon node after BN install.
         if [ "$VALIDATOR_MODE" == "separate" ]; then
@@ -189,7 +193,9 @@ function switchClient(){
             fi
             if isCharonEnabled; then
                 sudo systemctl daemon-reload
-                sudo systemctl try-restart charon
+                # Restart (not try-restart): a running Charon must reload the
+                # patched BN URL; an inactive unit must come up before the VC.
+                sudo systemctl restart charon 2>/dev/null || sudo systemctl start charon 2>/dev/null || true
             fi
             startValidatorService
         fi

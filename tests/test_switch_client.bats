@@ -335,9 +335,10 @@ EOF
     switchClient consensus
 
     run cat "$COMMAND_LOG"
+    [[ "$output" == *"--with_charon"* ]]
     [[ "$output" == *"deploy.charon patch_beacon"* ]]
     [[ "$output" != *"deploy.vc_service patch"* ]]
-    [[ "$output" == *"sudo systemctl try-restart charon"* ]]
+    [[ "$output" == *"sudo systemctl restart charon"* ]]
     [[ "$output" == *"sudo systemctl start validator"* ]]
 
     grep -q "beacon-rest-api-provider=http://127.0.0.1:3600" "${SYSTEMD_DIR}/validator.service"

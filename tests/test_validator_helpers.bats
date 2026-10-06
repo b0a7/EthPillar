@@ -234,6 +234,26 @@ EOF
   rm -f "$EXEC_SERVICE_FILE" "$MEVBOOST_SERVICE_FILE"
 }
 
+@test "getClient does not treat integrated Erigon-Caplin as a separate VC" {
+  rm -f "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE"
+  export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export CONSENSUS_SERVICE_FILE="/nonexistent/consensus.service"
+  export EXEC_SERVICE_FILE
+  EXEC_SERVICE_FILE=$(mktemp)
+  cat > "$EXEC_SERVICE_FILE" <<EOF
+[Unit]
+Description=Erigon-Caplin Integrated Execution-Consensus Client for SEPOLIA
+EOF
+  run getValidatorClient
+  [ "$output" = "Erigon-Caplin" ]
+  getClient
+  [ -z "${VC:-}" ]
+  run getValidatorClient
+  [ "$output" = "Erigon-Caplin" ]
+  rm -f "$EXEC_SERVICE_FILE"
+}
+
 @test "epbsTuiSupported is false for Grandine integrated VC" {
   rm -f "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE"
   export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"
@@ -271,6 +291,38 @@ EOF
   unset CL_REST_PORT
   run getBeaconNodeEndpoint
   [ "$output" = "http://127.0.0.1:16099" ]
+}
+
+@test "getBeaconNodeEndpoint scrapes rest-address from nimbus consensus.service" {
+  cat > "$CONSENSUS_SERVICE_FILE" <<EOF
+[Unit]
+Description=Nimbus Consensus Client service for MAINNET
+[Service]
+ExecStart=/usr/local/bin/nimbus_beacon_node --rest-address=10.9.8.7 --rest-port=16052
+EOF
+  export CL=""
+  export CL_REST_PORT=""
+  run getBeaconNodeEndpoint
+  [ "$output" = "http://10.9.8.7:16052" ]
+}
+
+@test "prysmValidatorWalletDir scrapes wallet-dir from validator.service" {
+  cat > "$VALIDATOR_SERVICE_FILE" <<EOF
+ExecStart=/usr/local/bin/prysm-validator --wallet-dir=/custom/prysm/keys
+EOF
+  run prysmValidatorWalletDir
+  [ "$output" = "/custom/prysm/keys" ]
+}
+
+@test "prysmValidatorWalletDir defaults to prysm_validator/validator_keys" {
+  echo "" > "$VALIDATOR_SERVICE_FILE"
+  run prysmValidatorWalletDir
+  [ "$output" = "/var/lib/prysm_validator/validator_keys" ]
+}
+
+@test "lighthouseValidatorDatadir uses lighthouse_validator or lighthouse" {
+  run lighthouseValidatorDatadir
+  [[ "$output" == "/var/lib/lighthouse_validator" || "$output" == "/var/lib/lighthouse" ]]
 }
 
 # ── stopValidatorService / startValidatorService ───────────────────────────────

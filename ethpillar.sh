@@ -56,6 +56,12 @@ initializeRpcEndpoints(){
   # Execution layer RPC API
   export EL_RPC_ENDPOINT="http://${EL_IP_ADDRESS}:${EL_RPC_PORT}"
 
+  # Prefer bind/port scraped from consensus.service (exposeRpcCL / non-default units)
+  if [[ -f "${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}" ]]; then
+    getBeaconNodeEndpoint >/dev/null
+    export API_BN_ENDPOINT="$BEACON_NODE_ENDPOINT"
+  fi
+
   # Handle Aztec remote RPC nodes
   if [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.service ]]; then
     # Load RPC URLs from .env
@@ -146,9 +152,12 @@ _SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Bo
 _SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "${OBOL_INF}" "💧" "🔎")
 
 function testAndServiceCommand() {
-  for _service in "${_SERVICES[@]}"; do
-    test -f /etc/systemd/system/"${_service}".service && sudo service "${_service}" "$1"
-  done
+  local _cmd="$1"
+  local _service
+  while IFS= read -r _service; do
+    [[ -n "$_service" ]] || continue
+    test -f /etc/systemd/system/"${_service}".service && sudo service "${_service}" "$_cmd"
+  done < <(tui_all_service_order "$_cmd")
 }
 
 function testAndPluginCommand() {
@@ -160,8 +169,14 @@ function testAndPluginCommand() {
 
 function buildMenu() {
   for (( i=0; i<${#_SERVICES[@]}; i++ )); do
-    test -f /etc/systemd/system/"${_SERVICES[i]}".service \
-      && OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
+    if [[ "${_SERVICES[i]}" == "validator" ]]; then
+      if mainMenuShowsValidator; then
+        OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
+      fi
+    else
+      test -f /etc/systemd/system/"${_SERVICES[i]}".service \
+        && OPTIONS+=("${_SERVICES_ICON[i]}" "${_SERVICES_NAME[i]}")
+    fi
   done
 }
 
@@ -530,8 +545,7 @@ while true; do
     getValidatorClient
     local _validator_mode _vc_menu_title
     _validator_mode=$(getValidatorMode)
-    _vc_menu_title="${VALIDATOR_CLIENT:-$VC}"
-    [[ "$_validator_mode" == "integrated_grandine" ]] && _vc_menu_title="Grandine (integrated)"
+    _vc_menu_title="$(validatorSubmenuTitle)"
 
     # Define the options for the submenu
     SUBOPTIONS=(
@@ -598,19 +612,33 @@ while true; do
         fi
         ;;
       2)
-        sudo service validator start
+        if isCharonEnabled; then
+          sudo systemctl start charon 2>/dev/null || true
+        fi
+        startValidatorService
         ;;
       3)
-        sudo service validator stop
+        stopValidatorService
         ;;
       4)
-        sudo service validator restart
+        stopValidatorService
+        if isCharonEnabled; then
+          sudo systemctl restart charon 2>/dev/null || sudo systemctl start charon 2>/dev/null || true
+        fi
+        startValidatorService
         ;;
       5)
-        editSystemdUnitAndMaybeRestart \
-          /etc/systemd/system/validator.service \
-          "Do you want to restart validator?" \
-          validator
+        if [[ "$_validator_mode" == "integrated_grandine" ]]; then
+          editSystemdUnitAndMaybeRestart \
+            /etc/systemd/system/consensus.service \
+            "Do you want to restart consensus?" \
+            consensus
+        else
+          editSystemdUnitAndMaybeRestart \
+            /etc/systemd/system/validator.service \
+            "Do you want to restart validator?" \
+            validator
+        fi
         ;;
       6)
         runScript update_validator.sh
@@ -1247,8 +1275,10 @@ while true; do
         sleep 2
         ;;
       cc_rpc)
-        sudo ufw allow from ${network_current} to any port 5052 comment 'Allow local network to access consensus client RPC port'
-        ohai "Local network ${network_current} can access RPC port 5052"
+        local _cl_rpc_port
+        _cl_rpc_port="$(consensusRestPortForUfw)"
+        ufwAllowConsensusRest "${_cl_rpc_port}"
+        ohai "Local network ${network_current} can access RPC port ${_cl_rpc_port}"
         sleep 2
         ;;
       grafana)
@@ -1844,35 +1874,53 @@ function applyPatches(){
   fi
 }
 
+# True when any of the given systemd units contain a Lido CSM fee recipient.
+_csmFeeRecipientInUnits(){
+  local svc
+  for svc in "$@"; do
+    [[ -f "$svc" ]] || continue
+    if grep --ignore-case -qE "${CSM_FEE_RECIPIENT_ADDRESS_MAINNET}|${CSM_FEE_RECIPIENT_ADDRESS_HOLESKY}|${CSM_FEE_RECIPIENT_ADDRESS_HOODI}" "$svc"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Determine node configuration
 function setNodeMode(){
+  local validator_mode csm_svc validator_svc consensus_svc exec_svc
+  exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+  consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+  validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
+  csm_svc="${CSM_VALIDATOR_SERVICE_FILE:-/etc/systemd/system/csm_nimbusvalidator.service}"
+  validator_mode=$(getValidatorMode)
   # Check if integrated EL/CL client
-  if [[ -f /etc/systemd/system/execution.service ]] && grep --ignore-case -q "Integrated Execution-Consensus Client" /etc/systemd/system/execution.service; then isIntegrated=true; fi
-  if [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service || ${isIntegrated:-false} == "true" ]] && [[ -f /etc/systemd/system/validator.service ]]; then
-     if [[ $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_MAINNET}" /etc/systemd/system/validator.service) || $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_HOLESKY}" /etc/systemd/system/validator.service) || $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_HOODI}" /etc/systemd/system/validator.service) ]]; then
+  if [[ -f "$exec_svc" ]] && grep --ignore-case -q "Integrated Execution-Consensus Client" "$exec_svc"; then isIntegrated=true; fi
+  if [[ -f "$exec_svc" ]] && [[ -f "$consensus_svc" || ${isIntegrated:-false} == "true" ]] && [[ "$validator_mode" != "none" || -f "$csm_svc" ]]; then
+     if _csmFeeRecipientInUnits "$validator_svc" "$consensus_svc" "$csm_svc"; then
         NODE_MODE="Lido CSM Staking Node"
      else
         NODE_MODE="Solo Staking Node"
      fi
-  elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service || ${isIntegrated:-false} == "true" ]] && [[ -f /etc/systemd/system/mevboost.service ]]; then
+  elif [[ -f "$exec_svc" ]] && [[ -f "$consensus_svc" || ${isIntegrated:-false} == "true" ]] && [[ -f /etc/systemd/system/mevboost.service ]]; then
     NODE_MODE="Failover Staking Node"
-  elif [[ -f /etc/systemd/system/execution.service ]] && [[ -f /etc/systemd/system/consensus.service || ${isIntegrated:-false} == "true" ]]; then
+  elif [[ -f "$exec_svc" ]] && [[ -f "$consensus_svc" || ${isIntegrated:-false} == "true" ]]; then
     NODE_MODE="Full Node"
-  elif [[ -f /etc/systemd/system/validator.service ]]; then
-    if [[ $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_MAINNET}" /etc/systemd/system/validator.service) || $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_HOLESKY}" /etc/systemd/system/validator.service) || $(grep --ignore-case -oE "${CSM_FEE_RECIPIENT_ADDRESS_HOODI}" /etc/systemd/system/validator.service) ]]; then
+  elif [[ "$validator_mode" != "none" || -f "$csm_svc" ]]; then
+    if _csmFeeRecipientInUnits "$validator_svc" "$consensus_svc" "$csm_svc"; then
         NODE_MODE="Lido CSM Validator Client Only"
     else
         NODE_MODE="Validator Client Only"
     fi
-  elif [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.service ]]; then
+  elif [[ -d /opt/ethpillar/aztec ]] && [[ ! -f "$consensus_svc" ]]; then
       NODE_MODE="Aztec Node | Remote RPC"
   else
     NODE_MODE="Not Installed"
   fi
-  if [[ -d /opt/ethpillar/aztec ]] && [[ -f /etc/systemd/system/consensus.service ]]; then
+  if [[ -d /opt/ethpillar/aztec ]] && [[ -f "$consensus_svc" ]]; then
       NODE_MODE+=" | Aztec Node | Local RPC"
   fi
-  if [[ -f /etc/systemd/system/csm_nimbusvalidator.service ]]; then
+  if [[ -f "$csm_svc" ]]; then
     PLUGIN_MODE=true
   fi
   export NODE_MODE
