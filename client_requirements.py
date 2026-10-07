@@ -7,8 +7,13 @@ and provides validation utilities to ensure compatibility.
 Networks gated on Fusaka fork (PeerDAS support) minimum versions:
 - Ephemery: Activates Fusaka at epoch 10 (resets every 28 days)
 - Hoodi: Fusaka active since epoch 50688
-Other networks (including mainnet, where Fusaka is also live) are not checked.
+
+Networks gated on Gloas / Glamsterdam (Sepolia, activated 2026-10-06):
+- Sepolia: Gloas epoch 353024; GitHub Lighthouse LATEST may lag (use preferred RC).
+Other networks (including mainnet) are not Gloas-gated here.
 """
+
+from typing import Optional
 
 # Minimum client versions for Fusaka fork (PeerDAS support)
 # Enforced only for: Ephemery (active at epoch 10), Hoodi (active since epoch 50688)
@@ -26,6 +31,20 @@ FUSAKA_MIN_VERSIONS = {
     'nethermind': 'v1.34.0',
     'erigon': 'v3.2.1',
     'geth': 'v1.16.3'
+}
+
+# Minimum client versions for Sepolia Gloas (activated 2026-10-06 epoch 353024).
+GLOAS_SEPOLIA_MIN_VERSIONS = {
+    'lighthouse': 'v8.3.0-rc.0',
+    'lodestar': 'v1.49.0',
+    'teku': '26.9.1',
+    'prysm': 'v7.2.0',
+}
+
+# Install tag to use when GitHub LATEST fails the Sepolia Gloas floor.
+# Drop lighthouse once a stable >= v8.3.0 is GitHub LATEST.
+GLOAS_SEPOLIA_PREFERRED_TAGS = {
+    'lighthouse': 'v8.3.0-rc.0',
 }
 
 
@@ -89,6 +108,16 @@ def compare_versions(v1, v2):
     return -1 if v1_pre < v2_pre else 1
 
 
+def _normalize_network(network: Optional[str]) -> str:
+    """Return lowercase network slug, or empty when unset."""
+    return (network or "").strip().lower()
+
+
+def _normalize_client(client_name: Optional[str]) -> str:
+    """Return lowercase client key used in requirement maps."""
+    return (client_name or "").strip().lower()
+
+
 def validate_version_for_network(client_name, version, network):
     """
     Pure function: Validate if version meets network requirements.
@@ -96,7 +125,7 @@ def validate_version_for_network(client_name, version, network):
     Args:
         client_name: Name of the client (e.g., 'lighthouse', 'reth')
         version: Version string to validate
-        network: Network name (e.g., 'ephemery', 'hoodi', 'mainnet')
+        network: Network name (e.g., 'ephemery', 'hoodi', 'sepolia', 'mainnet')
 
     Returns:
         Tuple of (is_valid: bool, error_message: str | None)
@@ -105,19 +134,31 @@ def validate_version_for_network(client_name, version, network):
     - Ephemery: Active at epoch 10 (resets every 28 days)
     - Hoodi: Active since epoch 50688
 
+    Networks gated on Gloas / Glamsterdam:
+    - Sepolia: Active since epoch 353024 (2026-10-06)
+
     Examples:
         >>> validate_version_for_network('lighthouse', 'v8.0.0', 'ephemery')
         (True, None)
         >>> validate_version_for_network('lighthouse', 'v7.1.0', 'ephemery')
         (False, 'ERROR: ...')
         >>> validate_version_for_network('lighthouse', 'v7.1.0', 'mainnet')
-        (True, None)  # Only ephemery/hoodi are gated; other networks always pass
+        (True, None)  # mainnet is not Fusaka/Gloas-gated here
+        >>> validate_version_for_network('lighthouse', 'v8.2.3', 'sepolia')
+        (False, 'ERROR: ...')
     """
-    # Only validate for networks running Fusaka fork
-    if network not in ["ephemery", "hoodi"]:
+    client = _normalize_client(client_name)
+    net = _normalize_network(network)
+
+    if net in ("ephemery", "hoodi"):
+        min_version = FUSAKA_MIN_VERSIONS.get(client)
+        fork_label = "Fusaka fork support"
+    elif net == "sepolia":
+        min_version = GLOAS_SEPOLIA_MIN_VERSIONS.get(client)
+        fork_label = "Gloas / Glamsterdam support"
+    else:
         return (True, None)
 
-    min_version = FUSAKA_MIN_VERSIONS.get(client_name)
     if not min_version:
         return (True, None)
 
@@ -125,9 +166,43 @@ def validate_version_for_network(client_name, version, network):
         return (True, None)
 
     error_msg = (
-        f"\nERROR: {client_name.capitalize()} {version} is not compatible with {network.capitalize()}\n"
-        f"{network.capitalize()} requires Fusaka fork support (minimum version: {min_version})\n"
-        f"The latest {client_name.capitalize()} release ({version}) does not meet this requirement.\n"
-        f"\nPlease wait for a newer {client_name.capitalize()} release or choose a different network."
+        f"\nERROR: {client.capitalize()} {version} is not compatible with {net.capitalize()}\n"
+        f"{net.capitalize()} requires {fork_label} (minimum version: {min_version})\n"
+        f"The latest {client.capitalize()} release ({version}) does not meet this requirement.\n"
+        f"\nPlease wait for a newer {client.capitalize()} release or choose a different network."
     )
     return (False, error_msg)
+
+
+def preferred_install_tag(
+    client_name: str,
+    network: str,
+    latest_tag: str,
+) -> Optional[str]:
+    """Return an alternate install tag when *latest_tag* fails the network floor.
+
+    Today this only remaps Sepolia Lighthouse to the Gloas RC while GitHub
+    LATEST remains on a pre-Gloas stable. Returns ``None`` when *latest_tag*
+    already meets the floor or no preferred tag is configured.
+
+    Args:
+        client_name: Client key (e.g. ``lighthouse``).
+        network: Network name (case-insensitive).
+        latest_tag: Version resolved from GitHub LATEST (or equivalent).
+
+    Returns:
+        Preferred tag string, or ``None``.
+    """
+    client = _normalize_client(client_name)
+    net = _normalize_network(network)
+    if not latest_tag:
+        return None
+    is_valid, _ = validate_version_for_network(client, latest_tag, net)
+    if is_valid:
+        return None
+    if net != "sepolia":
+        return None
+    preferred = GLOAS_SEPOLIA_PREFERRED_TAGS.get(client)
+    if not preferred or preferred == latest_tag:
+        return None
+    return preferred

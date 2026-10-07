@@ -185,8 +185,8 @@ class TestRunInstallRouting:
     We mock all client modules and verify that only the selected ones are called.
     """
     
-    def _run(self, role, ec, cc, vc=None, flags_override=None, params_override=None):
-        flags = resolve_role_flags(role, "mainnet")
+    def _run(self, role, ec, cc, vc=None, flags_override=None, params_override=None, network="mainnet"):
+        flags = resolve_role_flags(role, network)
         flags.update(flags_override or {})
             
         with ExitStack() as stack:
@@ -227,7 +227,7 @@ class TestRunInstallRouting:
             stack.enter_context(patch('deploy.common.finish_install'))
             
             params = {**MOCK_PARAMS, **(params_override or {})}
-            run_install(role, "mainnet", ec, cc, vc or cc, flags, params, MOCK_ENV.copy())
+            run_install(role, network, ec, cc, vc or cc, flags, params, MOCK_ENV.copy())
             
             return {
                 'reth': r_ec, 'besu': b_ec, 'nethermind': n_ec, 'erigon': e_ec, 'geth': g_ec,
@@ -393,6 +393,20 @@ class TestRunInstallRouting:
         call_kwargs = mocks['gr_bn'].call_args
         assert mev_params_expected in call_kwargs.kwargs.get('mev_parameters', ''), \
             f"Expected MEV params '{mev_params_expected}' in grandine install, got: {call_kwargs}"
+
+    def test_prysm_sepolia_installs_classic_mev(self):
+        """Sepolia installs the same classic Prysm MEV flags as other networks."""
+        mocks = self._run(
+            "Custom Setup", "Reth", "Prysm", "Prysm",
+            flags_override={"validator": True, "mevboost": True},
+            network="sepolia",
+        )
+        self._verify_only_called(mocks, ['reth', 'pr_dl', 'pr_bn', 'pr_vc', 'mev'])
+        bn_mev = mocks['pr_bn'].call_args.kwargs.get('mev_parameters', '')
+        assert "--http-mev-relay=http://127.0.0.1:18550" in bn_mev
+        extra = mocks['pr_vc'].call_args.args[6]
+        assert "--enable-builder" in extra
+        assert "--builder-boost-factor=0" not in extra
 
     def test_switch_consensus_client_prysm_with_mevboost(self):
         # Verify Prysm gets MEV params when switching with mevboost enabled

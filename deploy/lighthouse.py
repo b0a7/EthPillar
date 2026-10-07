@@ -2,7 +2,7 @@ import os
 import subprocess
 from typing import List, Optional
 from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, install_system_binary, BASE_DATA_DIR, extract_and_install
-from client_requirements import validate_version_for_network
+from client_requirements import preferred_install_tag, validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
 def generate_lighthouse_bn_service(eth_network: str, sync_url: str, jwtsecret_path: str,
@@ -153,11 +153,22 @@ def download_lighthouse(eth_network: str) -> str:
     info = get_release_info("LATEST", arch_amd64)
     lh_version = info["version"]
 
-    # Validate version for network requirements
+    # Validate version for network requirements; prefer a known Gloas tag on Sepolia
+    # when GitHub LATEST is still a pre-Gloas stable.
     is_valid, error_msg = validate_version_for_network('lighthouse', lh_version, eth_network)
     if not is_valid:
-        print(error_msg)
-        exit(1)
+        preferred = preferred_install_tag('lighthouse', eth_network, lh_version)
+        if preferred:
+            print(
+                f"WARNING: GitHub LATEST Lighthouse {lh_version} is not compatible with "
+                f"{eth_network}; installing {preferred} instead",
+                flush=True,
+            )
+            info = get_release_info(preferred, arch_amd64)
+            lh_version = info["version"]
+        else:
+            print(error_msg)
+            exit(1)
 
     download_url = info["download_urls"][0]
     filename = info["filenames"][0]

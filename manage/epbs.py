@@ -2,14 +2,17 @@
 
 Two-step operator flow (EthStaker Glamsterdam guidance):
 
-1. **prepare** — copy mev-boost relays (and min-bid where the VC supports it)
-   onto the validator client. Keep ``mevboost.service`` and BN sidecar flags so
-   pre-Gloas proposals still work.
-2. **complete** — stop/disable MEV-Boost and strip BN flags that pointed at
-   ``http://127.0.0.1:18550``. Keep the VC builder list from step 1 (Prysm
-   ``builders`` entries, Lodestar ``--builder.urls``). Refused unless the VC
-   already has that list (or ``--force`` / ``--remote-vc-prepared`` for split
-   LXC).
+1. **prepare** (Before Gloas Fork) — copy mev-boost relays (and min-bid
+   where the VC supports it) onto the validator client. Keep
+   ``mevboost.service`` and BN sidecar flags. That overlap is only the
+   staging window until complete.
+2. **complete** (After Gloas Fork) — the operator runs this after Gloas on
+   that network. It stops/disables MEV-Boost and strips BN flags that
+   pointed at ``http://127.0.0.1:18550``. The fork does not run this step.
+   If prepare was never run, classic MEV stays (ePBS is optional). Keep
+   the VC builder list from step 1 (Prysm ``builders`` entries, Lodestar
+   ``--builder.urls``). Refused unless the VC already has that list (or
+   ``--force`` / ``--remote-vc-prepared`` for split LXC).
 
 **Split LXC:** when CC/MEV and VC (or Charon+VC) live on different hosts,
 ``export`` writes a ``.ethpillar.epbs-migration`` file from MEV relays and
@@ -26,14 +29,16 @@ support (same gate as ``charonEpbsSupported`` in the TUI).
 
 Support levels:
 
-* ``full`` — Prysm v7.2.0+ (proposer-settings schema v2 ``builders`` list),
+* ``full`` — Prysm v7.2.1+ (VC ``--builder-urls`` / ``--builder-min-bid`` /
+  ``--builder-boost-factor``; v7.2.0 falls back to proposer-settings schema v2),
   Lodestar v1.47.0+ (VC ``--builder.urls`` / ``--builder.minBid``),
   Teku v26.9.0+ (VC ``--Xbuilder-urls`` / ``--Xbuilder-min-bid`` /
   ``--Xbuilder-boost-factor``), and Erigon-Caplin v3.7.1+
   (``caplin-builders.json`` plus the existing ``--caplin.mev-relay-url``
   sidecar). Lodestar prepare still probes ``lodestar validator --help``.
-  Teku and Caplin prepare probe ``--version`` (Teku's ``--Xbuilder-*`` flags
-  are hidden from ``--help``) so older binaries are skipped.
+  Prysm, Teku, and Caplin prepare probe ``--version`` (Teku's ``--Xbuilder-*``
+  flags are hidden from ``--help``) so older binaries are skipped or, for
+  Prysm v7.2.0, kept on the settings-file path.
 * ``placeholder`` — Lighthouse, Nimbus, Grandine: no released VC relay
   list; prepare is a documented no-op. Complete is refused without
   ``--force``.
@@ -42,6 +47,9 @@ Support levels:
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import ipaddress
 import json
 import os
 import re
@@ -53,6 +61,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
 from client_requirements import compare_versions, parse_version
 from deploy.common import BASE_DATA_DIR, write_service_file
@@ -79,10 +88,18 @@ CAPLIN_BUILDERS_MIN_VERSION = "3.7.1"
 # Teku 26.9.0 is the first release with hidden VC flags --Xbuilder-urls,
 # --Xbuilder-min-bid, and --Xbuilder-boost-factor (BuilderOptions.java).
 TEKU_XBUILDER_MIN_VERSION = "26.9.0"
-# eth-docker EPBS_BUILD_FACTOR=always → Teku uint64 max (prefer the bid).
-TEKU_BOOST_FACTOR_UINT64_MAX = "18446744073709551615"
-# Optional operator override. Not a TUI setting; unset omits the flag.
+# Prysm v7.2.1 is the Sepolia pin: VC --builder-urls / --builder-min-bid /
+# --builder-boost-factor, 0x-hex builder auth, and the 200M GAS_LIMIT_SCHEDULE.
+# v7.2.0 has the settings-file builders list but none of those.
+PRYSM_BUILDER_CLI_MIN_VERSION = "7.2.1"
+# eth-docker EPBS_BUILD_FACTOR=always → uint64 max (prefer the bid).
+BOOST_FACTOR_UINT64_MAX = "18446744073709551615"
+TEKU_BOOST_FACTOR_UINT64_MAX = BOOST_FACTOR_UINT64_MAX
+# Shared operator override (eth-docker name). Teku-specific env still wins
+# for Teku. Neither is a TUI setting; unset omits the flag when builders are on.
+EPBS_BUILD_FACTOR_ENV = "EPBS_BUILD_FACTOR"
 TEKU_EPBS_BUILD_FACTOR_ENV = "TEKU_EPBS_BUILD_FACTOR"
+TEKU_SEPOLIA_GAS_FLAG = "--validators-builder-registration-default-gas-limit"
 MIGRATION_FORMAT = "ethpillar.epbs-migration"
 MIGRATION_VERSION = 1
 MIGRATION_EXTENSION = ".ethpillar.epbs-migration"
@@ -161,15 +178,29 @@ BN_BOOL_FLAGS: Dict[str, Tuple[str, ...]] = {
     "Lodestar": ("--builder",),
 }
 
-# Prysm v7.2.0 ships Sepolia Gloas without the upstream 200M schedule.
-# Operators who want 200M set this themselves; EthPillar does not write it.
+# Prysm before v7.2.1 ships Sepolia Gloas without the upstream 200M schedule.
+# v7.2.1+ includes GAS_LIMIT_SCHEDULE, so EthPillar does not write a Prysm
+# gas limit. Teku still defaults to 60M; prepare writes the explicit flag.
 SEPOLIA_GLOAS_GAS_LIMIT = "200000000"
 SEPOLIA_GAS_LIMIT_NOTE = (
-    "Sepolia on Prysm v7.2.0 defaults Gloas proposer gas limit to 60M "
-    "(this release has no 200M GAS_LIMIT_SCHEDULE). To propose at 200M, set "
+    "Sepolia on Prysm before v7.2.1 defaults the Gloas proposer gas limit to 60M "
+    "(that release has no 200M GAS_LIMIT_SCHEDULE). To propose at 200M, set "
     f"\"gas_limit\": \"{SEPOLIA_GLOAS_GAS_LIMIT}\" on default_config or a "
     "proposer_config key. EthPillar does not write that value. "
-    "--suggested-gas-limit only applies to pre-Gloas mev-boost registrations."
+    "On this binary, --suggested-gas-limit only applies to pre-Gloas "
+    "mev-boost registrations."
+)
+PRYSM_SUGGESTED_GAS_LIMIT_NOTE = (
+    "Prysm --suggested-gas-limit overrides the network gas-limit schedule from "
+    "the Gloas fork onward (Sepolia's 200M GAS_LIMIT_SCHEDULE on v7.2.1+). "
+    "Remove the flag to follow the schedule. The validator warns at startup "
+    "when the flag is set."
+)
+TEKU_SEPOLIA_GAS_NOTE = (
+    "Sepolia on Teku still has no 200M gas-limit schedule (default 60M). "
+    "EthPillar sets "
+    f"{TEKU_SEPOLIA_GAS_FLAG}={SEPOLIA_GLOAS_GAS_LIMIT} unless that flag is "
+    "already present."
 )
 
 # v7.2.0 still accepts these builder keys but ignores or warns on them.
@@ -179,15 +210,23 @@ _PRYSM_STALE_BUILDER_KEYS = ("enabled", "relays", "builders_set")
 
 SUPPORT_NOTES: Dict[str, str] = {
     "Prysm": (
-        "Full: MEV relay URLs go in proposer-settings.json as "
-        "default_config.builder.builders (schema v2). A nonempty list opts "
-        "into pre-Gloas mev-boost registration and is the Gloas builder list. "
-        "Requires Prysm v7.2.0+. Prepare removes deprecated --enable-builder."
+        "Full: Prysm v7.2.1+ writes VC --builder-urls, --builder-min-bid "
+        "(ETH min-bid as integer Gwei), --builder-boost-factor, and "
+        "--builder-max-execution-payment=0. Build factor comes from "
+        f"{EPBS_BUILD_FACTOR_ENV}: 0/local → 0, always → uint64 max, "
+        "maxprofit → 100, a number as-is (capped). Unset omits the flag "
+        "(Prysm default 100) once builders are on; ePBS off uses 0. "
+        "An existing proposer-settings file is kept in sync (0x-hex "
+        "auth_data / builder_pubkeys; hostname-less URLs are rejected). "
+        "v7.2.0 falls back to the settings-file builders list. Prepare "
+        "removes deprecated --enable-builder and leaves BN --http-mev-relay. "
+        "After Gloas, run complete to strip it. The fork does not."
     ),
     "Lodestar": (
         "Full: VC flags --builder.urls / --builder.minBid (v1.47.0+). "
         "Prepare writes them only when `lodestar validator --help` lists "
-        "--builder.urls."
+        "--builder.urls. The same build-factor tokens map to "
+        "--builder.selection / --builder.boostFactor."
     ),
     "Lighthouse": (
         "Placeholder: VC has --builder-proposals only; no released relay-list "
@@ -199,12 +238,14 @@ SUPPORT_NOTES: Dict[str, str] = {
         "integer Gwei), and --Xbuilder-boost-factor (Teku 26.9.0+). Prepare "
         "writes them only when `teku --version` is at least 26.9.0 (the flags "
         "are hidden, so --help is not a probe). Boost factor is read from "
-        f"{TEKU_EPBS_BUILD_FACTOR_ENV} or the beacon node's "
-        "--builder-bid-compare-factor: 0/local → 0, always/BUILDER_ALWAYS → "
-        "uint64 max, maxprofit → 100, numeric as-is. Unset omits the flag "
-        "(Teku default 90). EthPillar uses a separate validator client, so "
-        "the flags go on validator.service. BN --builder-endpoint stays until "
-        "complete."
+        f"{TEKU_EPBS_BUILD_FACTOR_ENV}, else {EPBS_BUILD_FACTOR_ENV}, else the "
+        "beacon node's --builder-bid-compare-factor: 0/local → 0, "
+        "always/BUILDER_ALWAYS → uint64 max, maxprofit → 100, numeric as-is. "
+        "Unset omits the flag (Teku default 90). On Sepolia, prepare sets "
+        f"{TEKU_SEPOLIA_GAS_FLAG}={SEPOLIA_GLOAS_GAS_LIMIT} unless already set "
+        "(Teku has no 200M schedule). EthPillar uses a separate validator "
+        "client, so the flags go on validator.service. BN --builder-endpoint "
+        "stays through prepare; run complete after Gloas to remove it."
     ),
     "Nimbus": (
         "Placeholder: VC has --payload-builder=true only. Prepare is a no-op. "
@@ -704,36 +745,284 @@ def _write_unit_if_changed(
     return True
 
 
-def _prysm_builder_config(relays: RelaysConfig) -> dict:
-    """Build Prysm v7.2.0 ``default_config.builder`` (schema version 2).
+def map_epbs_build_factor(
+    raw: str,
+    *,
+    enabled: bool = True,
+    client: str = "ePBS",
+    flag: str = "--builder-boost-factor",
+) -> Tuple[Optional[str], Optional[str]]:
+    """Map an eth-docker build-factor token to a uint64 flag value.
+
+    Shared by Prysm ``--builder-boost-factor``, Teku ``--Xbuilder-boost-factor``,
+    and Lodestar's numeric ``--builder.boostFactor``.
+
+    * ``enabled`` False → ``0`` (local blocks; ePBS builders are off)
+    * empty, builders on → omit the flag (client default)
+    * ``0`` or ``local`` → ``0``
+    * ``always`` or Teku's BN value ``BUILDER_ALWAYS`` → uint64 max
+    * ``maxprofit`` → ``100``
+    * a positive integer → that value, capped at uint64 max
+
+    Leading zeros on a numeric token are stripped (``0100`` → ``100``).
+    Keywords are case-sensitive, matching the eth-docker scripts.
+
+    Args:
+        raw: Factor token from the environment or a beacon-node flag.
+        enabled: False when ePBS builders are not being configured.
+        client: Name used in warning text.
+        flag: Flag name mentioned when a token is invalid.
+
+    Returns:
+        ``(flag_value, warning)``. ``flag_value`` is None when the flag
+        should be left unset. ``warning`` is set for an invalid token or a
+        value capped at uint64 max.
+    """
+    if not enabled:
+        return "0", None
+    text = (raw or "").strip()
+    if not text:
+        return None, None
+    if re.fullmatch(r"0*[0-9]+", text):
+        text = str(int(text))
+    if text in ("0", "local"):
+        return "0", None
+    if text in ("always", "BUILDER_ALWAYS"):
+        return BOOST_FACTOR_UINT64_MAX, None
+    if text == "maxprofit":
+        return "100", None
+    if re.fullmatch(r"[1-9][0-9]{0,19}", text):
+        value = int(text)
+        if value > int(BOOST_FACTOR_UINT64_MAX):
+            return (
+                BOOST_FACTOR_UINT64_MAX,
+                f"{client} build factor {text} exceeds the 64-bit maximum; "
+                f"capping to {BOOST_FACTOR_UINT64_MAX}",
+            )
+        return text, None
+    return None, (
+        f'{client} build factor has an invalid value of "{raw}"; '
+        f"leaving {flag} unset"
+    )
+
+
+def builder_url_hostname(url: str) -> str:
+    """Return the ASCII hostname Prysm uses as default builder ``auth_data``.
+
+    Prysm v7.2.1 rejects URLs with an empty or non-ASCII hostname
+    (``https://:8080``). Internationalized names must already be punycode.
+
+    Args:
+        url: Builder or relay URL.
+
+    Returns:
+        Lowercased hostname, without brackets.
+
+    Raises:
+        EpbsError: If the URL has no hostname or the hostname is not ASCII.
+    """
+    parsed = urlparse((url or "").strip())
+    host = parsed.hostname or ""
+    if not host:
+        raise EpbsError(
+            f"Builder URL has no hostname (rejected by Prysm v7.2.1): {url}"
+        )
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise EpbsError(
+            f"Builder URL hostname must be ASCII punycode: {url}"
+        ) from exc
+    return host.lower()
+
+
+def default_auth_data_hex(url: str) -> str:
+    """Return 0x-hex of Prysm's default ``auth_data`` for *url*.
+
+    Omitted ``auth_data`` is the hostname's UTF-8 bytes (builder-specs#168),
+    not the full URL. IPv6 literals use the bracket form Prysm signs.
+
+    Args:
+        url: Builder URL with a hostname.
+
+    Returns:
+        ``0x``-prefixed hex.
+    """
+    host = builder_url_hostname(url)
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        text = host
+    else:
+        mapped = getattr(addr, "ipv4_mapped", None)
+        if addr.version == 4:
+            text = host
+        elif mapped is not None:
+            raw = addr.packed
+            g7 = int.from_bytes(raw[12:14], "big")
+            g8 = int.from_bytes(raw[14:16], "big")
+            text = f"[::ffff:{g7:x}:{g8:x}]"
+        else:
+            text = "[" + addr.compressed + "]"
+    return "0x" + text.encode("ascii").hex()
+
+
+def _normalize_hex_or_base64(value: str, *, what: str) -> str:
+    """Return *value* as 0x-hex, accepting a legacy base64 encoding.
+
+    Args:
+        value: 0x-hex or standard base64.
+        what: Field name used in errors.
+
+    Returns:
+        Lowercase ``0x`` hex.
+
+    Raises:
+        EpbsError: If *value* is neither encoding.
+    """
+    text = str(value).strip()
+    if text.lower().startswith("0x"):
+        body = text[2:]
+        if body and len(body) % 2 == 0 and re.fullmatch(r"[0-9a-fA-F]+", body):
+            return "0x" + body.lower()
+        raise EpbsError(f"{what} is not valid 0x-hex: {text}")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise EpbsError(f"{what} must be 0x-hex or base64, got {text!r}") from exc
+    if not raw:
+        raise EpbsError(f"{what} is empty")
+    return "0x" + raw.hex()
+
+
+def _normalize_builder_entry(entry: dict) -> dict:
+    """Rewrite one builder entry to the v7.2.1 schema.
+
+    ``pubkeys`` is renamed to ``builder_pubkeys``. Both pubkey and
+    ``auth_data`` values are 0x-hex (legacy base64 is converted).
+    ``auth_data`` is omitted when absent so Prysm derives it from the
+    hostname. Hostname-less URLs are rejected.
+
+    Args:
+        entry: One ``builders[]`` object.
+
+    Returns:
+        Entry with ``url`` and any normalized key material.
+
+    Raises:
+        EpbsError: If the entry is not an object or a field will not decode.
+    """
+    if not isinstance(entry, dict):
+        raise EpbsError("builder entry must be an object")
+    url = str(entry.get("url") or "").strip()
+    builder_url_hostname(url)
+    out: dict = {"url": url}
+    raw_keys = entry.get("builder_pubkeys", entry.get("pubkeys"))
+    if raw_keys:
+        if not isinstance(raw_keys, list):
+            raise EpbsError("builder_pubkeys must be a list")
+        keys: List[str] = []
+        for item in raw_keys:
+            encoded = _normalize_hex_or_base64(str(item), what="builder_pubkeys")
+            if len(encoded) != 2 + 96:
+                raise EpbsError("builder_pubkeys entry is not a 48-byte BLS key")
+            keys.append(encoded)
+        out["builder_pubkeys"] = keys
+    if entry.get("auth_data"):
+        out["auth_data"] = _normalize_hex_or_base64(
+            str(entry["auth_data"]), what="auth_data"
+        )
+    return out
+
+
+def _non_sidecar_urls(urls: Sequence[str]) -> List[str]:
+    """Drop blank, duplicate, and local MEV-Boost sidecar URLs.
+
+    Args:
+        urls: Relay or builder URLs.
+
+    Returns:
+        Unique non-sidecar URLs in input order.
+    """
+    cleaned: List[str] = []
+    seen = set()
+    for url in urls:
+        item = url.strip()
+        if not item or is_sidecar_url(item) or item in seen:
+            continue
+        seen.add(item)
+        cleaned.append(item)
+    return cleaned
+
+
+def _prysm_builder_entries(relays: RelaysConfig, existing_builder: dict) -> List[dict]:
+    """Build v7.2.1 builder entries from relays, keeping per-URL key material.
+
+    Args:
+        relays: Relay URLs (sidecar URLs are dropped).
+        existing_builder: Current ``default_config.builder`` object.
+
+    Returns:
+        ``builders`` list. Explicit ``auth_data`` / ``builder_pubkeys`` on a
+        matching old entry are normalized; omitted auth stays omitted.
+
+    Raises:
+        EpbsError: If no URL remains or a URL has no hostname.
+    """
+    old_by_url: Dict[str, dict] = {}
+    previous = existing_builder.get("builders")
+    if isinstance(previous, list):
+        for entry in previous:
+            if isinstance(entry, dict) and str(entry.get("url") or "").strip():
+                old_by_url[str(entry["url"]).strip()] = entry
+    entries: List[dict] = []
+    for url in _non_sidecar_urls(relays.urls):
+        source = {"url": url}
+        old = old_by_url.get(url)
+        if old:
+            source.update(old)
+            source["url"] = url
+        entries.append(_normalize_builder_entry(source))
+    if not entries:
+        raise EpbsError("No non-sidecar relay URLs to write as Prysm builders")
+    return entries
+
+
+def _prysm_builder_config(
+    relays: RelaysConfig,
+    existing_builder: Optional[dict] = None,
+    boost_factor: Optional[str] = None,
+) -> dict:
+    """Build Prysm ``default_config.builder`` (schema version 2).
 
     A nonempty ``builders`` list opts the key into pre-Gloas mev-boost
-    registration and is the post-Gloas direct-builder list. Each entry is a
-    ``BuilderEntry`` with ``url`` set to the MEV-Boost relay URL. ``auth_data``
-    is omitted so Prysm signs the UTF-8 bytes of that URL (its default).
-    ``enabled`` and ``relays`` are legacy and are not written.
+    registration and is the post-Gloas direct-builder list. ``auth_data`` is
+    omitted unless an existing entry set it, so Prysm v7.2.1 signs the
+    hostname bytes. ``pubkeys`` is not written; ``builder_pubkeys`` is 0x-hex.
 
-    ``max_execution_payment`` ``"0"`` is an explicit trustless-only cap: the
-    collateral-backed bid value still counts, and a builder's promised
-    execution-layer payment does not. Unset is the same effective cap but
-    logs a warning.
-
-    ``min_bid`` is MEV-Boost ``-min-bid`` converted from ETH to integer Gwei,
-    matching Prysm's ``BuilderConfig.min_bid`` (Gwei).
+    ``max_execution_payment`` ``"0"`` is an explicit trustless-only cap.
+    ``min_bid`` is MEV-Boost ``-min-bid`` in integer Gwei.
+    ``builder_boost_factor`` is set only when *boost_factor* is not None.
 
     Args:
         relays: Relay URLs and optional MEV-Boost min-bid (ETH).
+        existing_builder: Current builder object, used to keep per-URL keys.
+        boost_factor: Mapped uint64 string, or None to leave the key unset.
 
     Returns:
-        Builder object with ``builders``, ``max_execution_payment``, and
-        ``min_bid`` when MEV-Boost set a min-bid.
+        Builder object.
+
+    Raises:
+        EpbsError: If a builder URL has no hostname.
     """
     config: dict = {
-        "builders": [{"url": url} for url in relays.urls],
+        "builders": _prysm_builder_entries(relays, existing_builder or {}),
         "max_execution_payment": "0",
     }
     if relays.min_bid:
         config["min_bid"] = eth_min_bid_to_gwei(relays.min_bid)
+    if boost_factor is not None:
+        config["builder_boost_factor"] = boost_factor
     return config
 
 
@@ -831,62 +1120,98 @@ def _prysm_flag_action(old_unit: str, new_unit: str) -> str:
     old_args = normalize_cli_args(parse_unit(old_unit).exec_args)
     new_args = normalize_cli_args(parse_unit(new_unit).exec_args)
     parts: List[str] = []
-    if get_flag_value(old_args, "--proposer-settings-file") != get_flag_value(
-        new_args, "--proposer-settings-file"
+    for flag in (
+        "--builder-urls",
+        "--builder-min-bid",
+        "--builder-boost-factor",
+        "--builder-max-execution-payment",
+        "--proposer-settings-file",
     ):
-        parts.append("set --proposer-settings-file")
+        if get_flag_value(old_args, flag) != get_flag_value(new_args, flag) or (
+            has_flag(new_args, flag) and not has_flag(old_args, flag)
+        ):
+            if has_flag(new_args, flag):
+                parts.append(f"set {flag}")
+            elif has_flag(old_args, flag):
+                parts.append(f"remove {flag}")
     if has_flag(old_args, "--enable-builder") and not has_flag(new_args, "--enable-builder"):
         parts.append("remove deprecated --enable-builder")
     return "; ".join(parts) if parts else "update validator flags"
 
 
-def apply_relays_prysm(
-    vc_content: str,
-    relays: RelaysConfig,
-    existing_settings: Optional[str],
-    settings_path: str = PRYSM_SETTINGS_PATH,
-) -> Tuple[str, str, str]:
-    """Merge mev-boost relays into Prysm v7.2.0 proposer settings and VC flags.
+def _apply_prysm_boost_flag(args: List[str], raw: str) -> Tuple[List[str], Optional[str]]:
+    """Set ``--builder-boost-factor`` for an ePBS-on Prysm VC.
 
-    Sets schema version 2, writes ``default_config.builder.builders`` from the
-    relay URLs, copies ``--suggested-fee-recipient`` into ``fee_recipient``
-    when missing, sets ``--proposer-settings-file``, and removes deprecated
-    ``--enable-builder``. Does not write ``gas_limit`` (including the Sepolia
-    200M value) or ``--suggested-gas-limit``.
-
-    Existing ``proposer_config`` entries, graffiti, and option-level gas limits
-    are left in place. Legacy ``builder.enabled``, ``builder.relays``, and
-    ``builders_set`` are removed from ``default_config.builder``.
+    A mapped value is written. An empty token removes a leftover ``0``
+    so Prysm's default of 100 applies. Any other existing value is kept.
+    Set ``EPBS_BUILD_FACTOR=0`` or ``local`` to keep local preference
+    while builder URLs are configured.
 
     Args:
-        vc_content: Current ``validator.service`` text.
-        relays: Relays scraped from MEV-Boost.
-        existing_settings: Current proposer-settings JSON, or None.
-        settings_path: Default JSON path if the VC flag is absent.
+        args: Normalized VC arguments.
+        raw: Build-factor token, or empty.
 
     Returns:
-        ``(new_vc_unit, proposer_settings_json, settings_path_used)``.
+        ``(args, warning)``.
+    """
+    value, warning = map_epbs_build_factor(
+        raw, enabled=True, client="Prysm", flag="--builder-boost-factor"
+    )
+    if value is not None:
+        return upsert_flag(args, "--builder-boost-factor", value), warning
+    if warning:
+        return args, warning
+    if get_flag_value(args, "--builder-boost-factor") == "0":
+        args = remove_flags(args, "--builder-boost-factor")
+    return args, None
+
+
+def _load_proposer_settings(existing_settings: Optional[str]) -> dict:
+    """Parse proposer-settings JSON into an object.
+
+    Args:
+        existing_settings: File text, or None when the file is absent.
+
+    Returns:
+        A dict (empty when *existing_settings* is None).
 
     Raises:
-        EpbsError: If existing settings are invalid JSON or the wrong shape.
+        EpbsError: If the text is not a JSON object.
     """
-    unit = parse_unit(vc_content)
-    args = normalize_cli_args(unit.exec_args)
-    fee = get_flag_value(args, "--suggested-fee-recipient")
-    settings_path = get_flag_value(args, "--proposer-settings-file") or settings_path
-
-    data: dict
-    if existing_settings:
-        try:
-            data = json.loads(existing_settings)
-        except json.JSONDecodeError as exc:
-            raise EpbsError(f"Invalid proposer-settings JSON: {exc}") from exc
-    else:
-        data = {}
-
+    if not existing_settings:
+        return {}
+    try:
+        data = json.loads(existing_settings)
+    except json.JSONDecodeError as exc:
+        raise EpbsError(f"Invalid proposer-settings JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise EpbsError("proposer-settings.json must be a JSON object")
+    return data
 
+
+def _prysm_settings_document(
+    data: dict,
+    relays: RelaysConfig,
+    fee: str,
+    boost_factor: Optional[str],
+) -> str:
+    """Merge relays into a schema-v2 proposer-settings document.
+
+    Does not write ``gas_limit`` or touch ``--suggested-gas-limit``.
+    Existing proposer config, graffiti, and option-level gas limits stay.
+    Legacy ``builder.enabled``, ``builder.relays``, and ``builders_set``
+    are removed. ``min_bid`` mirrors MEV-Boost. ``builder_boost_factor``
+    is written when *boost_factor* is set and otherwise left as-is.
+
+    Args:
+        data: Current settings object (mutated).
+        relays: Relay URLs and optional min-bid.
+        fee: Suggested fee recipient copied when ``fee_recipient`` is missing.
+        boost_factor: Mapped factor, or None to keep an existing key.
+
+    Returns:
+        JSON text with a trailing newline.
+    """
     data["version"] = 2
     default = data.setdefault("default_config", {})
     if not isinstance(default, dict):
@@ -898,15 +1223,92 @@ def apply_relays_prysm(
         raise EpbsError("default_config.builder must be an object")
     for stale in _PRYSM_STALE_BUILDER_KEYS:
         builder.pop(stale, None)
-    # Mirror the current MEV-Boost min-bid; drop a stale value when unset.
     builder.pop("min_bid", None)
-    builder.update(_prysm_builder_config(relays))
+    if boost_factor is not None:
+        builder.pop("builder_boost_factor", None)
+    builder.update(_prysm_builder_config(relays, builder, boost_factor))
+    return json.dumps(data, indent=2) + "\n"
 
-    args = remove_flags(args, "--enable-builder")
-    args = upsert_flag(args, "--proposer-settings-file", settings_path)
-    new_unit = _rebuild_unit(vc_content, args)
-    settings_json = json.dumps(data, indent=2) + "\n"
-    return new_unit, settings_json, settings_path
+
+def apply_relays_prysm(
+    vc_content: str,
+    relays: RelaysConfig,
+    existing_settings: Optional[str],
+    settings_path: str = PRYSM_SETTINGS_PATH,
+    *,
+    builder_cli: bool = False,
+    build_factor: str = "",
+) -> Tuple[str, Optional[str], str, Optional[str]]:
+    """Merge mev-boost relays onto a Prysm validator client.
+
+    v7.2.1+ (*builder_cli*): write ``--builder-urls``, ``--builder-min-bid``
+    (Gwei), ``--builder-boost-factor``, and
+    ``--builder-max-execution-payment=0``. Do not create a proposer-settings
+    file just for builders. If one is already referenced, rewrite its
+    ``builders`` list in the v7.2.1 shape (``builder_pubkeys``, 0x-hex) so
+    the file, which replaces the CLI defaults, stays consistent.
+
+    Older binaries: write the settings file and ``--proposer-settings-file``,
+    and do not pass flags that v7.2.0 will reject.
+
+    Both paths remove deprecated ``--enable-builder`` and do not write
+    ``gas_limit`` or ``--suggested-gas-limit``.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        relays: Relays scraped from MEV-Boost.
+        existing_settings: Current proposer-settings JSON, or None.
+        settings_path: Default JSON path if the VC flag is absent.
+        builder_cli: True when the binary is Prysm v7.2.1 or newer.
+        build_factor: Raw factor token (empty omits a new value).
+
+    Returns:
+        ``(new_vc_unit, proposer_settings_json_or_None, settings_path_used, warning)``.
+        The JSON is None when the CLI path does not need a settings file.
+
+    Raises:
+        EpbsError: If settings are invalid, or a builder URL has no hostname.
+    """
+    unit = parse_unit(vc_content)
+    args = normalize_cli_args(unit.exec_args)
+    fee = get_flag_value(args, "--suggested-fee-recipient")
+    flagged = get_flag_value(args, "--proposer-settings-file")
+    settings_path = flagged or settings_path
+    factor_value, warning = map_epbs_build_factor(
+        build_factor, enabled=True, client="Prysm", flag="--builder-boost-factor"
+    )
+    # Invalid tokens return no value, so an existing file factor is kept.
+    # A capped value is still written (warning explains the cap).
+    file_factor = factor_value
+
+    data = _load_proposer_settings(existing_settings)
+    settings_json: Optional[str]
+    if builder_cli:
+        urls = _non_sidecar_urls(relays.urls)
+        for url in urls:
+            builder_url_hostname(url)
+        if not urls:
+            raise EpbsError("No non-sidecar relay URLs to write as --builder-urls")
+        args = remove_flags(args, "--enable-builder")
+        args = upsert_flag(args, "--builder-urls", ",".join(urls))
+        if relays.min_bid:
+            args = upsert_flag(args, "--builder-min-bid", eth_min_bid_to_gwei(relays.min_bid))
+        else:
+            args = remove_flags(args, "--builder-min-bid")
+        args = upsert_flag(args, "--builder-max-execution-payment", "0")
+        args, boost_warning = _apply_prysm_boost_flag(args, build_factor)
+        warning = warning or boost_warning
+        if existing_settings is not None or flagged:
+            settings_json = _prysm_settings_document(data, relays, fee, file_factor)
+            args = upsert_flag(args, "--proposer-settings-file", settings_path)
+        else:
+            settings_json = None
+    else:
+        settings_json = _prysm_settings_document(data, relays, fee, file_factor)
+        args = remove_flags(args, "--enable-builder")
+        args = upsert_flag(args, "--proposer-settings-file", settings_path)
+
+    return _rebuild_unit(vc_content, args), settings_json, settings_path, warning
 
 
 def eth_min_bid_to_gwei(eth: str) -> str:
@@ -934,72 +1336,83 @@ def eth_min_bid_to_gwei(eth: str) -> str:
     return str(int(gwei))
 
 
-def apply_relays_lodestar(vc_content: str, relays: RelaysConfig) -> str:
-    """Add Lodestar VC builder URL / min-bid flags (v1.47.0+).
+def _apply_lodestar_build_factor(args: List[str], raw: str) -> Tuple[List[str], Optional[str]]:
+    """Map a build-factor token onto Lodestar selection / boost flags.
+
+    Matches eth-docker's Lodestar VC entrypoint:
+
+    * empty → leave selection alone (``--builder`` is already set)
+    * ``0`` / ``local`` → ``--builder.selection=executionalways``
+    * ``always`` / ``BUILDER_ALWAYS`` → ``--builder.selection=builderalways``
+    * ``maxprofit`` or a number → ``maxprofit`` plus ``--builder.boostFactor``
+
+    Args:
+        args: Normalized VC arguments.
+        raw: Factor token, or empty.
+
+    Returns:
+        ``(args, warning)``.
+    """
+    value, warning = map_epbs_build_factor(
+        raw, enabled=True, client="Lodestar", flag="--builder.boostFactor"
+    )
+    if value is None:
+        return args, warning
+    if value == "0":
+        args = upsert_flag(args, "--builder.selection", "executionalways")
+        args = remove_flags(args, "--builder.boostFactor")
+    elif value == BOOST_FACTOR_UINT64_MAX:
+        args = upsert_flag(args, "--builder.selection", "builderalways")
+        args = remove_flags(args, "--builder.boostFactor")
+    else:
+        args = upsert_flag(args, "--builder.selection", "maxprofit")
+        args = upsert_flag(args, "--builder.boostFactor", value)
+    return args, warning
+
+
+def apply_relays_lodestar(
+    vc_content: str,
+    relays: RelaysConfig,
+    build_factor: str = "",
+) -> Tuple[str, Optional[str]]:
+    """Add Lodestar VC builder URL / min-bid / build-factor flags (v1.47.0+).
 
     Args:
         vc_content: Current ``validator.service`` text.
         relays: Relays and optional min-bid from MEV-Boost. ``min_bid`` is ETH
             and is converted to integer Gwei for ``--builder.minBid``.
+        build_factor: Raw factor token. Empty leaves selection unchanged.
 
     Returns:
-        Unit text with ``--builder``, ``--builder.urls``, and optional
-        ``--builder.minBid``. Older Lodestar may reject these flags.
+        ``(unit, warning)``. Older Lodestar may reject these flags.
     """
     unit = parse_unit(vc_content)
     args = normalize_cli_args(unit.exec_args)
+    urls = _non_sidecar_urls(relays.urls)
+    if not urls:
+        raise EpbsError("No non-sidecar relay URLs to write as --builder.urls")
     args = upsert_flag(args, "--builder")
-    args = upsert_flag(args, "--builder.urls", ",".join(relays.urls))
+    args = upsert_flag(args, "--builder.urls", ",".join(urls))
     if relays.min_bid:
         args = upsert_flag(args, "--builder.minBid", eth_min_bid_to_gwei(relays.min_bid))
-    return _rebuild_unit(vc_content, args)
+    args, warning = _apply_lodestar_build_factor(args, build_factor)
+    return _rebuild_unit(vc_content, args), warning
 
 
 def teku_xbuilder_boost_factor(raw: str) -> Tuple[Optional[str], Optional[str]]:
     """Map a Teku build-factor token to ``--Xbuilder-boost-factor``.
 
-    Mirrors eth-docker's Teku VC entrypoint (``EPBS_BUILD_FACTOR``):
-
-    * empty → omit the flag (Teku's default is 90)
-    * ``0`` or ``local`` → ``0`` (prefer the local payload)
-    * ``always`` or Teku's BN value ``BUILDER_ALWAYS`` → uint64 max
-    * ``maxprofit`` → ``100``
-    * a positive integer → that value, capped at uint64 max
-
-    Leading zeros on a numeric token are stripped (``0100`` → ``100``).
-    Keywords are case-sensitive, matching the eth-docker script.
+    Thin wrapper around :func:`map_epbs_build_factor` so Teku and Prysm share
+    one token table. Empty omits the flag (Teku's default is 90).
 
     Args:
         raw: Factor from :func:`resolve_teku_build_factor`, or empty.
 
     Returns:
-        ``(flag_value, warning)``. ``flag_value`` is None when the flag
-        should be left unset. ``warning`` is set for an invalid token or a
-        value capped at uint64 max.
+        ``(flag_value, warning)``.
     """
-    text = (raw or "").strip()
-    if not text:
-        return None, None
-    if re.fullmatch(r"0*[0-9]+", text):
-        text = str(int(text))
-    if text in ("0", "local"):
-        return "0", None
-    if text in ("always", "BUILDER_ALWAYS"):
-        return TEKU_BOOST_FACTOR_UINT64_MAX, None
-    if text == "maxprofit":
-        return "100", None
-    if re.fullmatch(r"[1-9][0-9]{0,19}", text):
-        value = int(text)
-        if value > int(TEKU_BOOST_FACTOR_UINT64_MAX):
-            return (
-                TEKU_BOOST_FACTOR_UINT64_MAX,
-                f"Teku build factor {text} exceeds the 64-bit maximum; "
-                f"capping to {TEKU_BOOST_FACTOR_UINT64_MAX}",
-            )
-        return text, None
-    return None, (
-        f'Teku build factor has an invalid value of "{raw}"; '
-        "leaving --Xbuilder-boost-factor unset"
+    return map_epbs_build_factor(
+        raw, enabled=True, client="Teku", flag="--Xbuilder-boost-factor"
     )
 
 
@@ -1014,6 +1427,8 @@ def apply_relays_teku(
     ``--Xbuilder-min-bid`` is MEV-Boost ``-min-bid`` in integer Gwei.
     ``--Xbuilder-boost-factor`` is written only when *build_factor* maps to
     a value; an existing factor flag is left alone when the source is empty.
+    On Sepolia, ``--validators-builder-registration-default-gas-limit`` is
+    set to 200000000 when that flag is absent (Teku has no 200M schedule).
     Pre-Gloas ``--validators-builder-registration-default-enabled`` is kept.
 
     Args:
@@ -1030,14 +1445,7 @@ def apply_relays_teku(
     """
     unit = parse_unit(vc_content)
     args = normalize_cli_args(unit.exec_args)
-    urls: List[str] = []
-    seen = set()
-    for url in relays.urls:
-        cleaned = url.strip()
-        if not cleaned or is_sidecar_url(cleaned) or cleaned in seen:
-            continue
-        seen.add(cleaned)
-        urls.append(cleaned)
+    urls = _non_sidecar_urls(relays.urls)
     if not urls:
         raise EpbsError("No non-sidecar relay URLs to write as --Xbuilder-urls")
     args = upsert_flag(args, "--Xbuilder-urls", ",".join(urls))
@@ -1046,7 +1454,13 @@ def apply_relays_teku(
     factor, warning = teku_xbuilder_boost_factor(build_factor)
     if factor is not None:
         args = upsert_flag(args, "--Xbuilder-boost-factor", factor)
-    return _rebuild_unit(vc_content, args), warning
+    warnings: List[str] = []
+    if warning:
+        warnings.append(warning)
+    if relays.network == "sepolia" and not has_flag(args, TEKU_SEPOLIA_GAS_FLAG):
+        args = upsert_flag(args, TEKU_SEPOLIA_GAS_FLAG, SEPOLIA_GLOAS_GAS_LIMIT)
+        warnings.append(TEKU_SEPOLIA_GAS_NOTE)
+    return _rebuild_unit(vc_content, args), ("; ".join(warnings) or None)
 
 
 def _command_help(fs: EpbsFilesystem, argv: Sequence[str]) -> str:
@@ -1175,21 +1589,60 @@ def teku_supports_epbs(fs: EpbsFilesystem, unit_content: str) -> bool:
     return _version_meets_floor(text, TEKU_XBUILDER_MIN_VERSION)
 
 
-def resolve_teku_build_factor(fs: EpbsFilesystem) -> str:
-    """Return the raw Teku build-factor token, or empty when unset.
-
-    ``TEKU_EPBS_BUILD_FACTOR`` wins when set. Otherwise the beacon node's
-    ``--builder-bid-compare-factor`` is used when that unit is Teku (the
-    pre-Gloas factor eth-docker stores on the CL). There is no global
-    always/local/maxprofit menu; an empty result omits
-    ``--Xbuilder-boost-factor``.
+def _unit_version_text(fs: EpbsFilesystem, unit_content: str) -> str:
+    """Return ``binary --version`` text for the unit's first ExecStart token.
 
     Args:
-        fs: IO adapter used to read ``consensus.service``.
+        fs: IO adapter; ``run_version`` short-circuits subprocess in tests.
+        unit_content: Unit file text.
+
+    Returns:
+        Version command output, or ``""`` when the binary cannot be run.
     """
-    env = os.environ.get(TEKU_EPBS_BUILD_FACTOR_ENV, "").strip()
-    if env:
-        return env
+    args = normalize_cli_args(parse_unit(unit_content).exec_args)
+    if not args:
+        return ""
+    binary = args[0].split()[0]
+    return _binary_version(fs, [binary, "--version"])
+
+
+def prysm_supports_builder_cli(fs: EpbsFilesystem, unit_content: str) -> bool:
+    """True when the Prysm VC binary is at least v7.2.1 (builder CLI flags).
+
+    Uses :func:`_version_meets_floor` (the same floor check as Teku and
+    Caplin). An unreadable binary is False so prepare does not write flags
+    an older release will reject.
+
+    Args:
+        fs: IO adapter used to run ``prysm-validator --version``.
+        unit_content: ``validator.service`` text.
+    """
+    return _version_meets_floor(
+        _unit_version_text(fs, unit_content), PRYSM_BUILDER_CLI_MIN_VERSION
+    )
+
+
+def resolve_epbs_build_factor(fs: EpbsFilesystem, client: str) -> str:
+    """Return the raw build-factor token for *client*, or empty when unset.
+
+    Teku reads ``TEKU_EPBS_BUILD_FACTOR`` first, then the shared
+    ``EPBS_BUILD_FACTOR``, then the Teku beacon node's
+    ``--builder-bid-compare-factor``. Other clients read only
+    ``EPBS_BUILD_FACTOR``.
+
+    Args:
+        fs: IO adapter used to read ``consensus.service`` for Teku.
+        client: Validator client name (``Teku``, ``Prysm``, ``Lodestar``).
+    """
+    if client == "Teku":
+        specific = os.environ.get(TEKU_EPBS_BUILD_FACTOR_ENV, "").strip()
+        if specific:
+            return specific
+    shared = os.environ.get(EPBS_BUILD_FACTOR_ENV, "").strip()
+    if shared:
+        return shared
+    if client != "Teku":
+        return ""
     path = fs.unit_path("consensus")
     if not fs.exists(path):
         return ""
@@ -1199,6 +1652,29 @@ def resolve_teku_build_factor(fs: EpbsFilesystem) -> str:
         return ""
     args = normalize_cli_args(unit.exec_args)
     return get_flag_value(args, "--builder-bid-compare-factor").strip()
+
+
+def resolve_teku_build_factor(fs: EpbsFilesystem) -> str:
+    """Return the raw Teku build-factor token, or empty when unset.
+
+    Args:
+        fs: IO adapter used to read ``consensus.service``.
+    """
+    return resolve_epbs_build_factor(fs, "Teku")
+
+
+def prysm_has_builder_urls(vc_content: str) -> bool:
+    """Return True when ``--builder-urls`` includes a non-sidecar URL.
+
+    Args:
+        vc_content: ``validator.service`` text.
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    raw = get_flag_value(args, "--builder-urls")
+    if not raw:
+        return False
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    return any(not is_sidecar_url(part) for part in parts)
 
 
 def teku_has_builder_urls(vc_content: str) -> bool:
@@ -1654,24 +2130,53 @@ def _apply_vc_relays(
     vc_path, vc_content = _read_required_unit(fs, vc_key)
 
     if vc_name == "Prysm":
+        version_text = _unit_version_text(fs, vc_content)
+        builder_cli = _version_meets_floor(version_text, PRYSM_BUILDER_CLI_MIN_VERSION)
+        if not version_text.strip():
+            plan.warnings.append(
+                "Could not read prysm-validator --version; using the "
+                "proposer-settings path. Install Prysm "
+                f"{PRYSM_BUILDER_CLI_MIN_VERSION}+ for --builder-urls."
+            )
+        elif not builder_cli:
+            plan.warnings.append(
+                "Prysm binary is older than "
+                f"{PRYSM_BUILDER_CLI_MIN_VERSION}; builder CLI flags are not "
+                "written. Upgrade for --builder-urls and the Sepolia 200M "
+                "gas schedule."
+            )
         vc_args = normalize_cli_args(parse_unit(vc_content).exec_args)
         settings_path = (
             get_flag_value(vc_args, "--proposer-settings-file") or fs.prysm_settings_path
         )
         existing = fs.read_text(settings_path)
-        new_vc, settings_json, settings_path = apply_relays_prysm(
-            vc_content, relays, existing, settings_path=settings_path
+        factor_raw = resolve_epbs_build_factor(fs, "Prysm")
+        new_vc, settings_json, settings_path, factor_warning = apply_relays_prysm(
+            vc_content,
+            relays,
+            existing,
+            settings_path=settings_path,
+            builder_cli=builder_cli,
+            build_factor=factor_raw,
         )
+        if factor_warning:
+            plan.warnings.append(factor_warning)
         changed_vc = new_vc != vc_content
-        changed_json = (existing or "") != settings_json
+        changed_json = settings_json is not None and (existing or "") != settings_json
         if changed_vc:
             plan.actions.append(PlanAction(vc_path, _prysm_flag_action(vc_content, new_vc)))
-        plan.actions.append(
-            PlanAction(settings_path, "write default_config.builder.builders (schema v2)")
-        )
-        if relays.network == "sepolia":
+        if settings_json is not None:
+            detail = "write default_config.builder.builders (schema v2)"
+            if builder_cli:
+                detail += "; kept in sync with --builder-urls (file replaces CLI defaults)"
+            plan.actions.append(PlanAction(settings_path, detail))
+        if builder_cli and has_flag(
+            normalize_cli_args(parse_unit(new_vc).exec_args), "--suggested-gas-limit"
+        ):
+            plan.warnings.append(PRYSM_SUGGESTED_GAS_LIMIT_NOTE)
+        elif not builder_cli and relays.network == "sepolia":
             try:
-                written = json.loads(settings_json)
+                written = json.loads(settings_json or "{}")
             except json.JSONDecodeError:
                 written = {}
             if isinstance(written, dict) and not _prysm_explicit_gas_limit(written):
@@ -1679,10 +2184,11 @@ def _apply_vc_relays(
         if apply:
             if changed_vc:
                 _write_unit_if_changed(fs, vc_path, vc_content, new_vc, True)
-            writer = fs.write_data or _default_write_data
-            if existing:
-                _backup(settings_path, fs)
-            writer(settings_path, settings_json)
+            if settings_json is not None:
+                writer = fs.write_data or _default_write_data
+                if existing:
+                    _backup(settings_path, fs)
+                writer(settings_path, settings_json)
         if changed_vc or changed_json:
             plan.services_to_restart.append("validator")
         else:
@@ -1701,12 +2207,20 @@ def _apply_vc_relays(
                 "v1.47.0 or later."
             )
         else:
-            new_vc = apply_relays_lodestar(vc_content, relays)
+            factor_raw = resolve_epbs_build_factor(fs, "Lodestar")
+            new_vc, factor_warning = apply_relays_lodestar(
+                vc_content, relays, factor_raw
+            )
+            if factor_warning:
+                plan.warnings.append(factor_warning)
             if _write_unit_if_changed(fs, vc_path, vc_content, new_vc, apply):
+                detail = "add --builder --builder.urls --builder.minBid"
+                if factor_raw.strip():
+                    detail += " and build-factor selection"
                 plan.actions.append(
                     PlanAction(
                         vc_path,
-                        "add --builder --builder.urls --builder.minBid",
+                        detail,
                     )
                 )
                 plan.services_to_restart.append("validator")
@@ -1809,15 +2323,19 @@ def _apply_vc_relays(
 def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> MigrationPlan:
     """Copy mev-boost relays onto the VC. Keep the sidecar running.
 
-    Prysm writes proposer-settings JSON and VC flags. Lodestar gets
-    ``--builder.urls`` when the binary documents that flag. Teku gets
-    ``--Xbuilder-urls`` (plus min-bid and boost factor when known) when
-    ``teku --version`` is at least v26.9.0. Erigon-Caplin writes
-    ``caplin-builders.json`` when ``erigon --version`` is at least v3.7.1
-    and leaves ``--caplin.mev-relay-url`` in place. Other VCs are a
-    documented no-op. When Charon is installed, VC relay writes are skipped
-    (Charon ``--builder-api`` owns the MEV path until complete).
-    Beacon-node sidecar flags are not touched.
+    Prysm v7.2.1+ writes ``--builder-urls`` (and keeps an existing
+    proposer-settings file in sync). Older Prysm writes proposer-settings
+    JSON. Lodestar gets ``--builder.urls`` when the binary documents that
+    flag. Teku gets ``--Xbuilder-urls`` (plus min-bid, boost factor, and
+    on Sepolia an explicit 200M gas limit) when ``teku --version`` is at
+    least v26.9.0. Erigon-Caplin writes ``caplin-builders.json`` when
+    ``erigon --version`` is at least v3.7.1 and leaves
+    ``--caplin.mev-relay-url`` in place. Other VCs are a documented no-op.
+    When Charon is installed, VC relay writes are skipped (Charon
+    ``--builder-api`` owns the MEV path until complete). Beacon-node
+    sidecar flags stay through prepare on every network. The fork does
+    not strip them; after prepare, the operator runs complete once Gloas
+    is live. If prepare never runs, classic MEV stays.
 
     Args:
         fs: IO adapter; production defaults if omitted.
@@ -1843,10 +2361,13 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
         support=level,
         notes=SUPPORT_NOTES.get(vc_name, ""),
     )
-    plan.warnings.append(
-        "Do not stop MEV-Boost yet. Pre-Gloas proposals still use the sidecar."
-    )
     via_charon = charon_installed(fs)
+    plan.warnings.append(
+        "Do not stop MEV-Boost yet. Prepare only stages VC relays. "
+        "After Gloas on this network, run complete yourself to stop "
+        "MEV-Boost and strip the beacon-node sidecar. The fork does not "
+        "run complete for you."
+    )
     if via_charon:
         charon_path = fs.unit_path("charon")
         ch_content = fs.read_text(charon_path) or ""
@@ -1987,16 +2508,19 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         vc_content: ``validator.service`` text.
 
     Returns:
-        True for Prysm when ``default_config.builder.builders`` has a
-        non-sidecar URL, for Lodestar when ``--builder.urls`` is set and
-        is not the sidecar, for Teku when ``--Xbuilder-urls`` has a
-        non-sidecar URL and the binary is v26.9.0+, or for Erigon-Caplin
-        when ``caplin-builders.json`` has a non-sidecar ``builders[].url``
-        and the binary is v3.7.1+. Legacy ``builder.relays`` does not count.
-        Always False for placeholder clients, for a Teku binary older than
-        v26.9.0, and for an Erigon binary older than v3.7.1.
+        True for Prysm when ``--builder-urls`` or
+        ``default_config.builder.builders`` has a non-sidecar URL, for
+        Lodestar when ``--builder.urls`` is set and is not the sidecar, for
+        Teku when ``--Xbuilder-urls`` has a non-sidecar URL and the binary
+        is v26.9.0+, or for Erigon-Caplin when ``caplin-builders.json`` has
+        a non-sidecar ``builders[].url`` and the binary is v3.7.1+. Legacy
+        ``builder.relays`` does not count. Always False for placeholder
+        clients, for a Teku binary older than v26.9.0, and for an Erigon
+        binary older than v3.7.1.
     """
     if vc_name == "Prysm":
+        if prysm_has_builder_urls(vc_content):
+            return True
         data = _load_prysm_settings(fs, vc_content)
         return bool(data) and prysm_has_builder_list(data)
     if vc_name == "Lodestar":
@@ -2226,8 +2750,9 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
             loaded = _load_prysm_settings(fs, vc_content)
             if loaded and prysm_legacy_relays_only(loaded):
                 lines.append(
-                    "VC relays: no (legacy builder.relays is ignored on Prysm "
-                    "v7.2.0; re-run prepare)"
+                    "VC relays: no (legacy builder.relays is ignored; "
+                    "re-run prepare for --builder-urls on v"
+                    f"{PRYSM_BUILDER_CLI_MIN_VERSION}+)"
                 )
             else:
                 lines.append("VC relays: " + ("yes" if has_relays else "no"))

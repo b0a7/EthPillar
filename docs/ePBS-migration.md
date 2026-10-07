@@ -1,8 +1,8 @@
 # ePBS / Gloas MEV migration
 
-Gloas (the consensus-layer half of [Glamsterdam](https://docs.ethstaker.org/upgrades/glamsterdam-features/)) moves builder relay configuration **off MEV-Boost and onto the validator client**. Until that fork, proposals still go through the local MEV-Boost sidecar.
+Gloas (the consensus-layer half of [Glamsterdam](https://docs.ethstaker.org/upgrades/glamsterdam-features/)) can move builder relay configuration **off MEV-Boost and onto the validator client**. ePBS is optional: if you never run **Before Gloas Fork**, classic MEV-Boost stays as it is. The fork does not change that, and it does not run complete for you.
 
-EthPillar follows EthStaker’s two-step cutover so you do not drop MEV too early.
+If you do run **Before Gloas Fork** (prepare), that only stages validator relays beside MEV-Boost. After Gloas is live on that network, run **After Gloas Fork** (complete) yourself. Complete stops MEV-Boost and strips the beacon-node sidecar. Having both at once is the staging window between those two menu steps, not a setup to leave in place.
 
 Most operators only need [Solo node (everything on one host)](#solo-node-everything-on-one-host). Read the Charon or split-host sections only if they apply to you.
 
@@ -14,10 +14,10 @@ This section is the TUI only. You do not need to run Python yourself.
 
 ### The two steps (all setups)
 
-1. **Before the Gloas fork** — get relays onto the post-Gloas builder path. Keep MEV-Boost running. The beacon node still talks to local MEV-Boost.
-2. **After the Gloas fork** — stop MEV-Boost and remove the beacon-node setting that pointed at the local sidecar (`127.0.0.1:18550`).
+1. **Before Gloas Fork (prepare)** — stage relays onto the validator’s ePBS builder path. Keep MEV-Boost running. The beacon node still talks to the local sidecar.
+2. **After Gloas Fork (complete)** — after Gloas on that network, run this yourself. It stops MEV-Boost and removes the beacon-node sidecar (`127.0.0.1:18550`).
 
-Do **not** run the after-fork step until Gloas is live on your network. Doing it early means the beacon node no longer talks to MEV-Boost, and most validator clients cannot fetch relays themselves yet.
+The fork does not run **After Gloas Fork** for you. If you never prepared, classic MEV stays. If you did prepare, run complete after the fork; do not leave MEV-Boost and the VC builder flags both enabled past that point. Completing before the validator can use its builder list means the beacon node no longer talks to MEV-Boost.
 
 ---
 
@@ -33,9 +33,11 @@ That item appears when the local validator fully supports migration (**Prysm**, 
 
 | Menu item | When to use it |
 |-----------|----------------|
-| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork |
-| After Gloas Fork — Complete ePBS migration | After the Gloas fork |
+| Before Gloas Fork — Apply Relays to VC | Before the Gloas fork. Stages VC relays. MEV-Boost stays up. |
+| After Gloas Fork — Complete ePBS migration | After Gloas on this network. Run this yourself if you prepared. Stops MEV-Boost and strips the BN sidecar. |
 | Show current ePBS status | Anytime (read-only) |
+
+Those labels are the order. Prepare does not finish the migration. After the fork, **After Gloas Fork** is the step that does.
 
 #### What you see
 
@@ -54,19 +56,21 @@ That item appears when the local validator fully supports migration (**Prysm**, 
 
 | Your validator | What EthPillar does |
 |----------------|---------------------|
-| **Prysm** (v7.2.0+) | Writes each MEV-Boost relay URL into Prysm’s proposer settings as a builder (`default_config.builder.builders`). That list is what opts the validator into relay registration before Gloas and what Prysm calls after Gloas. Removes the deprecated `--enable-builder` flag. Restarts the validator if you agree. **Does not** stop MEV-Boost. |
+| **Prysm** (v7.2.1+) | Writes `--builder-urls`, `--builder-min-bid` (integer Gwei), and `--builder-boost-factor` on the validator (`EPBS_BUILD_FACTOR`: `0`/`local` → `0`, `always` → uint64 max, `maxprofit` → `100`). Removes deprecated `--enable-builder`. Leaves beacon `--http-mev-relay` in place on every network, including Sepolia, until you run **After Gloas Fork**. The fork does not strip it. v7.2.0 still uses the proposer-settings file instead of these flags. **Does not** stop MEV-Boost. |
 | **Lodestar** (v1.47.0+) | Writes `--builder.urls` and `--builder.minBid` on the validator. Older Lodestar builds skip this so the client can still start. **Does not** stop MEV-Boost. |
-| **Teku** (v26.9.0+) | Writes `--Xbuilder-urls` and `--Xbuilder-min-bid` (integer Gwei) on the validator client. `--Xbuilder-boost-factor` is written only when a Teku build factor is set (`TEKU_EPBS_BUILD_FACTOR`, or the beacon node's `--builder-bid-compare-factor`): `0`/`local` → `0`, `always`/`BUILDER_ALWAYS` → uint64 max, `maxprofit` → `100`, a number as-is. Unset leaves Teku's default (90). Older Teku builds skip this so the client can still start. **Does not** stop MEV-Boost. The beacon node keeps `--builder-endpoint` until the after-fork step. |
+| **Teku** (v26.9.0+) | Writes `--Xbuilder-urls` and `--Xbuilder-min-bid` (integer Gwei) on the validator client. `--Xbuilder-boost-factor` is written only when a build factor is set (`TEKU_EPBS_BUILD_FACTOR`, else `EPBS_BUILD_FACTOR`, else the beacon node's `--builder-bid-compare-factor`): `0`/`local` → `0`, `always`/`BUILDER_ALWAYS` → uint64 max, `maxprofit` → `100`, a number as-is. Unset leaves Teku's default (90). On Sepolia, sets `--validators-builder-registration-default-gas-limit=200000000` unless you already set that flag (Teku still has no 200M schedule). Older Teku builds skip this so the client can still start. **Does not** stop MEV-Boost. The beacon node keeps `--builder-endpoint` until the after-fork step. |
 | **Erigon-Caplin** (v3.7.1+) | Writes each MEV-Boost relay URL into `/var/lib/erigon/caplin-builders.json` (`builders[].url`, `max_execution_payment` `"0"`). Keeps `--caplin.mev-relay-url` pointed at local MEV-Boost. Older Erigon builds skip this so the node can still start. **Does not** stop MEV-Boost. v3.7.1 already schedules Sepolia's 200M gas limit; EthPillar does not set one. |
 | **Lighthouse, Nimbus, Grandine** | Not offered in the TUI. |
 
-After this step, the beacon node still uses local MEV-Boost. Pre-fork blocks keep working as they do today.
+After **Before Gloas Fork**, the beacon node still uses local MEV-Boost. That overlap is only the staging window. After Gloas on this network, run **After Gloas Fork** yourself. The fork does not strip the sidecar.
 
-If an older EthPillar already wrote `builder.relays` (and `--enable-builder`), run the before-fork step again. Prysm v7.2.0 ignores `relays`. Complete stays refused until `builders` is present.
+If an older EthPillar already wrote `builder.relays` (and `--enable-builder`), run the before-fork step again. Prysm ignores `relays`. Complete stays refused until `--builder-urls` or a `builders` list is present.
 
-**Sepolia gas limit (Prysm v7.2.0).** This Prysm release does not include the 200M gas-limit schedule, so Gloas proposals default to 60M. If you want 200M, add `"gas_limit": "200000000"` yourself under `default_config` (or under a key in `proposer_config`). EthPillar does not write that value, and it does not set it on mainnet or Hoodi. `--suggested-gas-limit` only affects pre-Gloas mev-boost registrations.
+**Sepolia gas limit.** Prysm v7.2.1 includes the 200M `GAS_LIMIT_SCHEDULE`, so EthPillar does not write a Prysm gas limit. `--suggested-gas-limit` overrides that schedule from Gloas onward and the client warns if it is set; remove it to follow the schedule. Prysm before v7.2.1 still defaults to 60M. Teku still has no 200M schedule: on Sepolia, prepare sets `--validators-builder-registration-default-gas-limit=200000000` unless that flag is already present.
 
-**After the Gloas fork** (after the first step succeeded)
+If you never run **Before Gloas Fork**, classic MEV-Boost stays; ePBS is optional. If you did prepare, run **After Gloas Fork** after the fork so both paths are not left on. No builders were onboarded on Sepolia before the fork (ACDT #99); a successful prepare does not mean a live builder bid will arrive.
+
+**After Gloas Fork (complete)** — run this yourself after Gloas, once prepare has succeeded
 
 - Stops and disables MEV-Boost (the service file stays on disk).
 - Removes the beacon-node setting that pointed at local MEV-Boost (`127.0.0.1:18550`). Other builder URLs are left alone.
@@ -188,13 +192,13 @@ Relays and `-min-bid` are read from `mevboost.service` (or from a migration file
 | Client | Behavior |
 |--------|----------|
 | **Obol Charon** (any signer VC, co-located) | Keeps `--builder-api`; **skips** VC relay writes. TUI entry hidden until Obol ships Gloas/ePBS support. |
-| **Prysm** (v7.2.0+, no Charon) | Writes `/var/lib/prysm_validator/proposer-settings.json` (schema version 2). Each MEV-Boost relay becomes `default_config.builder.builders[].url`. A nonempty `builders` list opts the key into pre-Gloas mev-boost registration and is the post-Gloas builder list. `auth_data` is omitted (Prysm signs the URL bytes). `max_execution_payment` is `"0"` (trustless-only: collateral-backed bid value counts; a builder’s promised execution-layer payment does not). MEV-Boost `-min-bid` (ETH) is copied to `builder.min_bid` as integer Gwei. Copies `--suggested-fee-recipient` into `fee_recipient` if missing. Sets `--proposer-settings-file` and **removes** deprecated `--enable-builder` (that flag only produces legacy pre-Gloas content and does not override v2 settings). Does not write `gas_limit` or `--suggested-gas-limit`. Drops legacy `builder.enabled`, `builder.relays`, and `builders_set` (v7.2.0 ignores `relays` and rejects unknown keys / `builders_set`). On Sepolia, warns that v7.2.0 defaults to a 60M gas limit unless you set `"gas_limit": "200000000"` yourself. Restarts `validator` if the TUI operator agrees. Does not stop MEV-Boost. |
-| **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. Older builds are skipped so the VC can still start. |
-| **Teku** (v26.9.0+, no Charon) | Adds VC flags `--Xbuilder-urls=<comma URLs>` and `--Xbuilder-min-bid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `teku --version` is at least 26.9.0. The flags are hidden, so prepare does not use `--help`. `--Xbuilder-boost-factor` is added from `TEKU_EPBS_BUILD_FACTOR` when that environment variable is set, otherwise from the Teku beacon node's `--builder-bid-compare-factor`: `0` or `local` → `0`, `always` or `BUILDER_ALWAYS` → `18446744073709551615`, `maxprofit` → `100`, a positive integer as-is (capped at uint64 max). Unset omits the flag (Teku default 90). Keeps `--validators-builder-registration-default-enabled` for pre-Gloas registration. EthPillar does not run an embedded Teku validator inside the beacon node; the flags are written on `validator.service` only. Older binaries are skipped. |
+| **Prysm** (v7.2.1+, no Charon) | Writes VC `--builder-urls` (non-sidecar relay URLs), `--builder-min-bid` (MEV-Boost ETH min-bid as integer Gwei), `--builder-max-execution-payment=0` (trustless-only), and `--builder-boost-factor` from `EPBS_BUILD_FACTOR` (`0`/`local` → `0`, `always` → `18446744073709551615`, `maxprofit` → `100`, a number capped at uint64 max). Unset omits the flag once builders are on (Prysm default 100) and drops a leftover `--builder-boost-factor=0` so that default applies. **Removes** deprecated `--enable-builder`. Does not create a proposer-settings file just for builders. If `--proposer-settings-file` is already set, the file is rewritten to schema v2 and kept in sync, because Prysm replaces CLI builder defaults with `default_config`. `pubkeys` is renamed to `builder_pubkeys`; `auth_data` and pubkeys are 0x-hex (legacy base64 is converted). Omitted `auth_data` defaults to the URL hostname; URLs without a hostname are rejected. Does not write `gas_limit`. On v7.2.1+, `--suggested-gas-limit` is left in place but warned: it overrides the gas schedule after Gloas. BN `--http-mev-relay` stays until complete on every network, including Sepolia. v7.2.0 (or an unreadable `--version`) falls back to writing the settings file and, on Sepolia, the old 60M gas note. |
+| **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. `EPBS_BUILD_FACTOR` maps to `--builder.selection` (`0`/`local` → `executionalways`, `always` → `builderalways`, `maxprofit` or a number → `maxprofit` plus `--builder.boostFactor`). Older builds are skipped so the VC can still start. |
+| **Teku** (v26.9.0+, no Charon) | Adds VC flags `--Xbuilder-urls=<comma URLs>` and `--Xbuilder-min-bid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `teku --version` is at least 26.9.0. The flags are hidden, so prepare does not use `--help`. `--Xbuilder-boost-factor` uses the same token map as Prysm, from `TEKU_EPBS_BUILD_FACTOR`, else `EPBS_BUILD_FACTOR`, else the beacon node's `--builder-bid-compare-factor`. Unset omits the flag (Teku default 90). On Sepolia, sets `--validators-builder-registration-default-gas-limit=200000000` when that flag is absent. Keeps `--validators-builder-registration-default-enabled` for pre-Gloas registration. EthPillar does not run an embedded Teku validator inside the beacon node; the flags are written on `validator.service` only. Older binaries are skipped. |
 | **Erigon-Caplin** (v3.7.1+, no separate VC) | Writes `/var/lib/erigon/caplin-builders.json` **only when** `erigon --version` is at least v3.7.1. Each MEV-Boost relay becomes `builders[].url` with `max_execution_payment` `"0"` (trustless-only). `min_bid` is MEV-Boost `-min-bid` in integer Gwei. Does **not** replace `--caplin.mev-relay-url` (that flag is a single pre-Gloas sidecar; Caplin v3.7.1 has no multi-relay CLI flag). Complete removes it, which switches Caplin from the legacy relay client to the Gloas dynamic builder client. A validator client still supplies builder URLs on each block-production request; this file is the list EthPillar requires before that switch. Older binaries are skipped. |
 | **Lighthouse, Nimbus, Grandine** | Documented no-op; units are not mutated. |
 
-BN sidecar flags stay until `complete`.
+Prepare leaves BN sidecar flags in place on every network. Fork activation does not remove them. After prepare, run `complete` yourself once Gloas is live on that network. MEV-Boost plus VC builder flags together is only the staging window between the two steps. If you never prepare, classic MEV stays.
 
 #### `complete`
 
@@ -226,7 +230,7 @@ Restart `consensus` after apply so the BN drops the sidecar URL. Integrated Capl
 
 | Validator | Support | Notes |
 |-----------|---------|--------|
-| Prysm v7.2.0+ | **full** | TUI + CLI. Relay URLs in proposer-settings `default_config.builder.builders` (schema v2). `--enable-builder` is removed on prepare. BN `--http-mev-relay` until complete. A file that only has legacy `builder.relays` is not treated as prepared. |
+| Prysm v7.2.1+ | **full** | TUI + CLI. `--builder-urls` / `--builder-min-bid` / `--builder-boost-factor` when `prysm-validator --version` is at least v7.2.1. v7.2.0 uses proposer-settings `builders`. `--enable-builder` is removed on prepare. BN `--http-mev-relay` stays until complete on every network. A file that only has legacy `builder.relays` is not treated as prepared. |
 | Lodestar v1.47.0+ | **full** | TUI + CLI. VC `--builder.urls` / `--builder.minBid` written only if `--help` lists them. |
 | Teku v26.9.0+ | **full** | TUI + CLI. Separate VC (no embedded validator on the beacon node). Prepare writes `--Xbuilder-urls` / `--Xbuilder-min-bid` when `teku --version` is at least 26.9.0. Optional `--Xbuilder-boost-factor` from `TEKU_EPBS_BUILD_FACTOR` or BN `--builder-bid-compare-factor`. BN `--builder-endpoint` stays until complete. |
 | Erigon-Caplin v3.7.1+ | **full** | TUI + CLI. Integrated client (no `validator.service`). Prepare writes `/var/lib/erigon/caplin-builders.json` when `erigon --version` is at least v3.7.1. `--caplin.mev-relay-url` stays until complete. QUIC is `--caplin.discovery.quicport` on UDP 9001 (`CL_P2P_PORT_2`, eth-docker #2836); Caplin's native QUIC default is UDP 4001, which collides with its native TCP port. |
@@ -241,17 +245,13 @@ After import (or co-located prepare), Prysm’s journal may show **both**:
 - `Proposer settings loaded from default` — from `--suggested-fee-recipient`
 - `Proposer settings loaded from file` — from `--proposer-settings-file`
 
-That pair is expected. Builder URLs live in the JSON at `default_config.builder.builders` (each entry’s `url`). A legacy `builder.relays` array is ignored by Prysm v7.2.0. Seeing “loaded from default” does **not** mean import failed. A startup warning about `--enable-builder` means that deprecated flag is still on the unit; prepare removes it.
+On v7.2.1+ the builder list is `--builder-urls` on the process. A settings file is only present when one was already configured; its `default_config` replaces the CLI builder defaults, so prepare keeps the file in sync. `builder_pubkeys` and `auth_data` are 0x-hex. A legacy `builder.relays` array is ignored. Seeing “loaded from default” does **not** mean import failed. A startup warning about `--enable-builder` means that deprecated flag is still on the unit; prepare removes it. A warning about `--suggested-gas-limit` means that flag overrides the post-Gloas gas schedule.
 
-Confirm the import from the running process flags and the JSON file, not from that journal line alone:
+Confirm the import from the running process flags:
 
 ```bash
-# journal: both "from default" and "from file" is OK
-sudo journalctl -u validator --no-pager -n 80 | grep -i "proposer settings"
-
 pid=$(sudo systemctl show -p MainPID --value validator)
 tr '\0' ' ' < /proc/${pid}/cmdline
-# expect --proposer-settings-file=... and no --enable-builder
-sudo cat /var/lib/prysm_validator/proposer-settings.json
-# builder URLs are under default_config.builder.builders[].url
+# v7.2.1+: expect --builder-urls=... and no --enable-builder
+# v7.2.0 fallback: expect --proposer-settings-file=... and no --enable-builder
 ```

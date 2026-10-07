@@ -127,12 +127,18 @@ assert_vc_process_has_epbs_flags() {
                 echo "  cmdline: $cmdline"
                 exit 1
             fi
-            if [[ "$cmdline" != *"--proposer-settings-file"* ]]; then
-                echo "❌ running VC is missing --proposer-settings-file"
+            # v7.2.1+ uses --builder-urls. Older binaries keep the settings file.
+            if [[ "$cmdline" != *"--builder-urls"* && "$cmdline" != *"--proposer-settings-file"* ]]; then
+                echo "❌ running VC is missing --builder-urls and --proposer-settings-file"
                 echo "  cmdline: $cmdline"
                 exit 1
             fi
-            echo "✅ running VC pid=${pid} has --proposer-settings-file and no --enable-builder"
+            if [[ "$cmdline" == *"--builder-urls"* && "$cmdline" == *"$SIDECAR"* ]]; then
+                echo "❌ running VC --builder-urls still points at the MEV-Boost sidecar"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            echo "✅ running VC pid=${pid} has ePBS builder config and no --enable-builder"
             ;;
         Lodestar)
             if [[ "$cmdline" != *"--builder.urls"* ]]; then
@@ -168,8 +174,18 @@ assert_prepare_units() {
     case "$VC_CLIENT" in
         Prysm)
             assert_unit_lacks "$VC_UNIT" "--enable-builder"
-            assert_unit_has "$VC_UNIT" "--proposer-settings-file"
-            assert_proposer_settings
+            if grep -qF -- "--builder-urls" "$VC_UNIT"; then
+                assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+                if ! grep -qE -- '--builder-min-bid=[0-9]+' "$VC_UNIT"; then
+                    echo "❌ Prysm VC --builder-min-bid must be integer Gwei (not ETH decimal)"
+                    cat "$VC_UNIT"
+                    exit 1
+                fi
+                echo "✅ Prysm v7.2.1+ --builder-urls (no live-bid check)"
+            else
+                assert_unit_has "$VC_UNIT" "--proposer-settings-file"
+                assert_proposer_settings
+            fi
             ;;
         Lodestar)
             assert_unit_has "$VC_UNIT" "--builder"
@@ -200,8 +216,12 @@ assert_complete_units() {
     case "$VC_CLIENT" in
         Prysm)
             assert_unit_lacks "$VC_UNIT" "--enable-builder"
-            assert_unit_has "$VC_UNIT" "--proposer-settings-file"
-            assert_proposer_settings
+            if grep -qF -- "--builder-urls" "$VC_UNIT"; then
+                assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            else
+                assert_unit_has "$VC_UNIT" "--proposer-settings-file"
+                assert_proposer_settings
+            fi
             ;;
         Lodestar)
             assert_unit_has "$VC_UNIT" "--builder.urls"
@@ -236,6 +256,16 @@ PY
     sudo cp "$tmp" "$VC_UNIT"
     rm -f "$tmp"
     echo "✅ test-only: added --keymanager so Lodestar can start with an empty wallet"
+}
+
+# Teku fatals when --validator-keys=DIR:DIR points at a missing path.
+# Test-only: empty-wallet smoke; not part of operator prepare/complete.
+enable_teku_empty_wallet() {
+    local keys_dir="/var/lib/teku_validator/validator_keys"
+    sudo mkdir -p "$keys_dir"
+    sudo chown validator:validator "$keys_dir"
+    sudo chmod 700 "$keys_dir"
+    echo "✅ test-only: created empty $keys_dir so Teku can start without keystores"
 }
 
 # daemon-reload then restart each listed systemd unit (exits 1 on failure).
@@ -385,6 +415,8 @@ echo "✅ prepare: VC ePBS flags written; BN sidecar and MEV-Boost still present
 
 if [[ "$VC_CLIENT" == "Lodestar" ]]; then
     enable_lodestar_empty_wallet
+elif [[ "$VC_CLIENT" == "Teku" ]]; then
+    enable_teku_empty_wallet
 fi
 
 reload_and_restart validator
