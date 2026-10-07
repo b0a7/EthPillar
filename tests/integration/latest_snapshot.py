@@ -42,14 +42,20 @@ def _release_info_module():
     return get_client_release_info
 
 
-def write_snapshot(path: str = SNAPSHOT_PATH) -> dict[str, str]:
-    """Record LATEST release tag per client and return the snapshot mapping."""
+def write_snapshot(path: str = SNAPSHOT_PATH, network: str | None = None) -> dict[str, str]:
+    """Record LATEST release tag per client and return the snapshot mapping.
+
+    When *network* is set (e.g. ``sepolia``), network-aware LATEST remapping
+    applies so the snapshot matches what deploy will install (Gloas RC, etc.).
+    """
     get_client_release_info = _release_info_module()
     snapshot: dict[str, str] = {}
     for client in _SNAPSHOT_CLIENTS:
         key = client.lower()
         try:
-            snapshot[key] = get_client_release_info(client, "LATEST")["version"]
+            snapshot[key] = get_client_release_info(
+                client, "LATEST", network=network
+            )["version"]
         except Exception:
             continue
     with open(path, "w", encoding="utf-8") as handle:

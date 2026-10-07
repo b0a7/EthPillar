@@ -1253,9 +1253,11 @@ def get_client_release_info(
         net = (network or _detect_runtime_network() or "").strip().lower()
         preferred = preferred_install_tag(client, net, info.get("version", ""))
         if preferred:
+            # stderr: release_info CLI stdout must stay pure JSON for jq callers.
             print(
                 f"WARNING: GitHub LATEST {client} {info.get('version')} is not compatible with "
                 f"{net}; resolving {preferred} instead",
+                file=sys.stderr,
                 flush=True,
             )
             info = module.get_release_info(preferred, arch_amd64)

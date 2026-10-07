@@ -372,8 +372,10 @@ def run_install(args: Any, fee_address: str):
             print(f"  Checkpoint sync via upstream: {checkpoint_url}")
 
     try:
-        # Snapshot official LATEST first (override file is not written yet).
-        write_snapshot(SNAPSHOT_PATH)
+        # Snapshot install-time LATEST (network-aware remapping, e.g. Sepolia Gloas).
+        # Override file is not written yet so discovery sees real GitHub tags.
+        write_snapshot(SNAPSHOT_PATH, network=args.network)
+        os.environ[LATEST_SNAPSHOT_ENV] = SNAPSHOT_PATH
         if getattr(args, "test_updates", False):
             clients = normalize_deploy_clients(
                 args.ec,
@@ -1098,6 +1100,7 @@ def verify(args: Any):
         ["bash", "/ethpillar/tests/integration/check_client_versions.sh"],
         capture_output=True,
         text=True,
+        env=integration_subprocess_env(),
     )
     if version_check.stdout:
         print(version_check.stdout, end="", flush=True)
