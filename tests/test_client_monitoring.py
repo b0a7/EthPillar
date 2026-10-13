@@ -4,6 +4,7 @@ from pathlib import Path
 
 from manage.client_monitoring import (
     DashboardSpec,
+    TemplatePin,
     detect_clients,
     ensure_client_scrapes,
     metrics_port_from_unit,
@@ -136,3 +137,62 @@ def test_rewrite_dashboard_datasource_and_lodestar():
     assert rewritten["panels"][0]["expr"] == "execution"
     assert rewritten["templating"]["list"][3]["query"] == "consensus"
     assert rewritten["templating"]["list"][4]["query"] == "validator"
+
+
+def test_rewrite_pins_ethrex_job_and_grandine_instance():
+    ethrex = rewrite_dashboard(
+        {
+            "templating": {
+                "list": [
+                    {
+                        "name": "job",
+                        "current": {"text": "ethrex L1", "value": "ethrex L1"},
+                        "query": {"query": "label_values(up, job)"},
+                    },
+                    {
+                        "multi": True,
+                        "name": "instance",
+                        "regex": "/^(?<text>[^:]+)/",
+                        "definition": "label_values(eth_con_spec_config_name,instance)",
+                        "query": {"query": "label_values(eth_con_spec_config_name,instance)"},
+                    },
+                ]
+            }
+        },
+        DashboardSpec(
+            filename="ethrex_l1_perf.json",
+            template_pins=(
+                TemplatePin(name="job", current="ethrex"),
+                TemplatePin(
+                    name="instance",
+                    current="execution",
+                    query='label_values(up{job="ethrex"},instance)',
+                    clear_regex=True,
+                ),
+            ),
+        ),
+    )
+    job, instance = ethrex["templating"]["list"]
+    assert job["current"]["value"] == "ethrex"
+    assert instance["current"]["value"] == ["execution"]
+    assert instance["query"]["query"] == 'label_values(up{job="ethrex"},instance)'
+    assert instance["regex"] == ""
+
+    grandine = rewrite_dashboard(
+        {
+            "templating": {
+                "list": [
+                    {
+                        "multi": True,
+                        "name": "Instance",
+                        "current": {"text": ["0.0.0.0:5061"], "value": ["0.0.0.0:5061"]},
+                    }
+                ]
+            }
+        },
+        DashboardSpec(
+            filename="grandine_dashboard.json",
+            template_pins=(TemplatePin(name="Instance", current="consensus"),),
+        ),
+    )
+    assert grandine["templating"]["list"][0]["current"]["value"] == ["consensus"]

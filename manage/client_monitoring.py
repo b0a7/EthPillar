@@ -57,6 +57,20 @@ _DS_TOKENS = {
 
 
 @dataclass(frozen=True)
+class TemplatePin:
+    """Override one Grafana template variable so panels query scraped series.
+
+    Upstream dashboards often ship with another lab's job name or instance
+    (Ethrex defaults to ``ethrex L1``; Grandine defaults to ``0.0.0.0:5061``).
+    """
+
+    name: str
+    current: str = ""
+    query: str = ""
+    clear_regex: bool = False
+
+
+@dataclass(frozen=True)
 class DashboardSpec:
     """One Grafana dashboard JSON to download for a client."""
 
@@ -67,6 +81,7 @@ class DashboardSpec:
     uid: str = ""
     instance_label: str = ""
     lodestar_instances: bool = False
+    template_pins: Tuple[TemplatePin, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -159,6 +174,17 @@ _EXECUTION_CLIENTS: Tuple[ClientScrape, ...] = (
             DashboardSpec(
                 filename="ethrex_l1_perf.json",
                 url="https://raw.githubusercontent.com/lambdaclass/ethrex/refs/heads/main/metrics/provisioning/grafana/dashboards/common_dashboards/ethrex_l1_perf.json",
+                # Upstream job default is "ethrex L1", and the instance variable
+                # is label_values(eth_con_spec_config_name), which an EL does not export.
+                template_pins=(
+                    TemplatePin(name="job", current="ethrex"),
+                    TemplatePin(
+                        name="instance",
+                        current="execution",
+                        query='label_values(up{job="ethrex"},instance)',
+                        clear_regex=True,
+                    ),
+                ),
             ),
         ),
     ),
@@ -266,6 +292,8 @@ _CONSENSUS_CLIENTS: Tuple[ClientScrape, ...] = (
                 filename="grandine_dashboard.json",
                 url="https://raw.githubusercontent.com/grandinetech/grandine/refs/heads/master/prometheus_metrics/dashboards/overview.json",
                 title="Grandine Dashboard",
+                # Upstream opens on instance 0.0.0.0:5061 (Grandine's old default port).
+                template_pins=(TemplatePin(name="Instance", current="consensus"),),
             ),
         ),
     ),
@@ -534,7 +562,37 @@ def rewrite_dashboard(payload: Union[dict, list], spec: DashboardSpec) -> Union[
                     items[3]["query"] = "consensus"
                 if len(items) > 4 and isinstance(items[4], dict):
                     items[4]["query"] = "validator"
+        _pin_template_variables(rewritten, spec.template_pins)
     return rewritten
+
+
+def _pin_template_variables(dashboard: dict, pins: Sequence[TemplatePin]) -> None:
+    """Set template variable defaults so panels match EthPillar scrape labels."""
+    if not pins:
+        return
+    templating = dashboard.get("templating")
+    items = templating.get("list") if isinstance(templating, dict) else None
+    if not isinstance(items, list):
+        return
+    by_name = {pin.name: pin for pin in pins}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        pin = by_name.get(item.get("name"))
+        if pin is None:
+            continue
+        if pin.current:
+            selected = [pin.current] if item.get("multi") else pin.current
+            item["current"] = {"text": selected, "value": selected, "selected": True}
+        if pin.query:
+            item["definition"] = pin.query
+            query = item.get("query")
+            if isinstance(query, dict):
+                query["query"] = pin.query
+            else:
+                item["query"] = pin.query
+        if pin.clear_regex:
+            item["regex"] = ""
 
 
 def grafana_download_url(dashboard_id: int) -> str:
