@@ -8,7 +8,8 @@ from deploy.service_generators import form_exec_start, generate_systemd_template
 def generate_grandine_bn_service(eth_network: str, sync_url: str, jwtsecret_path: str,
                                  cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
                                  fee_parameters: str = '', mev_parameters: str = '',
-                                 network_override: Optional[str] = None, is_integrated_vc: bool = False) -> str:
+                                 network_override: Optional[str] = None, is_integrated_vc: bool = False,
+                                 web3signer_url: str = "") -> str:
     """Generate Grandine beacon node systemd service file content.
 
     Args:
@@ -23,6 +24,8 @@ def generate_grandine_bn_service(eth_network: str, sync_url: str, jwtsecret_path
         mev_parameters: Optional MEV relay parameters
         network_override: Optional network flag override
         is_integrated_vc: Whether the validator is integrated
+        web3signer_url: When set, Grandine loads validators from Web3Signer
+            instead of a local keystore directory.
 
     Returns:
         Service file content as a string
@@ -33,7 +36,7 @@ def generate_grandine_bn_service(eth_network: str, sync_url: str, jwtsecret_path
         _network = f'--network={eth_network}'
 
     _keystore_args = ""
-    if is_integrated_vc:
+    if is_integrated_vc and not web3signer_url:
         _keystore_args = f"--keystore-dir={BASE_DATA_DIR}/grandine/validator_keys --keystore-password-dir={BASE_DATA_DIR}/grandine/validator_keys"
 
     _args = [
@@ -60,6 +63,8 @@ def generate_grandine_bn_service(eth_network: str, sync_url: str, jwtsecret_path
         _args.append(mev_parameters.strip())
     if _keystore_args:
         _args.append(_keystore_args.strip())
+    if web3signer_url:
+        _args.append(f"--web3signer-api-urls={web3signer_url.rstrip('/')}")
 
     _exec_start = form_exec_start(_args)
 
@@ -70,7 +75,8 @@ def generate_grandine_bn_service(eth_network: str, sync_url: str, jwtsecret_path
         extra_env=None,
         working_dir=None,
         timeout_stop_sec=900,
-        limit_nofile=None
+        limit_nofile=None,
+        unit_after=["web3signer.service"] if web3signer_url else None,
     )
 
 
@@ -157,15 +163,15 @@ def download_grandine(eth_network: str) -> str:
 def install_grandine_bn(eth_network: str, checkpoint_sync_url: str, jwtsecret_path: str,
                          cl_rest_port: str, cl_p2p_port: str, cl_p2p_port_2: str, cl_max_peer_count: str,
                          fee_parameters: str = '', mev_parameters: str = '', is_integrated_vc: bool = False,
-                         network_override: Optional[str] = None) -> str:
+                         network_override: Optional[str] = None, web3signer_url: str = "") -> str:
     service_content = generate_grandine_bn_service(
         eth_network, checkpoint_sync_url, jwtsecret_path,
         cl_rest_port, cl_p2p_port, cl_p2p_port_2, cl_max_peer_count,
         fee_parameters, mev_parameters, network_override=network_override,
-        is_integrated_vc=is_integrated_vc
+        is_integrated_vc=is_integrated_vc, web3signer_url=web3signer_url,
     )
     
-    if is_integrated_vc:
+    if is_integrated_vc and not web3signer_url:
         subprocess.run(["sudo", "mkdir", "-p", "/var/lib/grandine/validator_keys"], check=True)
         subprocess.run(["sudo", "chown", "-R", "consensus:consensus", "/var/lib/grandine/validator_keys"], check=True)
         subprocess.run(["sudo", "chmod", "700", "/var/lib/grandine/validator_keys"], check=True)

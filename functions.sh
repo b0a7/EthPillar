@@ -190,6 +190,25 @@ getCharonCurrentVersion() {
   fi
 }
 
+# Sets VERSION from ``web3signer --version``.
+getWeb3SignerCurrentVersion() {
+  local signer_svc="${WEB3SIGNER_SERVICE_FILE:-/etc/systemd/system/web3signer.service}"
+  local bin output
+  VERSION=""
+  INSTALLED_COMMIT=""
+  bin=$(get_systemd_exec_path "$signer_svc" "/usr/local/bin/web3signer/bin/web3signer")
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    VERSION="Unable to query Web3Signer version from binary."
+    return 1
+  fi
+  output=$("$bin" --version 2>&1 || true)
+  VERSION=$(grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$output" | head -1 || true)
+  if [[ -z "$VERSION" ]]; then
+    VERSION="Unable to query Web3Signer version from binary."
+    return 1
+  fi
+}
+
 # Parse ``mev-boost --version`` stdout (e.g. ``mev-boost version v1.8.0``).
 # Prefer a v-prefixed semver so greedy optional-v sed cannot collapse v1.8.0 to 8.0.
 parse_mevboost_version() {
@@ -855,6 +874,14 @@ load_client_versions() {
             [[ -z "$VERSION" ]] && VERSION="unknown"
             fetch_latest_release "charon" --strip-v || {
                 echo "charon: could not resolve LATEST"
+                return 1
+            }
+            ;;
+        web3signer)
+            getWeb3SignerCurrentVersion || true
+            [[ -z "$VERSION" ]] && VERSION="unknown"
+            fetch_latest_release "web3signer" --strip-v || {
+                echo "web3signer: could not resolve LATEST"
                 return 1
             }
             ;;

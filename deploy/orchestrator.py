@@ -14,6 +14,7 @@ import deploy.lodestar as lodestar
 import deploy.grandine as grandine
 import deploy.mevboost as mevboost
 import deploy.charon as charon
+import deploy.web3signer as web3signer
 import deploy.prysm as prysm
 from deploy.common import ephemery_network_override
 
@@ -221,9 +222,25 @@ def is_valid_combination(ec: str, cc: str) -> bool:
         return True
     return False
 
+def _with_signer_params(extra_params: str, vc_name: Optional[str], web3signer_enabled: bool) -> str:
+    """Append Web3Signer remote-signer flags for a standalone VC."""
+    if not web3signer_enabled or not vc_name:
+        return extra_params
+    signer = web3signer.signer_flags_for_vc(vc_name)
+    if not signer:
+        return extra_params
+    return f"{extra_params} {signer}".strip() if extra_params else signer
+
+
 def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Optional[str], vc_name: Optional[str], flags: Dict[str, bool], params: Dict[str, str], env_vars: Dict[str, str]):
     """Orchestrate the installation by calling the appropriate deploy modules."""
     import deploy.common as common
+
+    if flags.get("charon") and flags.get("web3signer"):
+        raise ValueError(
+            "Web3Signer and Obol Charon cannot be combined. "
+            "Install one signing mode."
+        )
 
     fee_recipient = params.get('fee_recipient', '')
     graffiti = params.get('graffiti', '')
@@ -324,7 +341,12 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             mev_params = '--builder-url=http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = grandine.download_grandine(network)
             is_integrated_vc = (vc_name == 'Grandine (integrated)' and flags['validator'])
-            cl_path = grandine.install_grandine_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, is_integrated_vc=is_integrated_vc, network_override=cl_override)
+            grandine_signer_url = (
+                web3signer.DEFAULT_SIGNER_URL
+                if flags.get("web3signer") and is_integrated_vc
+                else ""
+            )
+            cl_path = grandine.install_grandine_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, is_integrated_vc=is_integrated_vc, network_override=cl_override, web3signer_url=grandine_signer_url)
         elif cc_name == 'Prysm':
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             mev_params = '--http-mev-relay=http://127.0.0.1:18550' if flags['mevboost'] else ''
@@ -332,6 +354,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             cl_path = prysm.install_prysm_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, network_override=cl_override)
 
     charon_enabled = bool(flags.get('charon'))
+    web3signer_enabled = bool(flags.get('web3signer'))
     if charon_enabled and vc_name == "Grandine (integrated)":
         raise ValueError("Obol Charon is incompatible with Grandine (integrated). Select a standalone VC.")
     if charon_enabled and vc_name == CHARON_VC_LABEL:
@@ -374,6 +397,10 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             feature_set_enable="json_requests" if cc_name == "Nimbus" else "",
         )
 
+    web3signer_ver, web3signer_path = "", ""
+    if web3signer_enabled and not flags.get("switch_client"):
+        web3signer_ver, web3signer_path = web3signer.install_web3signer(network)
+
     val_path = ""
     val_ver = ""
     use_builder = bool(flags.get('builder_api') or flags.get('mevboost'))
@@ -385,31 +412,46 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             if charon_enabled
             else upstream_bn
         )
-        # Same-host ordering: start Charon before the VC talks to :3600.
-        vc_unit_after = ["charon.service"] if charon_enabled else None
+        # Same-host ordering: start Charon or Web3Signer before the VC.
+        vc_unit_after = []
+        if charon_enabled:
+            vc_unit_after.append("charon.service")
+        if web3signer_enabled:
+            vc_unit_after.append("web3signer.service")
+        vc_unit_after = vc_unit_after or None
 
         if vc_name == 'Lighthouse':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lighthouse.download_lighthouse(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--builder-proposals' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--builder-proposals' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beacon-nodes={addr}'
             val_path = lighthouse.install_lighthouse_vc(
                 v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
                 unit_after=vc_unit_after, network_override=vc_override,
             )
+            if web3signer_enabled:
+                web3signer.ensure_lighthouse_definitions_file()
         elif vc_name == 'Nimbus':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else nimbus.download_nimbus(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--payload-builder=true' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--payload-builder=true' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beacon-node={addr}'
             val_path = nimbus.install_nimbus_vc(
@@ -420,10 +462,14 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else teku.download_teku(network)
             val_ver = v_ver
             fee_params = f'--validators-proposer-default-fee-recipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--validators-builder-registration-default-enabled=true' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--validators-builder-registration-default-enabled=true' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beacon-node-api-endpoint={addr}'
             val_path = teku.install_teku_vc(
@@ -434,10 +480,14 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lodestar.download_lodestar(network)
             val_ver = v_ver
             fee_params = f'--suggestedFeeRecipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--builder' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--builder' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beaconNodes={addr}'
             val_path = lodestar.install_lodestar_vc(
@@ -448,10 +498,14 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else prysm.download_prysm(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--enable-builder' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--enable-builder' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beacon-rest-api-provider={addr}'
             # gRPC beacon endpoint only when the local BN is also Prysm and Charon is off.
@@ -499,4 +553,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
         charon_enabled=charon_enabled,
         charon_version=charon_ver,
         charon_service_path=charon_path,
+        web3signer_enabled=web3signer_enabled,
+        web3signer_version=web3signer_ver,
+        web3signer_service_path=web3signer_path,
     )

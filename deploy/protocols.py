@@ -104,6 +104,18 @@ CHARON_GENERATORS: Dict[str, List[str]] = {
     "charon": ["generate_charon_service"],
 }
 
+@runtime_checkable
+class Web3SignerClientModule(Protocol):
+    """Consensys Web3Signer remote-signer module contract."""
+
+    def get_release_info(self, version_tag: str, arch_amd64: bool) -> Dict[str, Any]: ...
+    def generate_web3signer_service(self, eth_network: str) -> str: ...
+
+
+WEB3SIGNER_GENERATORS: Dict[str, List[str]] = {
+    "web3signer": ["generate_web3signer_service"],
+}
+
 CONSENSUS_BEACON_GENERATORS: Dict[str, List[str]] = {
     "lighthouse": ["generate_lighthouse_bn_service"],
     "nimbus": ["generate_nimbus_bn_service"],
@@ -125,6 +137,7 @@ ALL_CLIENT_MODULES: Dict[str, List[str]] = {
     **{k: v for k, v in EXECUTION_CLIENT_GENERATORS.items()},
     **MEVBOOST_GENERATORS,
     **CHARON_GENERATORS,
+    **WEB3SIGNER_GENERATORS,
     **{k: CONSENSUS_BEACON_GENERATORS[k] + CONSENSUS_VALIDATOR_GENERATORS.get(k, [])
        for k in CONSENSUS_BEACON_GENERATORS},
 }

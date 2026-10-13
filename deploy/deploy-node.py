@@ -58,6 +58,13 @@ parser.add_argument(
     default=False,
     help="Install Obol Charon DVT middleware and point the VC at Charon (:3600)",
 )
+parser.add_argument(
+    "--with_web3signer",
+    action="store_true",
+    default=False,
+    help="Install Web3Signer and point the VC at it for remote signing (localhost :9000). "
+    "The beacon node URL is unchanged. Not compatible with --with_charon.",
+)
 parser.add_argument("--jwtsecret", type=str, default=JWTSECRET_PATH)
 parser.add_argument("--graffiti", type=str, default=GRAFFITI)
 parser.add_argument("--fee_address", type=str, default="")
@@ -112,6 +119,13 @@ else:
     flags = resolve_role_flags(role, eth_network)
 
 flags["charon"] = bool(args.with_charon)
+flags["web3signer"] = bool(args.with_web3signer)
+if flags["charon"] and flags["web3signer"]:
+    print(
+        "ERROR: Web3Signer and Obol Charon cannot be combined. Install one signing mode.",
+        file=sys.stderr,
+    )
+    exit(1)
 # Consensus switch: apply Teku/Nimbus companion flags when Charon is already installed.
 if args.switch_client == "consensus" and not flags["charon"]:
     if os.path.isfile("/etc/systemd/system/charon.service"):
@@ -311,6 +325,25 @@ else:
                 vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
             else:
                 vc_name = cc_name
+
+def maybe_enable_web3signer() -> None:
+    """Ask once whether new validator keys should live in Web3Signer."""
+    if not flags.get("validator") or flags.get("charon") or flags.get("web3signer"):
+        return
+    if skip_prompts:
+        return
+    choice = SelectionMenu.get_selection(
+        ["No", "Yes"],
+        title="Web3Signer",
+        subtitle=(
+            "Keep validator keys in Web3Signer on this machine?\n"
+            "The validator client still uses the beacon node. Only signatures go to the signer."
+        ),
+        show_exit_option=False,
+    )
+    flags["web3signer"] = choice == 1
+
+maybe_enable_web3signer()
 
 # 4. Role-specific prompts
 beacon_node_address = args.vc_only_bn_address

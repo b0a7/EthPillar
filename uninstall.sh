@@ -11,6 +11,7 @@ function promptYesNo(){
   		uninstallCL
   		uninstallEL
   		uninstallCharon
+  		uninstallWeb3Signer
   		uninstallVC
   		uninstallMevboost
 		cleanupMisc
@@ -154,6 +155,17 @@ function uninstallEL(){
 		sudo rm -rf /var/lib/ethrex
 
 		sudo userdel execution
+	fi
+}
+
+function uninstallWeb3Signer(){
+	if [[ -f /etc/systemd/system/web3signer.service ]]; then
+		sudo systemctl stop web3signer
+		sudo systemctl disable web3signer
+		sudo rm -f /etc/systemd/system/web3signer.service
+		sudo rm -rf /usr/local/bin/web3signer
+		sudo rm -rf /var/lib/web3signer
+		sudo userdel web3signer 2>/dev/null || true
 	fi
 }
 

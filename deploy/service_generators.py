@@ -15,6 +15,7 @@ def generate_systemd_template(
     unit_requires: Optional[List[str]] = None,
     exec_start_pre: Optional[List[str]] = None,
     timeout_start_sec: Optional[Union[int, str]] = None,
+    environment_file: Optional[str] = None,
 ) -> str:
     """Generate a systemd service file content.
 
@@ -32,11 +33,15 @@ def generate_systemd_template(
             ``user`` like ``ExecStart``; prefix with ``+`` for full privileges).
         timeout_start_sec: Optional ``TimeoutStartSec`` (e.g. ``infinity`` when
             ``ExecStartPre`` waits indefinitely for a dependency).
+        environment_file: Optional ``EnvironmentFile=`` path. Systemd expands
+            those variables in ``ExecStart``.
 
     Returns:
         Complete systemd service file content as a string.
     """
     env_str = "".join(f"Environment={e}\n" for e in extra_env) if extra_env else ""
+    if environment_file:
+        env_str += f"EnvironmentFile={environment_file}\n"
     wd_str = f"WorkingDirectory={working_dir}\n" if working_dir else ""
     nofile_str = f"LimitNOFILE={limit_nofile}\n" if limit_nofile else ""
     pre_str = "".join(f"ExecStartPre={cmd}\n" for cmd in exec_start_pre) if exec_start_pre else ""

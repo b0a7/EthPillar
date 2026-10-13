@@ -184,6 +184,18 @@ class TestGetClientReleaseInfo:
         mock_gh.assert_called_once_with("ObolNetwork/charon", "LATEST")
 
     @patch("deploy.common.get_github_release")
+    def test_web3signer_prefers_tarball_over_checksum(self, mock_gh):
+        mock_gh.return_value = _make_github_release("26.9.0", [
+            "web3signer-26.9.0.tar.gz.sha256",
+            "web3signer-26.9.0.zip",
+            "web3signer-26.9.0.tar.gz",
+        ])
+        info = get_client_release_info("web3signer", "LATEST")
+        assert info["version"] == "26.9.0"
+        assert info["filenames"][0] == "web3signer-26.9.0.tar.gz"
+        mock_gh.assert_called_once_with("Consensys-Incorporated/web3signer", "LATEST")
+
+    @patch("deploy.common.get_github_release")
     def test_mevboost_returns_expected_structure(self, mock_gh):
         mock_gh.return_value = _make_github_release("v1.12", [
             "mev-boost_1.12_linux_amd64.tar.gz"

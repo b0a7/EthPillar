@@ -360,7 +360,7 @@ cli_help_command_names() {
 @test "logs: dispatches to view_journal_logs, not view_logs.sh" {
     run ./ethpillar.sh logs
     [ "$status" -eq 0 ]
-    grep -q "journalctl -o json -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
+    grep -q "journalctl -o json -u validator -u consensus -u execution -u mevboost -u charon -u web3signer -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
     grep -q "journal_format.py" "$COMMAND_LOG"
     ! grep -q "view_logs.sh" "$COMMAND_LOG"
     ! grep -q "tmux" "$COMMAND_LOG"
@@ -374,7 +374,7 @@ cli_help_command_names() {
     ' logging/journal.sh > "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q '/opt/ethpillar/aztec' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'docker compose logs -f --tail=233' "$MOCK_BIN_DIR/show_rolling_fn.txt"
-    grep -q 'view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q 'view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u web3signer -u csm_nimbusvalidator --no-hostname -f' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'show_rolling_consolidated_logs' ethpillar.sh
     grep -q 'show_rolling_consolidated_logs' cli.sh
 }
@@ -542,16 +542,18 @@ cli_help_command_names() {
     [ "${start_order[1]}" = "consensus" ]
     [ "${start_order[2]}" = "mevboost" ]
     [ "${start_order[3]}" = "charon" ]
-    [ "${start_order[4]}" = "validator" ]
-    [ "${start_order[5]}" = "csm_nimbusvalidator" ]
-    [ "${start_order[6]}" = "dora" ]
+    [ "${start_order[4]}" = "web3signer" ]
+    [ "${start_order[5]}" = "validator" ]
+    [ "${start_order[6]}" = "csm_nimbusvalidator" ]
+    [ "${start_order[7]}" = "dora" ]
     [ "${stop_order[0]}" = "dora" ]
     [ "${stop_order[1]}" = "csm_nimbusvalidator" ]
     [ "${stop_order[2]}" = "validator" ]
-    [ "${stop_order[3]}" = "charon" ]
-    [ "${stop_order[4]}" = "mevboost" ]
-    [ "${stop_order[5]}" = "consensus" ]
-    [ "${stop_order[6]}" = "execution" ]
+    [ "${stop_order[3]}" = "web3signer" ]
+    [ "${stop_order[4]}" = "charon" ]
+    [ "${stop_order[5]}" = "mevboost" ]
+    [ "${stop_order[6]}" = "consensus" ]
+    [ "${stop_order[7]}" = "execution" ]
 }
 
 @test "start: rejects unknown or not-installed target" {

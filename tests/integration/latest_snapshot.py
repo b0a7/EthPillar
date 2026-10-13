@@ -30,6 +30,7 @@ _SNAPSHOT_CLIENTS = (
     "Prysm",
     "mevboost",
     "charon",
+    "web3signer",
 )
 
 

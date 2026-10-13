@@ -135,21 +135,30 @@ function printInstalledVersions() {
     _CH=""
   fi
 
-  if [[ -n "$_CH" ]]; then
-    printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\n%s\nEthPillar: %s\n' \
-      "$_CL" "$_EL" "$_VC" "$_MB" "$_CH" "$EP_VERSION"
-  else
-    printf 'Consensus client: %s\nExecution client: %s\n%s\n%s\nEthPillar: %s\n' \
-      "$_CL" "$_EL" "$_VC" "$_MB" "$EP_VERSION"
+  local signer_svc="${WEB3SIGNER_SERVICE_FILE:-/etc/systemd/system/web3signer.service}"
+  local _W3S=""
+  if [[ -f "$signer_svc" ]]; then
+    getWeb3SignerCurrentVersion || true
+    _W3S="Web3Signer: ${VERSION:-unknown}"
   fi
+
+  local _lines=()
+  _lines+=("Consensus client: ${_CL}")
+  _lines+=("Execution client: ${_EL}")
+  _lines+=("${_VC}")
+  _lines+=("${_MB}")
+  [[ -n "$_CH" ]] && _lines+=("${_CH}")
+  [[ -n "$_W3S" ]] && _lines+=("${_W3S}")
+  _lines+=("EthPillar: ${EP_VERSION}")
+  printf '%s\n' "${_lines[@]}"
 }
 
 menuMain(){
 
 # Define systemctl services
-_SERVICES=("execution" "consensus" "validator" "mevboost" "charon" "csm_nimbusvalidator" "dora")
-_SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "Obol Charon DV" "CSM Nimbus Validator Plugin" "Dora the Explorer")
-_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "${OBOL_INF}" "💧" "🔎")
+_SERVICES=("execution" "consensus" "validator" "mevboost" "charon" "web3signer" "csm_nimbusvalidator" "dora")
+_SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "Obol Charon DV" "Web3Signer" "CSM Nimbus Validator Plugin" "Dora the Explorer")
+_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "${OBOL_INF}" "🔏" "💧" "🔎")
 
 function testAndServiceCommand() {
   local _cmd="$1"
@@ -245,6 +254,9 @@ while true; do
         ;;
       "${OBOL_INF}")
         submenuCharon
+        ;;
+      🔏)
+        submenuWeb3Signer
         ;;
       💧)
         submenuPluginCSMValidator
@@ -687,6 +699,57 @@ while true; do
         submenuEPBSImport
         ;;
       99)
+        break
+        ;;
+    esac
+done
+}
+
+submenuWeb3Signer(){
+while true; do
+    getBackTitle
+    SUBCHOICE=$(whiptail --clear --cancel-button "Back" \
+      --backtitle "$BACKTITLE" \
+      --title "Web3Signer" \
+      --menu "Remote signer on ${WEB3SIGNER_URL:-http://127.0.0.1:9000}. Keys live here, not in the validator client." \
+      0 0 0 \
+      1 "View logs" \
+      2 "Start Web3Signer" \
+      3 "Stop Web3Signer" \
+      4 "Restart Web3Signer" \
+      5 "Edit configuration" \
+      6 "Update to latest release" \
+      - "" \
+      7 "Back to main menu" \
+      3>&1 1>&2 2>&3)
+
+    if [ $? -gt 0 ]; then
+        break
+    fi
+
+    case $SUBCHOICE in
+      1)
+        view_journal_logs -fu web3signer
+        ;;
+      2)
+        sudo service web3signer start
+        ;;
+      3)
+        sudo service web3signer stop
+        ;;
+      4)
+        sudo service web3signer restart
+        ;;
+      5)
+        editSystemdUnitAndMaybeRestart \
+          /etc/systemd/system/web3signer.service \
+          "Do you want to restart Web3Signer?" \
+          web3signer
+        ;;
+      6)
+        runScript update_web3signer.sh
+        ;;
+      7)
         break
         ;;
     esac

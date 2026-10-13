@@ -902,6 +902,17 @@ class TestGrandineService:
         assert f"--keystore-password-dir={BASE_DATA_DIR}/grandine/validator_keys" in result
         check_constant_substitutions(result)
 
+    def test_bn_web3signer_skips_local_keystores(self):
+        result = generate_grandine_bn_service(
+            "mainnet", SYNC_URL, JWTSECRET_PATH,
+            CL_REST_PORT, CL_P2P_PORT, CL_P2P_PORT_2, CL_MAX_PEER_COUNT,
+            is_integrated_vc=True,
+            web3signer_url="http://127.0.0.1:9000",
+        )
+        assert "--keystore-dir=" not in result
+        assert "--web3signer-api-urls=http://127.0.0.1:9000" in result
+        assert "After=network-online.target web3signer.service" in result
+
 
 # ═══════════════════════════════════════════════
 # Prysm service tests
