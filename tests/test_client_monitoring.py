@@ -9,6 +9,7 @@ from manage.client_monitoring import (
     ensure_client_scrapes,
     metrics_port_from_unit,
     rewrite_dashboard,
+    scrape_job_yaml,
     upsert_client_scrapes,
 )
 
@@ -196,3 +197,43 @@ def test_rewrite_pins_ethrex_job_and_grandine_instance():
         ),
     )
     assert grandine["templating"]["list"][0]["current"]["value"] == ["consensus"]
+
+
+def test_prysm_jobs_match_upstream_dashboards():
+    beacon = detect_clients(None, "ExecStart=/usr/local/bin/prysm-beacon-chain --monitoring-port=8080\n", None)
+    validator = detect_clients(None, None, "ExecStart=/usr/local/bin/prysm-validator --monitoring-port=8081\n")
+    assert beacon[0][0].job_name == "beacon node"
+    assert beacon[0][1] == 8080
+    assert validator[0][0].job_name == "validator"
+    assert validator[0][1] == 8081
+
+
+def test_nimbus_scrape_adds_container_label():
+    found = detect_clients(None, "ExecStart=/usr/local/bin/nimbus_beacon_node --metrics-port=8008\n", None)
+    yaml = scrape_job_yaml(found[0][0], found[0][1])
+    assert "job_name: 'nimbus'" in yaml
+    assert "container: nimbus" in yaml
+    assert "instance: consensus" in yaml
+
+
+def test_rewrite_strips_nethermind_cluster_matchers():
+    rewritten = rewrite_dashboard(
+        {
+            "expr": 'nethermind_sync{Instance=~"$enode",Network=~"$network"}',
+            "spec": {
+                "variables": [
+                    {
+                        "pluginId": "prometheus",
+                        "current": {"text": "Prometheus", "value": "prometheus_ds"},
+                    }
+                ]
+            },
+        },
+        DashboardSpec(
+            filename="nethermind_dashboard.json",
+            strip_label_matchers=("Instance", "Network"),
+            prometheus_datasource_uid="prometheus",
+        ),
+    )
+    assert rewritten["expr"] == "nethermind_sync{}"
+    assert rewritten["spec"]["variables"][0]["current"]["value"] == "prometheus"

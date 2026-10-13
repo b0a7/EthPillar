@@ -82,6 +82,10 @@ class DashboardSpec:
     instance_label: str = ""
     lodestar_instances: bool = False
     template_pins: Tuple[TemplatePin, ...] = ()
+    # Drop label matchers the upstream board requires but stock clients do not emit.
+    strip_label_matchers: Tuple[str, ...] = ()
+    # Grafana v2 dashboards store a datasource-variable uid, not the classic name.
+    prometheus_datasource_uid: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,7 @@ class ClientScrape:
     metrics_path: str
     instance: str
     needles: Tuple[str, ...]
+    extra_labels: Tuple[Tuple[str, str], ...] = ()
     dashboards: Tuple[DashboardSpec, ...] = field(default_factory=tuple)
 
 
@@ -126,7 +131,7 @@ def _prysm_dashboards() -> Tuple[DashboardSpec, ...]:
         ),
         DashboardSpec(
             filename="prysm_big.json",
-            url="https://www.offchainlabs.com/prysm/docs/assets/files/big_amount_validators-0ed1a1ead364ced51d5d92ddc19db229.json/",
+            url="https://raw.githubusercontent.com/GuillaumeMiralles/prysm-grafana-dashboard/master/more_10_validators.json",
             title="Prysm Dashboard Many Validators",
         ),
     )
@@ -144,6 +149,9 @@ _EXECUTION_CLIENTS: Tuple[ClientScrape, ...] = (
             DashboardSpec(
                 filename="nethermind_dashboard.json",
                 url="https://raw.githubusercontent.com/NethermindEth/metrics-infrastructure/master/grafana/provisioning/dashboards/nethermind.json",
+                # Cluster board filters Instance/Network labels and a foreign datasource uid.
+                strip_label_matchers=("Instance", "Network"),
+                prometheus_datasource_uid="prometheus",
             ),
         ),
     ),
@@ -160,6 +168,14 @@ _EXECUTION_CLIENTS: Tuple[ClientScrape, ...] = (
                 url="https://raw.githubusercontent.com/ledgerwatch/erigon/devel/cmd/prometheus/dashboards/erigon.json",
                 title="Erigon Dashboard",
                 uid="YbLNLr6Mz",
+                template_pins=(
+                    TemplatePin(
+                        name="instance",
+                        current="execution",
+                        query='label_values(go_goroutines{job="erigon"},instance)',
+                        clear_regex=True,
+                    ),
+                ),
             ),
         ),
     ),
@@ -195,7 +211,15 @@ _EXECUTION_CLIENTS: Tuple[ClientScrape, ...] = (
         metrics_path="/metrics",
         instance="execution",
         needles=("besu",),
-        dashboards=(DashboardSpec(filename="besu_dashboard.json", grafana_id=10273, title="Besu Dashboard"),),
+        dashboards=(
+            DashboardSpec(
+                filename="besu_dashboard.json",
+                grafana_id=10273,
+                title="Besu Dashboard",
+                # Variable "system" is the Prometheus instance label. Upstream current is empty.
+                template_pins=(TemplatePin(name="system", current="execution"),),
+            ),
+        ),
     ),
     ClientScrape(
         key="reth",
@@ -209,7 +233,15 @@ _EXECUTION_CLIENTS: Tuple[ClientScrape, ...] = (
                 filename="reth_dashboard.json",
                 url="https://raw.githubusercontent.com/paradigmxyz/reth/main/etc/grafana/dashboards/overview.json",
                 title="Reth Dashboard",
-                instance_label="execution",
+                # ${VAR_INSTANCE_LABEL} is the label *name* in {$instance_label="$instance"}.
+                instance_label="instance",
+                template_pins=(
+                    TemplatePin(
+                        name="instance",
+                        current="execution",
+                        query="label_values(reth_info,instance)",
+                    ),
+                ),
             ),
         ),
     ),
@@ -233,7 +265,8 @@ _EXECUTION_CLIENTS: Tuple[ClientScrape, ...] = (
 _CONSENSUS_CLIENTS: Tuple[ClientScrape, ...] = (
     ClientScrape(
         key="prysm-bn",
-        job_name="prysm",
+        # Prysm's own dashboards filter job="beacon node" / job="$node_job".
+        job_name="beacon node",
         default_port=8080,
         metrics_path="/metrics",
         instance="consensus",
@@ -261,7 +294,11 @@ _CONSENSUS_CLIENTS: Tuple[ClientScrape, ...] = (
                 filename="lodestar_summary.json",
                 url="https://raw.githubusercontent.com/ChainSafe/lodestar/stable/dashboards/lodestar_summary.json",
                 title="Lodestar Dashboard",
-                lodestar_instances=True,
+                # Constants default to ${VAR_BEACON_JOB}; queries are job=~"$beacon_job|beacon".
+                template_pins=(
+                    TemplatePin(name="beacon_job", current="lodestar", query="lodestar"),
+                    TemplatePin(name="validator_job", current="lodestar_validator", query="lodestar_validator"),
+                ),
             ),
         ),
     ),
@@ -272,11 +309,25 @@ _CONSENSUS_CLIENTS: Tuple[ClientScrape, ...] = (
         metrics_path="/metrics",
         instance="consensus",
         needles=("nimbus",),
+        extra_labels=(("container", "nimbus"),),
         dashboards=(
             DashboardSpec(
                 filename="nimbus_dashboard.json",
                 url="https://raw.githubusercontent.com/status-im/nimbus-eth2/master/grafana/beacon_nodes_Grafana_dashboard.json",
                 title="Nimbus Dashboard",
+                # Every panel filters container="${container}", which Docker adds and systemd does not.
+                template_pins=(
+                    TemplatePin(
+                        name="instance",
+                        current="consensus",
+                        query='label_values(up{job="nimbus"},instance)',
+                    ),
+                    TemplatePin(
+                        name="container",
+                        current="nimbus",
+                        query='label_values(up{job="nimbus"},container)',
+                    ),
+                ),
             ),
         ),
     ),
@@ -311,7 +362,7 @@ _CONSENSUS_CLIENTS: Tuple[ClientScrape, ...] = (
 _VALIDATOR_CLIENTS: Tuple[ClientScrape, ...] = (
     ClientScrape(
         key="prysm-vc",
-        job_name="prysm_validator",
+        job_name="validator",
         default_port=8081,
         metrics_path="/metrics",
         instance="validator",
@@ -339,7 +390,10 @@ _VALIDATOR_CLIENTS: Tuple[ClientScrape, ...] = (
                 filename="lodestar_summary.json",
                 url="https://raw.githubusercontent.com/ChainSafe/lodestar/stable/dashboards/lodestar_summary.json",
                 title="Lodestar Dashboard",
-                lodestar_instances=True,
+                template_pins=(
+                    TemplatePin(name="beacon_job", current="lodestar", query="lodestar"),
+                    TemplatePin(name="validator_job", current="lodestar_validator", query="lodestar_validator"),
+                ),
             ),
         ),
     ),
@@ -372,7 +426,7 @@ def scrape_job_yaml(client: ClientScrape, port: int) -> str:
     Returns:
         YAML snippet including a trailing newline.
     """
-    return (
+    yaml = (
         f"   - job_name: '{client.job_name}'\n"
         f"     metrics_path: {client.metrics_path}\n"
         "     static_configs:\n"
@@ -380,6 +434,9 @@ def scrape_job_yaml(client: ClientScrape, port: int) -> str:
         "         labels:\n"
         f"           instance: {client.instance}\n"
     )
+    for key, value in client.extra_labels:
+        yaml += f"           {key}: {value}\n"
+    return yaml
 
 
 def metrics_port_from_unit(text: str, default: int) -> int:
@@ -563,7 +620,61 @@ def rewrite_dashboard(payload: Union[dict, list], spec: DashboardSpec) -> Union[
                 if len(items) > 4 and isinstance(items[4], dict):
                     items[4]["query"] = "validator"
         _pin_template_variables(rewritten, spec.template_pins)
+        if spec.strip_label_matchers:
+            _strip_label_matchers(rewritten, spec.strip_label_matchers)
+        if spec.prometheus_datasource_uid:
+            _pin_prometheus_datasource_uid(rewritten, spec.prometheus_datasource_uid)
     return rewritten
+
+
+_MATCHER_RE_CACHE: Dict[str, re.Pattern[str]] = {}
+
+
+def _strip_label_matchers(node: Union[dict, list], names: Sequence[str]) -> None:
+    """Remove ``Label=~"$var"`` matchers that stock clients do not export."""
+    if isinstance(node, dict):
+        expr = node.get("expr")
+        if isinstance(expr, str):
+            node["expr"] = _clean_expr_matchers(expr, names)
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                _strip_label_matchers(value, names)
+    elif isinstance(node, list):
+        for value in node:
+            if isinstance(value, (dict, list)):
+                _strip_label_matchers(value, names)
+
+
+def _clean_expr_matchers(expr: str, names: Sequence[str]) -> str:
+    """Drop named matchers and tidy empty selector lists."""
+    for name in names:
+        pattern = _MATCHER_RE_CACHE.get(name)
+        if pattern is None:
+            pattern = re.compile(rf',?\s*{re.escape(name)}=~"\$[A-Za-z0-9_]+"')
+            _MATCHER_RE_CACHE[name] = pattern
+        expr = pattern.sub("", expr)
+    expr = expr.replace("{,", "{").replace(",}", "}").replace(",,", ",")
+    return expr
+
+
+def _pin_prometheus_datasource_uid(node: Union[dict, list], uid: str) -> None:
+    """Point Grafana v2 Prometheus datasource variables at *uid*."""
+    if isinstance(node, dict):
+        current = node.get("current")
+        if (
+            node.get("pluginId") == "prometheus"
+            and isinstance(current, dict)
+            and current.get("value") not in (None, "", uid)
+        ):
+            current["value"] = uid
+            current["text"] = "Prometheus"
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                _pin_prometheus_datasource_uid(value, uid)
+    elif isinstance(node, list):
+        for value in node:
+            if isinstance(value, (dict, list)):
+                _pin_prometheus_datasource_uid(value, uid)
 
 
 def _pin_template_variables(dashboard: dict, pins: Sequence[TemplatePin]) -> None:
