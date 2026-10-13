@@ -1006,8 +1006,9 @@ while true; do
       7 "Update to latest release"
       8 "Uninstall monitoring"
       9 "Configure alerting with Grafana"
+      10 "Provision client dashboards"
       - ""
-      10 "Back to main menu"
+      11 "Back to main menu"
     )
 
     # Display the submenu and get the user's choice
@@ -1064,6 +1065,9 @@ while true; do
 \n- Create contact points and notification policies" 20 78
         ;;
       10)
+        runScript ethereum-metrics-exporter.sh -p
+        ;;
+      11)
         break
         ;;
     esac

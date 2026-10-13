@@ -57,6 +57,8 @@ def generate_prysm_bn_service(eth_network: str, sync_url: str, jwtsecret_path: s
         f"--jwt-secret={jwtsecret_path}",
         f"--checkpoint-sync-url={sync_url}",
         f"--genesis-beacon-api-url={sync_url}",
+        "--monitoring-host=127.0.0.1",
+        "--monitoring-port=8080",
         "--accept-terms-of-use"
     ]
     if fee_parameters:
@@ -136,6 +138,9 @@ def generate_prysm_vc_service(
     _args.extend(
         [
             f"--graffiti={graffiti}",
+            # Distinct from the beacon node's :8080 so both can be scraped.
+            "--monitoring-host=127.0.0.1",
+            "--monitoring-port=8081",
             # Keymanager API (local keystores)
             "--rpc",
             "--rpc-host=127.0.0.1",

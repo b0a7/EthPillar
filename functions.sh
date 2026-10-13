@@ -1831,6 +1831,7 @@ ${_migrate_log}" 12 78
     fi
     if [[ -f /etc/prometheus/prometheus.yml ]] || [[ -d /etc/grafana ]]; then
         PYTHONPATH="${BASE_DIR}" python3 -m manage.charon_monitoring provision --restart >/dev/null 2>&1 || true
+        PYTHONPATH="${BASE_DIR}" python3 -m manage.client_monitoring provision --restart >/dev/null 2>&1 || true
     fi
     if [[ -f "$_cdvn_env" ]]; then
         _grafana_port=$(PYTHONPATH="${BASE_DIR}" python3 -c \
