@@ -789,6 +789,18 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         except Exception as exc:  # noqa: BLE001 — other optional-monitoring failures
             print(f'Note: Charon Grafana/Prometheus provisioning skipped ({exc}).')
 
+    try:
+        from manage.client_monitoring import provision_client_monitoring
+        mon_clients = provision_client_monitoring(restart=True)
+        if mon_clients.get('scrape') or mon_clients.get('dashboards'):
+            names = ', '.join(mon_clients.get('clients') or []) or 'installed clients'
+            print(f'Client monitoring: Prometheus scrape jobs and Grafana dashboards updated ({names}).')
+    except PermissionError as exc:
+        print(f'ERROR: Client Grafana/Prometheus provisioning failed (permission denied): {exc}')
+        print('  Retry as a user with sudo, or fix ownership under /etc/grafana/provisioning.')
+    except Exception as exc:  # noqa: BLE001 — optional monitoring when the stack is absent
+        print(f'Note: Client Grafana/Prometheus provisioning skipped ({exc}).')
+
     if skip_prompts:
         print(f'\nNon-interactive install successful! Skipped prompts.')
         exit(0)

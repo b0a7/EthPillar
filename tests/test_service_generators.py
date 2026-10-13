@@ -930,6 +930,8 @@ class TestPrysmService:
         assert f"--jwt-secret={JWTSECRET_PATH}" in result
         assert f"--suggested-fee-recipient={FEE_RECIPIENT_ADDRESS}" in result
         assert "--http-mev-relay=http://127.0.0.1:18550" in result
+        assert "--monitoring-host=127.0.0.1" in result
+        assert "--monitoring-port=8080" in result
         assert "User=consensus" in result
 
     def test_bn_no_mev(self):
@@ -961,6 +963,8 @@ class TestPrysmService:
         assert "--rpc" in result
         assert "--rpc-host=127.0.0.1" in result
         assert "--rpc-port=7500" in result
+        assert "--monitoring-host=127.0.0.1" in result
+        assert "--monitoring-port=8081" in result
         assert "Environment=\"HOME=/home/validator\"" in result or "HOME=/home/validator" in result
         check_constant_substitutions(result)
 

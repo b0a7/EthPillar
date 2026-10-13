@@ -129,6 +129,20 @@ function applyCdvnGrafanaPortFromEnv(){
 		"$_env_path" >/dev/null 2>&1 || true
 }
 
+# Scrape installed client metrics ports and provision eth-docker client dashboards.
+# Safe no-op when monitoring paths are absent.
+function provisionClientMonitoring(){
+	local _root
+	_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+	if [[ ! -f "${PROMETHEUS_DIR}/prometheus.yml" ]] && [[ ! -d "${GRAFANA_DIR}/provisioning/dashboards" ]]; then
+		return 0
+	fi
+	PYTHONPATH="${_root}${PYTHONPATH:+:$PYTHONPATH}" python3 -m manage.client_monitoring provision \
+		--prometheus-yml "${PROMETHEUS_DIR}/prometheus.yml" \
+		--grafana-dashboards "${GRAFANA_DIR}/provisioning/dashboards" \
+		--restart || true
+}
+
 # Ensure Prometheus scrapes Charon :3620 and Grafana has Charon Overview.
 # Safe no-op when monitoring or Charon paths are absent.
 function provisionCharonMonitoring(){
@@ -228,7 +242,9 @@ http://${ip_current}:${_grafana_port}
 
 Login: admin / admin
 
-Open Dashboards in the Grafana menu.${_charon_hint}"
+Open Dashboards in the Grafana menu.
+
+Client dashboards (Geth, Lighthouse, Teku, and the other installed clients) are added automatically when those clients are present.${_charon_hint}"
 	whiptail --title "Monitoring installed" --msgbox "$_msg" 22 78
 }
 
@@ -275,6 +291,9 @@ find $GRAFANA_DIR/provisioning/dashboards -type f -size 0 -delete
 sudo cp "$(dirname "$(realpath "${BASH_SOURCE[0]}")")"/alert.rules.yml $PROMETHEUS_DIR
 sudo systemctl restart prometheus
 
+# Scrape installed EL/CL/VC metrics and provision their Grafana dashboards.
+provisionClientMonitoring
+
 # If Charon is already installed, scrape :3620 and provision Overview dashboard
 if isCharonEnabled; then
 	provisionCharonMonitoring
@@ -284,7 +303,7 @@ fi
 # Displays usage info
 function usage() {
 cat << EOF
-Usage: $(basename "$0") [-i] [-u] [-r] [-c]
+Usage: $(basename "$0") [-i] [-u] [-r] [-c] [-p]
 
 Ethereum-Metrics-Exporter Monitoring Helper Script
 
@@ -293,6 +312,7 @@ Options)
 -u    Upgrade ethereum-metrics-exporter, grafana, prometheus, node-exporter
 -r    Remove all monitoring tools
 -c    Provision Charon scrape job + Charon Overview dashboard (no-op if monitoring absent)
+-p    Provision client scrape jobs + client Grafana dashboards for installed EL/CL/VC
 -h    Display help
 EOF
 }
@@ -325,12 +345,13 @@ MSG_ABOUT="🚨 Monitoring with Ethereum Metrics Exporter & Grafana & Prometheus
 }
 
 # Process command line options
-while getopts :iurch opt; do
+while getopts :iurchp opt; do
   case ${opt} in
     i ) installMonitoring ;;
     u ) upgradeBinaries ;;
     r ) removeAll ;;
     c ) provisionCharonMonitoring ;;
+    p ) provisionClientMonitoring ;;
     h)
       usage
       exit 0

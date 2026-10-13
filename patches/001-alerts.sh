@@ -41,6 +41,9 @@ if [[ -f /etc/systemd/system/charon.service ]]; then
   bash "$BASE_DIR/ethereum-metrics-exporter.sh" -c || true
 fi
 
+# Restore client scrape jobs and dashboards after rewriting prometheus.yml
+bash "$BASE_DIR/ethereum-metrics-exporter.sh" -p || true
+
 # Step 3: Show instructions
 whiptail --title "Configure Alerting with Grafana" --msgbox "Grafana enables users to create custom alert systems that notify them via multiple channels, including email, messaging apps like Telegram and Discord.
 \nWith the default install, basic alerts for CPU/DISK/RAM are configured.

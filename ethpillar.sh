@@ -1006,6 +1006,7 @@ while true; do
       7 "Update to latest release"
       8 "Uninstall monitoring"
       9 "Configure alerting with Grafana"
+      11 "Provision client dashboards"
       - ""
       10 "Back to main menu"
     )
@@ -1062,6 +1063,9 @@ while true; do
 \n- Navigate to Grafana in your web browser
 \n- Click Alerting (the alert bell icon) on the left-hand side menu
 \n- Create contact points and notification policies" 20 78
+        ;;
+      11)
+        runScript ethereum-metrics-exporter.sh -p
         ;;
       10)
         break
