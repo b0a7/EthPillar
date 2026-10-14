@@ -32,10 +32,11 @@ Slashing protection uses a local PostgreSQL database named `web3signer`. Install
 
 How each client finds keys:
 
-- **Teku / Prysm:** public keys are read from `http://127.0.0.1:9000/api/v1/eth2/publicKeys`. Prysm reads that list at startup, so importing keys restarts the validator.
+- **Teku:** public keys are read from `http://127.0.0.1:9000/api/v1/eth2/publicKeys`. The validator unit does not pass `--validator-keys`; that path is not created and Teku exits if it is missing.
+- **Prysm:** the same public-key URL. Install still creates an empty wallet and `password.txt`, because the unit keeps `--wallet-dir` and `--wallet-password-file`. Prysm reads the public-key list at startup, so importing keys restarts the validator.
 - **Nimbus:** `--web3-signer-url` (discovers keys itself).
 - **Lodestar:** `--externalSigner.url` and `--externalSigner.fetch`.
-- **Lighthouse:** `validator_definitions.yml` entries of `type: web3signer`. Import appends one entry per key. Local slashing protection for those keys is disabled; Web3Signer records signatures.
+- **Lighthouse:** `validator_definitions.yml` entries of `type: web3signer`. Import appends one entry per key and records that pubkey in `slashing_protection.sqlite`. Lighthouse does not create that file itself and exits if it is missing. Local slashing protection for those keys is disabled; Web3Signer records signatures.
 - **Grandine (integrated):** `--web3signer-api-urls` on the consensus unit. No local keystore directory.
 
 ## Import keys

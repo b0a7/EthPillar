@@ -148,3 +148,126 @@ def test_migrations_skip_versions_already_applied():
         2,
     )
     assert pending == ["V12__d.sql"]
+
+
+def test_remote_signer_units_do_not_require_missing_local_keys():
+    """Each Web3Signer VC unit must not point at a local key path that install never creates.
+
+    Teku omits ``--validator-keys`` (that directory is not created and Teku exits if it
+    is missing). Grandine already omits keystore directories. Lighthouse, Lodestar, and
+    Nimbus have no local keystore path in the unit. Prysm keeps ``--wallet-dir`` and
+    ``--wallet-password-file``; ``install_prysm_vc`` creates both via ``ensure_prysm_wallet``.
+    Caplin is not a remote-signer client. Charon cannot be combined with Web3Signer.
+    """
+    from deploy.common import BASE_DATA_DIR
+    from deploy.grandine import generate_grandine_bn_service
+    from deploy.keymanager import PRYSM_DEFAULT_WALLET_DIR, PRYSM_PASSWORD_FILE
+    from deploy.lighthouse import generate_lighthouse_vc_service
+    from deploy.lodestar import generate_lodestar_vc_service
+    from deploy.nimbus import generate_nimbus_vc_service
+    from deploy.prysm import generate_prysm_vc_service
+    from deploy.teku import generate_teku_vc_service
+
+    graffiti = "test"
+    fee = "0x0000000000000000000000000000000000000001"
+    bn = "http://127.0.0.1:5052"
+
+    teku = generate_teku_vc_service(
+        "hoodi",
+        graffiti,
+        f"--beacon-node-api-endpoint={bn}",
+        fee_parameters=f"--validators-proposer-default-fee-recipient={fee}",
+        extra_parameters=signer_flags_for_vc("Teku"),
+        unit_after=["web3signer.service"],
+    )
+    assert "--validators-external-signer-url=" in teku
+    assert PUBLIC_KEYS_URL in teku
+    assert "--validator-keys=" not in teku
+    assert "After=network-online.target web3signer.service" in teku
+
+    # Local-key installs still point at the keystore directory.
+    local_teku = generate_teku_vc_service(
+        "hoodi", graffiti, f"--beacon-node-api-endpoint={bn}"
+    )
+    assert f"--validator-keys={BASE_DATA_DIR}/teku_validator/validator_keys:" in local_teku
+
+    lighthouse = generate_lighthouse_vc_service(
+        "hoodi",
+        graffiti,
+        f"--beacon-nodes={bn}",
+        extra_parameters=signer_flags_for_vc("Lighthouse"),
+    )
+    assert "--disable-slashing-protection-web3signer" in lighthouse
+    assert "validator_keys" not in lighthouse
+    assert "keystore" not in lighthouse.lower()
+
+    lodestar = generate_lodestar_vc_service(
+        "hoodi",
+        graffiti,
+        f"--beaconNodes={bn}",
+        extra_parameters=signer_flags_for_vc("Lodestar"),
+    )
+    assert "--externalSigner.url=" in lodestar
+    assert "--externalSigner.fetch=true" in lodestar
+    assert "keystores" not in lodestar
+    assert "secrets" not in lodestar
+
+    nimbus = generate_nimbus_vc_service(
+        "hoodi",
+        graffiti,
+        f"--beacon-node={bn}",
+        extra_parameters=signer_flags_for_vc("Nimbus"),
+    )
+    assert "--web3-signer-url=" in nimbus
+    assert "secrets-dir" not in nimbus
+    assert "validators-dir" not in nimbus
+    assert "keystore" not in nimbus.lower()
+
+    prysm = generate_prysm_vc_service(
+        "hoodi",
+        graffiti,
+        f"--beacon-rest-api-provider={bn}",
+        extra_parameters=signer_flags_for_vc("Prysm"),
+    )
+    assert "--validators-external-signer-url=" in prysm
+    assert PUBLIC_KEYS_URL in prysm
+    assert f"--wallet-dir={PRYSM_DEFAULT_WALLET_DIR}" in prysm
+    assert f"--wallet-password-file={PRYSM_PASSWORD_FILE}" in prysm
+
+    grandine = generate_grandine_bn_service(
+        "hoodi",
+        "https://checkpoint.example",
+        "/secrets/jwt.hex",
+        "5052",
+        "9000",
+        "9001",
+        "50",
+        is_integrated_vc=True,
+        web3signer_url=DEFAULT_SIGNER_URL,
+    )
+    assert "--web3signer-api-urls=" in grandine
+    assert "--keystore-dir=" not in grandine
+    assert "--keystore-password-dir=" not in grandine
+
+    assert signer_flags_for_vc("Caplin") == ""
+    assert signer_flags_for_vc("Caplin (integrated)") == ""
+
+
+def test_lighthouse_slashing_db_registers_pubkey_once(tmp_path):
+    import sqlite3
+
+    from deploy.web3signer import (
+        add_lighthouse_slashing_pubkeys,
+        initialize_lighthouse_slashing_db,
+    )
+
+    db_path = tmp_path / "slashing_protection.sqlite"
+    pubkey = "0x" + "ab" * 48
+    initialize_lighthouse_slashing_db(str(db_path))
+    add_lighthouse_slashing_pubkeys(str(db_path), [pubkey, pubkey.upper()])
+    connection = sqlite3.connect(db_path)
+    rows = list(connection.execute("SELECT public_key FROM validators"))
+    version = connection.execute("SELECT version FROM schema_version").fetchone()
+    connection.close()
+    assert rows == [(pubkey,)]
+    assert version == (0,)

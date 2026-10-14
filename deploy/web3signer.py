@@ -17,8 +17,10 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import subprocess
 import sys
+import tempfile
 from typing import Dict, List, Optional, Sequence
 
 from deploy.common import (
@@ -52,7 +54,35 @@ SLASHING_DB_USER = "web3signer"
 DB_PASSWORD_ENV = "WEB3SIGNER_DB_PASSWORD"
 
 LIGHTHOUSE_DEFINITIONS = f"{BASE_DATA_DIR}/lighthouse_validator/validators/validator_definitions.yml"
+LIGHTHOUSE_SLASHING_DB = (
+    f"{BASE_DATA_DIR}/lighthouse_validator/validators/slashing_protection.sqlite"
+)
 VC_RUN_USER = "validator"
+
+# Lighthouse opens this file with O_RDWR and does not create it. The table
+# names match what the VC queries before it will enable a Web3Signer key.
+_LIGHTHOUSE_SLASHING_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS validators (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    public_key TEXT NOT NULL UNIQUE
+);
+CREATE TABLE IF NOT EXISTS signed_blocks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    validator_id INTEGER NOT NULL,
+    slot INTEGER NOT NULL,
+    signing_root TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS signed_attestations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    validator_id INTEGER NOT NULL,
+    source_epoch INTEGER NOT NULL,
+    target_epoch INTEGER NOT NULL,
+    signing_root TEXT NOT NULL
+);
+"""
 
 # Web3Signer 26.x distribution ships for JDK 25 (same floor as current Teku).
 JAVA_MAJOR = 25
@@ -582,6 +612,7 @@ def import_keystores(
                 ["sudo", "chown", f"{VC_RUN_USER}:{VC_RUN_USER}", definitions_dir],
                 check=True,
             )
+            register_lighthouse_slashing_pubkeys(pubkeys)
 
     if restart:
         restart_after_import()
@@ -600,24 +631,114 @@ def restart_after_import() -> None:
         subprocess.run(["sudo", "systemctl", "restart", "consensus"], check=False)
 
 
+def initialize_lighthouse_slashing_db(db_path: str) -> None:
+    """Create or repair an empty Lighthouse slashing-protection database.
+
+    The file must already contain a ``validators`` table before the VC will
+    enable Web3Signer keys. Lighthouse does not create the file itself.
+
+    Args:
+        db_path: Path to ``slashing_protection.sqlite``. The parent directory
+            must be writable by the caller.
+    """
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.executescript(_LIGHTHOUSE_SLASHING_SCHEMA)
+        row = connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()
+        if row is None or int(row[0]) == 0:
+            connection.execute("INSERT INTO schema_version (version) VALUES (0)")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def add_lighthouse_slashing_pubkeys(db_path: str, pubkeys: Sequence[str]) -> None:
+    """Insert *pubkeys* into an existing Lighthouse slashing database.
+
+    Args:
+        db_path: Path to ``slashing_protection.sqlite``.
+        pubkeys: Validator public keys (with or without ``0x``).
+    """
+    initialize_lighthouse_slashing_db(db_path)
+    connection = sqlite3.connect(db_path)
+    try:
+        for raw in pubkeys:
+            key = (raw or "").strip().lower()
+            if not key:
+                continue
+            if not key.startswith("0x"):
+                key = "0x" + key
+            connection.execute(
+                "INSERT OR IGNORE INTO validators (public_key) VALUES (?)",
+                (key,),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _sudo_sqlite_update(db_path: str, pubkeys: Sequence[str]) -> None:
+    """Create *db_path* if needed and insert *pubkeys*, using sudo for ownership."""
+    parent = os.path.dirname(db_path)
+    subprocess.run(["sudo", "mkdir", "-p", parent], check=True)
+    subprocess.run(["sudo", "chown", f"{VC_RUN_USER}:{VC_RUN_USER}", parent], check=True)
+    subprocess.run(["sudo", "chmod", "700", parent], check=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.path.join(tmp, "slashing_protection.sqlite")
+        exists = subprocess.run(["sudo", "test", "-s", db_path], check=False)
+        if exists.returncode == 0:
+            subprocess.run(["sudo", "cp", db_path, local], check=True)
+            subprocess.run(["sudo", "chown", f"{os.getuid()}:{os.getuid()}", local], check=True)
+            subprocess.run(["sudo", "chmod", "600", local], check=True)
+        add_lighthouse_slashing_pubkeys(local, pubkeys)
+        subprocess.run(["sudo", "cp", local, db_path], check=True)
+    subprocess.run(["sudo", "chown", f"{VC_RUN_USER}:{VC_RUN_USER}", db_path], check=True)
+    subprocess.run(["sudo", "chmod", "600", db_path], check=True)
+
+
+def register_lighthouse_slashing_pubkeys(
+    pubkeys: Sequence[str],
+    db_path: str = LIGHTHOUSE_SLASHING_DB,
+) -> None:
+    """Record Web3Signer pubkeys in Lighthouse's slashing database.
+
+    Args:
+        pubkeys: Validator public keys from the imported keystores.
+        db_path: Slashing database path. Defaults to the EthPillar VC datadir.
+    """
+    _sudo_sqlite_update(db_path, pubkeys)
+
+
+def ensure_lighthouse_slashing_db(db_path: str = LIGHTHOUSE_SLASHING_DB) -> None:
+    """Create an empty Lighthouse slashing database when it is missing."""
+    exists = subprocess.run(["sudo", "test", "-s", db_path], check=False)
+    if exists.returncode == 0:
+        return
+    _sudo_sqlite_update(db_path, [])
+
+
 def ensure_lighthouse_definitions_file(
     definitions_path: str = LIGHTHOUSE_DEFINITIONS,
 ) -> None:
     """Create an empty Lighthouse definitions file when Web3Signer is installed.
 
     Key import appends ``type: web3signer`` entries later. An empty list lets
-    the VC start before any keys exist.
+    the VC start before any keys exist. The slashing-protection database is
+    created alongside it; Lighthouse exits if that file is missing.
     """
-    if _read_sudo_text(definitions_path).strip():
-        return
-    definitions_dir = os.path.dirname(definitions_path)
-    subprocess.run(["sudo", "mkdir", "-p", definitions_dir], check=True)
-    subprocess.run(
-        ["sudo", "chown", f"{VC_RUN_USER}:{VC_RUN_USER}", definitions_dir],
-        check=True,
-    )
-    subprocess.run(["sudo", "chmod", "700", definitions_dir], check=True)
-    _sudo_write(definitions_path, "[]\n", VC_RUN_USER, "600")
+    if not _read_sudo_text(definitions_path).strip():
+        definitions_dir = os.path.dirname(definitions_path)
+        subprocess.run(["sudo", "mkdir", "-p", definitions_dir], check=True)
+        subprocess.run(
+            ["sudo", "chown", f"{VC_RUN_USER}:{VC_RUN_USER}", definitions_dir],
+            check=True,
+        )
+        subprocess.run(["sudo", "chmod", "700", definitions_dir], check=True)
+        _sudo_write(definitions_path, "[]\n", VC_RUN_USER, "600")
+    ensure_lighthouse_slashing_db()
 
 
 def _cmd_import(args: argparse.Namespace) -> int:

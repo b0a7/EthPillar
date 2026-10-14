@@ -83,6 +83,21 @@ def generate_teku_bn_service(eth_network: str, sync_url: str, jwtsecret_path: st
         limit_nofile=None
     )
 
+# Teku exits if this path is missing. Web3Signer keeps keys in its own
+# keystore directory, so the local flag is omitted when the external signer
+# URL is present.
+_TEKU_LOCAL_KEYS = (
+    f"--validator-keys={BASE_DATA_DIR}/teku_validator/validator_keys:"
+    f"{BASE_DATA_DIR}/teku_validator/validator_keys"
+)
+_TEKU_EXTERNAL_SIGNER_FLAG = "--validators-external-signer-url="
+
+
+def _teku_uses_external_signer(extra_parameters: str) -> bool:
+    """Return True when *extra_parameters* delegates signing to Web3Signer."""
+    return _TEKU_EXTERNAL_SIGNER_FLAG in (extra_parameters or "")
+
+
 def generate_teku_vc_service(eth_network: str, graffiti: str, beacon_node_address: str,
                              fee_parameters: str = '', extra_parameters: str = '',
                              network_override: Optional[str] = None,
@@ -94,7 +109,9 @@ def generate_teku_vc_service(eth_network: str, graffiti: str, beacon_node_addres
         graffiti: Graffiti string
         beacon_node_address: Beacon node address
         fee_parameters: Optional fee recipient parameters
-        extra_parameters: Optional extra ExecStart flags (builder/MEV and/or DVT)
+        extra_parameters: Optional extra ExecStart flags (builder/MEV, DVT,
+            and/or Web3Signer). When Web3Signer is configured, local
+            ``--validator-keys`` is omitted.
         unit_after: Optional extra systemd ``After=``/``Wants=`` units
             (e.g. ``["charon.service"]`` when running behind Obol Charon).
 
@@ -106,12 +123,15 @@ def generate_teku_vc_service(eth_network: str, graffiti: str, beacon_node_addres
         f"{INSTALL_DIR}/teku/bin/teku validator-client",
         _network,
         f"--data-path={BASE_DATA_DIR}/teku_validator",
-        f"--validator-keys={BASE_DATA_DIR}/teku_validator/validator_keys:{BASE_DATA_DIR}/teku_validator/validator_keys",
+    ]
+    if not _teku_uses_external_signer(extra_parameters):
+        _args.append(_TEKU_LOCAL_KEYS)
+    _args.extend([
         "--metrics-enabled=true",
         "--metrics-port=8009",
         f"--validators-graffiti={graffiti}",
-        beacon_node_address
-    ]
+        beacon_node_address,
+    ])
     if fee_parameters:
         _args.append(fee_parameters.strip())
     if extra_parameters:
