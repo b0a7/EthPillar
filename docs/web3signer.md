@@ -6,9 +6,9 @@ This version is for new installs. It does not move keys out of a validator clien
 
 ## Install
 
-1. Custom Setup, Solo Staking, or Validator Client Only.
-2. Choose a validator client.
-3. Answer **Yes** to Web3Signer, or pass `--with_web3signer`.
+Web3Signer is listed after Obol Charon DV on every validator-client menu that offers Charon: Custom Setup, Solo/CSM/Failover, and Validator Client Only. Selecting it opens a second list for the validator client that will call the signer. That list does not include Charon or Web3Signer.
+
+`--with_web3signer --vc <client>` installs the same pairing without the menus.
 
 ```bash
 bash deploy/install-node.sh \
@@ -40,7 +40,7 @@ How each client finds keys:
 
 ## Import keys
 
-Use the normal **Validator → Import** path after install. When `web3signer.service` is present, keystores are copied into `/var/lib/web3signer/keystores` and are not imported into the validator client.
+Use **Web3Signer → Generate / Import Validator Keys**. Keystores are copied into `/var/lib/web3signer/keystores` and are not imported into the validator client. The validator-client menu does not offer key import while Web3Signer is installed.
 
 ```bash
 python3 -m deploy.web3signer import-keystores --directory /path/to/validator_keys --password-file /path/to/password.txt

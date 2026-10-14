@@ -11,8 +11,10 @@ from dotenv import load_dotenv
 import common as common
 from orchestrator import (
     VALID_ROLES, resolve_role_flags, get_combo_menu, get_vc_menu,
-    get_ec_menu, get_cc_menu, get_vc_options_for_cc, resolve_vc_name, run_install,
-    CHARON_VC_LABEL, OBOL_CHARON, is_charon_vc_choice, lodestar_bn_vc_incompatibility_message,
+    get_ec_menu, get_cc_menu, get_vc_options_for_cc, get_predefined_vc_mode_options,
+    resolve_vc_name, run_install,
+    CHARON_VC_LABEL, WEB3SIGNER_VC_LABEL, OBOL_CHARON, is_charon_vc_choice,
+    is_web3signer_vc_choice, lodestar_bn_vc_incompatibility_message,
 )
 import config
 
@@ -142,6 +144,12 @@ if args.vc == CHARON_VC_LABEL:
         "Use --with_charon --vc <Lighthouse|Nimbus|Teku|Lodestar|Prysm>."
     )
     exit(1)
+if args.vc == WEB3SIGNER_VC_LABEL:
+    print(
+        f"ERROR: --vc '{WEB3SIGNER_VC_LABEL}' is not a validator client. "
+        "Use --with_web3signer --vc <Lighthouse|Nimbus|Teku|Lodestar|Prysm|Grandine (integrated)>."
+    )
+    exit(1)
 if flags["charon"] and args.vc == "Grandine (integrated)":
     print(f"ERROR: {OBOL_CHARON} is incompatible with Grandine (integrated).")
     exit(1)
@@ -177,16 +185,40 @@ elif flags['validator_only']:
         if skip_prompts:
             vc_name = cc_name or args.cc or "Lighthouse"
         else:
-            vc_menu = get_vc_menu(include_charon=True)
+            vc_menu = get_vc_menu(include_charon=True, include_web3signer=True)
             index = SelectionMenu.get_selection(vc_menu, title='Validator Client Selection', subtitle='Select your Validator Client:', show_exit_option=False)
             choice = vc_menu[index]
             if is_charon_vc_choice(choice):
+                if flags.get("web3signer"):
+                    print(
+                        "ERROR: Web3Signer and Obol Charon cannot be combined. "
+                        "Install one signing mode.",
+                        file=sys.stderr,
+                    )
+                    exit(1)
                 flags["charon"] = True
                 signer_menu = get_vc_menu(include_charon=False)
                 signer_idx = SelectionMenu.get_selection(
                     signer_menu,
                     title=f'{OBOL_CHARON} Signer',
                     subtitle=f'Select the validator client that will sign behind {OBOL_CHARON}:',
+                    show_exit_option=False,
+                )
+                vc_name = signer_menu[signer_idx]
+            elif is_web3signer_vc_choice(choice):
+                if flags.get("charon"):
+                    print(
+                        "ERROR: Web3Signer and Obol Charon cannot be combined. "
+                        "Install one signing mode.",
+                        file=sys.stderr,
+                    )
+                    exit(1)
+                flags["web3signer"] = True
+                signer_menu = get_vc_menu(include_charon=False)
+                signer_idx = SelectionMenu.get_selection(
+                    signer_menu,
+                    title="Web3Signer",
+                    subtitle="Select the validator client that will sign with Web3Signer:",
                     show_exit_option=False,
                 )
                 vc_name = signer_menu[signer_idx]
@@ -238,7 +270,9 @@ elif role == "Custom Setup":
             val_prompt = SelectionMenu.get_selection(["Yes", "No"], title='Custom Setup', subtitle='Step 3: Do you want a Validator Client?', show_exit_option=False)
             if val_prompt == 0:
                 flags['validator'] = True
-                vc_opts = get_vc_options_for_cc(cc_name, include_charon=True)
+                vc_opts = get_vc_options_for_cc(
+                    cc_name, include_charon=True, include_web3signer=True
+                )
                 subtitle = (
                     'Select your Validator Client:'
                     if vc_opts[0] != "Same as CC"
@@ -249,6 +283,13 @@ elif role == "Custom Setup":
                 )
                 choice = vc_opts[index]
                 if is_charon_vc_choice(choice):
+                    if flags.get("web3signer"):
+                        print(
+                            "ERROR: Web3Signer and Obol Charon cannot be combined. "
+                            "Install one signing mode.",
+                            file=sys.stderr,
+                        )
+                        exit(1)
                     flags["charon"] = True
                     signer_opts = get_vc_options_for_cc(
                         cc_name, include_charon=False, for_charon_signer=True
@@ -257,6 +298,23 @@ elif role == "Custom Setup":
                         signer_opts,
                         title=f'{OBOL_CHARON} Signer',
                         subtitle=f'Select the validator client that will sign behind {OBOL_CHARON}:',
+                        show_exit_option=False,
+                    )
+                    vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
+                elif is_web3signer_vc_choice(choice):
+                    if flags.get("charon"):
+                        print(
+                            "ERROR: Web3Signer and Obol Charon cannot be combined. "
+                            "Install one signing mode.",
+                            file=sys.stderr,
+                        )
+                        exit(1)
+                    flags["web3signer"] = True
+                    signer_opts = get_vc_options_for_cc(cc_name, for_web3signer_vc=True)
+                    signer_idx = SelectionMenu.get_selection(
+                        signer_opts,
+                        title="Web3Signer",
+                        subtitle="Select the validator client that will sign with Web3Signer:",
                         show_exit_option=False,
                     )
                     vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
@@ -301,14 +359,14 @@ else:
     if flags['validator']:
         if args.vc:
             vc_name = args.vc
-        elif skip_prompts or flags.get("charon"):
+        elif skip_prompts or flags.get("charon") or flags.get("web3signer"):
             vc_name = cc_name
         else:
-            mode_opts = ["Same as CC", CHARON_VC_LABEL]
+            mode_opts = get_predefined_vc_mode_options()
             mode_idx = SelectionMenu.get_selection(
                 mode_opts,
                 title='Validator Client',
-                subtitle=f'Use same client as consensus, or {CHARON_VC_LABEL}?',
+                subtitle='Use same client as consensus, Obol Charon DV, or Web3Signer?',
                 show_exit_option=False,
             )
             if is_charon_vc_choice(mode_opts[mode_idx]):
@@ -323,27 +381,18 @@ else:
                     show_exit_option=False,
                 )
                 vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
+            elif is_web3signer_vc_choice(mode_opts[mode_idx]):
+                flags["web3signer"] = True
+                signer_opts = get_vc_options_for_cc(cc_name, for_web3signer_vc=True)
+                signer_idx = SelectionMenu.get_selection(
+                    signer_opts,
+                    title="Web3Signer",
+                    subtitle="Select the validator client that will sign with Web3Signer:",
+                    show_exit_option=False,
+                )
+                vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
             else:
                 vc_name = cc_name
-
-def maybe_enable_web3signer() -> None:
-    """Ask once whether new validator keys should live in Web3Signer."""
-    if not flags.get("validator") or flags.get("charon") or flags.get("web3signer"):
-        return
-    if skip_prompts:
-        return
-    choice = SelectionMenu.get_selection(
-        ["No", "Yes"],
-        title="Web3Signer",
-        subtitle=(
-            "Keep validator keys in Web3Signer on this machine?\n"
-            "The validator client still uses the beacon node. Only signatures go to the signer."
-        ),
-        show_exit_option=False,
-    )
-    flags["web3signer"] = choice == 1
-
-maybe_enable_web3signer()
 
 # 4. Role-specific prompts
 beacon_node_address = args.vc_only_bn_address

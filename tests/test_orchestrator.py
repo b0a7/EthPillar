@@ -16,10 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from deploy.orchestrator import (
     resolve_role_flags, apply_csm_overrides,
     get_combo_menu, get_vc_menu, get_ec_menu, get_cc_menu,
-    get_vc_options_for_cc, resolve_vc_name, is_charon_vc_choice,
+    get_vc_options_for_cc, get_predefined_vc_mode_options, resolve_vc_name, is_charon_vc_choice,
     run_install, is_valid_combination,
     PREDEFINED_COMBOS, EXECUTION_CLIENTS, CONSENSUS_CLIENTS,
-    CHARON_VC_LABEL, _int_param, _with_dvt_params,
+    CHARON_VC_LABEL, WEB3SIGNER_VC_LABEL, _int_param, _with_dvt_params,
     lodestar_bn_vc_incompatibility_message, LODESTAR_BN_INCOMPATIBLE_VCS,
 )
 
@@ -139,6 +139,41 @@ class TestCustomClientMenuLogic:
     def test_is_charon_vc_choice(self):
         assert is_charon_vc_choice(CHARON_VC_LABEL)
         assert not is_charon_vc_choice("Lodestar")
+
+    def test_custom_vc_menu_lists_web3signer_after_charon(self):
+        menu = get_vc_options_for_cc("Lighthouse", include_web3signer=True)
+        assert menu[-2] == CHARON_VC_LABEL
+        assert menu[-1] == WEB3SIGNER_VC_LABEL
+
+    def test_web3signer_coupled_vc_excludes_charon_and_web3signer(self):
+        menu = get_vc_options_for_cc("Teku", for_web3signer_vc=True)
+        assert CHARON_VC_LABEL not in menu
+        assert WEB3SIGNER_VC_LABEL not in menu
+        assert menu[0] == "Same as CC"
+        assert "Lighthouse" in menu
+
+    def test_web3signer_coupled_vc_keeps_integrated_grandine(self):
+        menu = get_vc_options_for_cc("Grandine", for_web3signer_vc=True)
+        assert menu[0] == "Grandine (integrated)"
+        assert CHARON_VC_LABEL not in menu
+        assert WEB3SIGNER_VC_LABEL not in menu
+
+    def test_default_vc_menu_omits_web3signer(self):
+        menu = get_vc_options_for_cc("Lighthouse")
+        assert WEB3SIGNER_VC_LABEL not in menu
+        assert menu[-1] == CHARON_VC_LABEL
+
+    def test_vc_only_menu_lists_web3signer_after_charon(self):
+        menu = get_vc_menu(include_charon=True, include_web3signer=True)
+        assert menu[-2] == CHARON_VC_LABEL
+        assert menu[-1] == WEB3SIGNER_VC_LABEL
+        coupled = get_vc_menu(include_charon=False)
+        assert CHARON_VC_LABEL not in coupled
+        assert WEB3SIGNER_VC_LABEL not in coupled
+
+    def test_predefined_role_menu_lists_web3signer_after_charon(self):
+        menu = get_predefined_vc_mode_options()
+        assert menu == ["Same as CC", CHARON_VC_LABEL, WEB3SIGNER_VC_LABEL]
 
     def test_with_dvt_params_appends_client_specific_flags(self):
         assert _with_dvt_params("--builder", "Lodestar", True) == "--builder --distributed"

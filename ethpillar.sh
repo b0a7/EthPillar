@@ -575,7 +575,7 @@ while true; do
     )
     if isCharonEnabled; then
       SUBOPTIONS+=(10 "${OBOL_IMPORT_KEY_SHARES}")
-    else
+    elif ! isWeb3SignerEnabled; then
       SUBOPTIONS+=(10 "Generate / Import Validator Keys")
     fi
     SUBOPTIONS+=(
@@ -627,6 +627,9 @@ while true; do
         if isCharonEnabled; then
           sudo systemctl start charon 2>/dev/null || true
         fi
+        if isWeb3SignerEnabled; then
+          sudo systemctl start web3signer 2>/dev/null || true
+        fi
         startValidatorService
         ;;
       3)
@@ -636,6 +639,9 @@ while true; do
         stopValidatorService
         if isCharonEnabled; then
           sudo systemctl restart charon 2>/dev/null || sudo systemctl start charon 2>/dev/null || true
+        fi
+        if isWeb3SignerEnabled; then
+          sudo systemctl restart web3signer 2>/dev/null || sudo systemctl start web3signer 2>/dev/null || true
         fi
         startValidatorService
         ;;
@@ -719,8 +725,9 @@ while true; do
       4 "Restart Web3Signer" \
       5 "Edit configuration" \
       6 "Update to latest release" \
+      7 "Generate / Import Validator Keys" \
       - "" \
-      7 "Back to main menu" \
+      8 "Back to main menu" \
       3>&1 1>&2 2>&3)
 
     if [ $? -gt 0 ]; then
@@ -750,6 +757,9 @@ while true; do
         runScript update_web3signer.sh
         ;;
       7)
+        runScript manage_validator_keys.sh
+        ;;
+      8)
         break
         ;;
     esac

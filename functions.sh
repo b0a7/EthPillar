@@ -931,6 +931,12 @@ isCharonEnabled(){
     [[ -f "$charon_svc" ]]
 }
 
+# Return whether Web3Signer is installed (web3signer.service present).
+isWeb3SignerEnabled(){
+    local signer_svc="${WEB3SIGNER_SERVICE_FILE:-/etc/systemd/system/web3signer.service}"
+    [[ -f "$signer_svc" ]]
+}
+
 # EthPillar Charon cluster datadir (overridable in tests via CHARON_CLUSTER_DIR).
 getCharonClusterDir(){
     echo "${CHARON_CLUSTER_DIR:-/var/lib/charon/.charon}"

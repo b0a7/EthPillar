@@ -19,6 +19,7 @@ import deploy.prysm as prysm
 from deploy.common import ephemery_network_override
 
 CHARON_VC_LABEL = "Obol Charon DV"
+WEB3SIGNER_VC_LABEL = "Web3Signer"
 OBOL_CHARON = "Obol Charon"
 OBOL_IMPORT_KEY_SHARES = "Import Obol Charon key shares"
 OBOL_GREEN = "\033[32m"
@@ -101,15 +102,19 @@ def apply_csm_overrides(role: str, network: str, env_vars: Dict[str, str], curre
 def get_combo_menu() -> List[str]:
     return list(PREDEFINED_COMBOS.keys())
 
-def get_vc_menu(*, include_charon: bool = True) -> List[str]:
-    """Standalone VC menu (VC-only install, or Charon signer list).
+def get_vc_menu(*, include_charon: bool = True, include_web3signer: bool = False) -> List[str]:
+    """Standalone VC menu (VC-only install, or a coupled-signer list).
 
-    Grandine is excluded: it has no standalone VC. Charon is listed as a VC
-    choice for UX; selecting it requires a second prompt for the real signer.
+    Grandine is excluded: it has no standalone VC. Charon and Web3Signer are
+    listed as VC choices for UX; selecting either requires a second prompt
+    for the real validator client. Pass ``include_web3signer`` on every menu
+    that already lists Charon.
     """
     choices = [c for c in CONSENSUS_CLIENTS if c != "Grandine"]
     if include_charon:
         choices.append(CHARON_VC_LABEL)
+    if include_web3signer:
+        choices.append(WEB3SIGNER_VC_LABEL)
     return choices
 
 def get_ec_menu() -> List[str]:
@@ -125,34 +130,56 @@ def get_vc_options_for_cc(
     cc_name: str,
     *,
     include_charon: bool = True,
+    include_web3signer: bool = False,
     for_charon_signer: bool = False,
+    for_web3signer_vc: bool = False,
 ) -> List[str]:
     """VC menu after a consensus client has been chosen.
 
     ``for_charon_signer`` is the second prompt after ``Obol Charon DV``:
-    Charon and Grandine (integrated) are omitted.
+    Charon, Web3Signer, and Grandine (integrated) are omitted.
+
+    ``for_web3signer_vc`` is the second prompt after ``Web3Signer``:
+    Charon and Web3Signer are omitted. Grandine (integrated) stays available.
     """
+    if for_charon_signer or for_web3signer_vc:
+        include_charon = False
+        include_web3signer = False
     if for_charon_signer:
         if cc_name in ("Caplin", "Caplin (integrated)", "Grandine"):
-            return get_vc_menu(include_charon=False)
-        return ["Same as CC"] + get_vc_menu(include_charon=False)
+            return get_vc_menu(include_charon=False, include_web3signer=False)
+        return ["Same as CC"] + get_vc_menu(include_charon=False, include_web3signer=False)
 
     if cc_name == "Caplin" or cc_name == "Caplin (integrated)":
-        return get_vc_menu(include_charon=include_charon)
+        return get_vc_menu(include_charon=include_charon, include_web3signer=include_web3signer)
 
     if cc_name == "Grandine":
         # Integrated Grandine cannot sit behind Charon middleware.
-        if include_charon:
-            return ["Grandine (integrated)"] + get_vc_menu(include_charon=True)
-        return ["Grandine (integrated)"] + get_vc_menu(include_charon=False)
+        return ["Grandine (integrated)"] + get_vc_menu(
+            include_charon=include_charon,
+            include_web3signer=include_web3signer,
+        )
 
-    if include_charon:
-        return ["Same as CC"] + get_vc_menu(include_charon=True)
-    return ["Same as CC"] + get_vc_menu(include_charon=False)
+    return ["Same as CC"] + get_vc_menu(
+        include_charon=include_charon,
+        include_web3signer=include_web3signer,
+    )
 
 def is_charon_vc_choice(vc_choice: Optional[str]) -> bool:
     """Return True when the menu/CLI choice is the Charon middleware option."""
     return (vc_choice or "") == CHARON_VC_LABEL
+
+def is_web3signer_vc_choice(vc_choice: Optional[str]) -> bool:
+    """Return True when the menu/CLI choice is the Web3Signer option."""
+    return (vc_choice or "") == WEB3SIGNER_VC_LABEL
+
+def get_predefined_vc_mode_options() -> List[str]:
+    """Validator mode on Solo, CSM, and Failover installs.
+
+    Same order as the other VC menus: the consensus client, then Charon,
+    then Web3Signer.
+    """
+    return ["Same as CC", CHARON_VC_LABEL, WEB3SIGNER_VC_LABEL]
 
 def resolve_vc_name(cc_name: str, vc_choice: str) -> str:
     if vc_choice == "Same as CC":
