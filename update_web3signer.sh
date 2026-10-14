@@ -69,6 +69,7 @@ function updateClient(){
 	wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Failed to download Web3Signer."
 	sudo systemctl stop web3signer
 	PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "web3signer" "/usr/local/bin/web3signer" "directory" 1
+	PYTHONPATH="${BASE_DIR}" python3 -m deploy.web3signer apply-migrations
 	sudo systemctl start web3signer
 }
 

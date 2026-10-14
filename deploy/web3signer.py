@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -260,6 +261,129 @@ $$;
         )
 
 
+_MIGRATION_VERSION_RE = re.compile(r"^V(\d+)", re.IGNORECASE)
+
+
+def migrations_to_apply(filenames: Sequence[str], current_version: Optional[int]) -> List[str]:
+    """Return slashing-schema SQL files that still need to be applied.
+
+    Files are ordered by the Flyway ``V<number>`` prefix. A missing
+    ``database_version`` row (``current_version is None``) applies every file.
+
+    Args:
+        filenames: Basenames from ``migrations/postgresql``.
+        current_version: Version stored in ``database_version``, if the table exists.
+
+    Returns:
+        Basenames to apply, lowest version first.
+    """
+    ranked = []
+    for name in filenames:
+        if not name.endswith(".sql"):
+            continue
+        match = _MIGRATION_VERSION_RE.match(name)
+        if not match:
+            continue
+        version = int(match.group(1))
+        if current_version is not None and version <= current_version:
+            continue
+        ranked.append((version, name))
+    ranked.sort()
+    return [name for _, name in ranked]
+
+
+def _db_password(env_path: str = WEB3SIGNER_DB_ENV) -> str:
+    """Return the slashing-database password stored in ``db.env``."""
+    text = _read_sudo_text(env_path)
+    for line in text.splitlines():
+        if line.startswith(f"{DB_PASSWORD_ENV}="):
+            password = line.split("=", 1)[1].strip()
+            if password:
+                return password
+    raise FileNotFoundError(f"No {DB_PASSWORD_ENV} in {env_path}")
+
+
+def _migrations_dir(install_dir: str = WEB3SIGNER_INSTALL_DIR) -> str:
+    """Return the directory of Web3Signer PostgreSQL migration scripts."""
+    candidates = (
+        os.path.join(install_dir, "migrations", "postgresql"),
+        os.path.join(install_dir, "migrations", "postgresql", "postgresql"),
+    )
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    raise FileNotFoundError(
+        f"Web3Signer PostgreSQL migrations not found under {install_dir}/migrations"
+    )
+
+
+def _psql(password: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run psql against the local web3signer database as its owner role."""
+    env = os.environ.copy()
+    env["PGPASSWORD"] = password
+    return subprocess.run(
+        [
+            "psql",
+            "-h",
+            "127.0.0.1",
+            "-U",
+            SLASHING_DB_USER,
+            "-d",
+            "web3signer",
+            "-v",
+            "ON_ERROR_STOP=1",
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def _current_schema_version(password: str) -> Optional[int]:
+    """Return ``database_version.version``, or None when the table is absent."""
+    result = _psql(
+        password,
+        "-tAc",
+        "SELECT version FROM database_version WHERE id = 1",
+    )
+    if result.returncode != 0:
+        return None
+    text = (result.stdout or "").strip()
+    if not text:
+        return None
+    return int(text)
+
+
+def apply_slashing_schema(install_dir: str = WEB3SIGNER_INSTALL_DIR) -> List[str]:
+    """Load Web3Signer's PostgreSQL slashing-protection schema.
+
+    Web3Signer refuses to start until ``database_version`` matches the version
+    shipped with that release. The SQL files live in the distribution and are
+    applied in version order. Files at or below the current version are skipped.
+
+    Args:
+        install_dir: Unpacked Web3Signer directory.
+
+    Returns:
+        Basenames of the migration files that were applied.
+    """
+    password = _db_password()
+    directory = _migrations_dir(install_dir)
+    pending = migrations_to_apply(os.listdir(directory), _current_schema_version(password))
+    applied: List[str] = []
+    for name in pending:
+        path = os.path.join(directory, name)
+        print(f">> Applying Web3Signer slashing schema {name}")
+        result = _psql(password, "-f", path)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"Failed to apply {name}: {detail}")
+        applied.append(name)
+    return applied
+
+
 def install_web3signer(eth_network: str) -> tuple[str, str]:
     """Install the Web3Signer distribution, slashing database, and systemd unit.
 
@@ -292,6 +416,9 @@ def install_web3signer(eth_network: str) -> tuple[str, str]:
     download_path = f"{DOWNLOAD_DIR}/{info['filenames'][0]}"
     download_file(info["download_urls"][0], download_path, "web3signer")
     extract_and_install(download_path, "web3signer", WEB3SIGNER_INSTALL_DIR, "directory", 1)
+    # Web3Signer does not migrate on startup. An empty database fails with
+    # "Failed to read database version, expected 12".
+    apply_slashing_schema()
 
     service_content = generate_web3signer_service(eth_network)
     write_service_file(service_content, WEB3SIGNER_SERVICE_PATH, "web3signer_temp.service")
@@ -509,10 +636,28 @@ def _cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_apply_migrations(_args: argparse.Namespace) -> int:
+    try:
+        applied = apply_slashing_schema()
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    if applied:
+        print(f"applied={','.join(applied)}")
+    else:
+        print("applied=none")
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI entry point for keystore import."""
+    """CLI entry point for keystore import and schema migrations."""
     parser = argparse.ArgumentParser(description="EthPillar Web3Signer helpers")
     sub = parser.add_subparsers(dest="command", required=True)
+    migrate_parser = sub.add_parser(
+        "apply-migrations",
+        help="Load the Web3Signer slashing-protection schema into PostgreSQL",
+    )
+    migrate_parser.set_defaults(func=_cmd_apply_migrations)
     import_parser = sub.add_parser(
         "import-keystores",
         help="Copy EIP-2335 keystores into the Web3Signer keystore directory",

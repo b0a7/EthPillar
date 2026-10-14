@@ -128,3 +128,23 @@ def test_import_keystores_copies_password_and_definitions(tmp_path, monkeypatch)
     assert any(cmd[:3] == ["sudo", "cp", "-a"] for cmd in commands)
     assert "type: web3signer" in writes[str(definitions)]
     assert "correct horse battery" in writes[str(dest / "keystore-m.txt")]
+
+
+def test_migrations_apply_in_numeric_order_when_schema_is_missing():
+    from deploy import web3signer as mod
+
+    pending = mod.migrations_to_apply(
+        ["V2__b.sql", "V10__c.sql", "V1__a.sql", "README.md"],
+        None,
+    )
+    assert pending == ["V1__a.sql", "V2__b.sql", "V10__c.sql"]
+
+
+def test_migrations_skip_versions_already_applied():
+    from deploy import web3signer as mod
+
+    pending = mod.migrations_to_apply(
+        ["V1__a.sql", "V2__b.sql", "V12__d.sql"],
+        2,
+    )
+    assert pending == ["V12__d.sql"]

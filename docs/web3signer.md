@@ -28,7 +28,7 @@ What gets installed:
 | `/var/lib/web3signer/db.env` | PostgreSQL password for the slashing database (mode `600`) |
 | `web3signer.service` | Listens on `127.0.0.1:9000` only |
 
-Slashing protection uses a local PostgreSQL database named `web3signer`. The validator client unit is ordered `After=web3signer.service`.
+Slashing protection uses a local PostgreSQL database named `web3signer`. Install loads the schema from the release's `migrations/postgresql` scripts; Web3Signer does not migrate on startup and refuses to start until `database_version` matches that release. The validator client unit is ordered `After=web3signer.service`.
 
 How each client finds keys:
 
