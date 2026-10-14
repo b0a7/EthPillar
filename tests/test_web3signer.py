@@ -108,13 +108,24 @@ def test_import_keystores_copies_password_and_definitions(tmp_path, monkeypatch)
 
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     real_isfile = os.path.isfile
+    real_open = open
+    validator_unit = "/etc/systemd/system/validator.service"
 
     def fake_isfile(path: str) -> bool:
-        if str(path).endswith("validator.service"):
+        # Pretend the unit exists even on a host that has no validator.service.
+        if str(path) == validator_unit:
             return True
         return real_isfile(path)
 
+    def fake_open(path, *args, **kwargs):
+        # _read_sudo_text opens a readable unit directly and never reaches
+        # `sudo cat`. A real non-Lighthouse node would hide the mock.
+        if str(path) == validator_unit:
+            raise OSError("use the sudo cat mock")
+        return real_open(path, *args, **kwargs)
+
     monkeypatch.setattr(mod.os.path, "isfile", fake_isfile)
+    monkeypatch.setattr("builtins.open", fake_open)
 
     result = mod.import_keystores(
         str(src),
