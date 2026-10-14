@@ -14,10 +14,12 @@ import deploy.lodestar as lodestar
 import deploy.grandine as grandine
 import deploy.mevboost as mevboost
 import deploy.charon as charon
+import deploy.web3signer as web3signer
 import deploy.prysm as prysm
 from deploy.common import ephemery_network_override
 
 CHARON_VC_LABEL = "Obol Charon DV"
+WEB3SIGNER_VC_LABEL = "Web3Signer"
 OBOL_CHARON = "Obol Charon"
 OBOL_IMPORT_KEY_SHARES = "Import Obol Charon key shares"
 OBOL_GREEN = "\033[32m"
@@ -100,15 +102,19 @@ def apply_csm_overrides(role: str, network: str, env_vars: Dict[str, str], curre
 def get_combo_menu() -> List[str]:
     return list(PREDEFINED_COMBOS.keys())
 
-def get_vc_menu(*, include_charon: bool = True) -> List[str]:
-    """Standalone VC menu (VC-only install, or Charon signer list).
+def get_vc_menu(*, include_charon: bool = True, include_web3signer: bool = False) -> List[str]:
+    """Standalone VC menu (VC-only install, or a coupled-signer list).
 
-    Grandine is excluded: it has no standalone VC. Charon is listed as a VC
-    choice for UX; selecting it requires a second prompt for the real signer.
+    Grandine is excluded: it has no standalone VC. Charon and Web3Signer are
+    listed as VC choices for UX; selecting either requires a second prompt
+    for the real validator client. Pass ``include_web3signer`` on every menu
+    that already lists Charon.
     """
     choices = [c for c in CONSENSUS_CLIENTS if c != "Grandine"]
     if include_charon:
         choices.append(CHARON_VC_LABEL)
+    if include_web3signer:
+        choices.append(WEB3SIGNER_VC_LABEL)
     return choices
 
 def get_ec_menu() -> List[str]:
@@ -124,34 +130,56 @@ def get_vc_options_for_cc(
     cc_name: str,
     *,
     include_charon: bool = True,
+    include_web3signer: bool = False,
     for_charon_signer: bool = False,
+    for_web3signer_vc: bool = False,
 ) -> List[str]:
     """VC menu after a consensus client has been chosen.
 
     ``for_charon_signer`` is the second prompt after ``Obol Charon DV``:
-    Charon and Grandine (integrated) are omitted.
+    Charon, Web3Signer, and Grandine (integrated) are omitted.
+
+    ``for_web3signer_vc`` is the second prompt after ``Web3Signer``:
+    Charon and Web3Signer are omitted. Grandine (integrated) stays available.
     """
+    if for_charon_signer or for_web3signer_vc:
+        include_charon = False
+        include_web3signer = False
     if for_charon_signer:
         if cc_name in ("Caplin", "Caplin (integrated)", "Grandine"):
-            return get_vc_menu(include_charon=False)
-        return ["Same as CC"] + get_vc_menu(include_charon=False)
+            return get_vc_menu(include_charon=False, include_web3signer=False)
+        return ["Same as CC"] + get_vc_menu(include_charon=False, include_web3signer=False)
 
     if cc_name == "Caplin" or cc_name == "Caplin (integrated)":
-        return get_vc_menu(include_charon=include_charon)
+        return get_vc_menu(include_charon=include_charon, include_web3signer=include_web3signer)
 
     if cc_name == "Grandine":
         # Integrated Grandine cannot sit behind Charon middleware.
-        if include_charon:
-            return ["Grandine (integrated)"] + get_vc_menu(include_charon=True)
-        return ["Grandine (integrated)"] + get_vc_menu(include_charon=False)
+        return ["Grandine (integrated)"] + get_vc_menu(
+            include_charon=include_charon,
+            include_web3signer=include_web3signer,
+        )
 
-    if include_charon:
-        return ["Same as CC"] + get_vc_menu(include_charon=True)
-    return ["Same as CC"] + get_vc_menu(include_charon=False)
+    return ["Same as CC"] + get_vc_menu(
+        include_charon=include_charon,
+        include_web3signer=include_web3signer,
+    )
 
 def is_charon_vc_choice(vc_choice: Optional[str]) -> bool:
     """Return True when the menu/CLI choice is the Charon middleware option."""
     return (vc_choice or "") == CHARON_VC_LABEL
+
+def is_web3signer_vc_choice(vc_choice: Optional[str]) -> bool:
+    """Return True when the menu/CLI choice is the Web3Signer option."""
+    return (vc_choice or "") == WEB3SIGNER_VC_LABEL
+
+def get_predefined_vc_mode_options() -> List[str]:
+    """Validator mode on Solo, CSM, and Failover installs.
+
+    Same order as the other VC menus: the consensus client, then Charon,
+    then Web3Signer.
+    """
+    return ["Same as CC", CHARON_VC_LABEL, WEB3SIGNER_VC_LABEL]
 
 def resolve_vc_name(cc_name: str, vc_choice: str) -> str:
     if vc_choice == "Same as CC":
@@ -221,9 +249,25 @@ def is_valid_combination(ec: str, cc: str) -> bool:
         return True
     return False
 
+def _with_signer_params(extra_params: str, vc_name: Optional[str], web3signer_enabled: bool) -> str:
+    """Append Web3Signer remote-signer flags for a standalone VC."""
+    if not web3signer_enabled or not vc_name:
+        return extra_params
+    signer = web3signer.signer_flags_for_vc(vc_name)
+    if not signer:
+        return extra_params
+    return f"{extra_params} {signer}".strip() if extra_params else signer
+
+
 def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Optional[str], vc_name: Optional[str], flags: Dict[str, bool], params: Dict[str, str], env_vars: Dict[str, str]):
     """Orchestrate the installation by calling the appropriate deploy modules."""
     import deploy.common as common
+
+    if flags.get("charon") and flags.get("web3signer"):
+        raise ValueError(
+            "Web3Signer and Obol Charon cannot be combined. "
+            "Install one signing mode."
+        )
 
     fee_recipient = params.get('fee_recipient', '')
     graffiti = params.get('graffiti', '')
@@ -324,7 +368,12 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             mev_params = '--builder-url=http://127.0.0.1:18550' if flags['mevboost'] else ''
             cl_ver = grandine.download_grandine(network)
             is_integrated_vc = (vc_name == 'Grandine (integrated)' and flags['validator'])
-            cl_path = grandine.install_grandine_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, is_integrated_vc=is_integrated_vc, network_override=cl_override)
+            grandine_signer_url = (
+                web3signer.DEFAULT_SIGNER_URL
+                if flags.get("web3signer") and is_integrated_vc
+                else ""
+            )
+            cl_path = grandine.install_grandine_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, is_integrated_vc=is_integrated_vc, network_override=cl_override, web3signer_url=grandine_signer_url)
         elif cc_name == 'Prysm':
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
             mev_params = '--http-mev-relay=http://127.0.0.1:18550' if flags['mevboost'] else ''
@@ -332,6 +381,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             cl_path = prysm.install_prysm_bn(network, sync_url, jwtsecret_path, str(cl_rest_port), str(cl_p2p_port), str(cl_p2p_port_2), str(cl_max_peers), fee_parameters=fee_params, mev_parameters=mev_params, network_override=cl_override)
 
     charon_enabled = bool(flags.get('charon'))
+    web3signer_enabled = bool(flags.get('web3signer'))
     if charon_enabled and vc_name == "Grandine (integrated)":
         raise ValueError("Obol Charon is incompatible with Grandine (integrated). Select a standalone VC.")
     if charon_enabled and vc_name == CHARON_VC_LABEL:
@@ -374,6 +424,10 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             feature_set_enable="json_requests" if cc_name == "Nimbus" else "",
         )
 
+    web3signer_ver, web3signer_path = "", ""
+    if web3signer_enabled and not flags.get("switch_client"):
+        web3signer_ver, web3signer_path = web3signer.install_web3signer(network)
+
     val_path = ""
     val_ver = ""
     use_builder = bool(flags.get('builder_api') or flags.get('mevboost'))
@@ -385,31 +439,46 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             if charon_enabled
             else upstream_bn
         )
-        # Same-host ordering: start Charon before the VC talks to :3600.
-        vc_unit_after = ["charon.service"] if charon_enabled else None
+        # Same-host ordering: start Charon or Web3Signer before the VC.
+        vc_unit_after = []
+        if charon_enabled:
+            vc_unit_after.append("charon.service")
+        if web3signer_enabled:
+            vc_unit_after.append("web3signer.service")
+        vc_unit_after = vc_unit_after or None
 
         if vc_name == 'Lighthouse':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lighthouse.download_lighthouse(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--builder-proposals' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--builder-proposals' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beacon-nodes={addr}'
             val_path = lighthouse.install_lighthouse_vc(
                 v_ver, network, str(cl_rest_port), graffiti, bn_arg, fee_params, extra_params,
                 unit_after=vc_unit_after, network_override=vc_override,
             )
+            if web3signer_enabled:
+                web3signer.ensure_lighthouse_definitions_file()
         elif vc_name == 'Nimbus':
             v_ver = cl_ver if vc_name == cc_name and cl_ver else nimbus.download_nimbus(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--payload-builder=true' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--payload-builder=true' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beacon-node={addr}'
             val_path = nimbus.install_nimbus_vc(
@@ -420,10 +489,14 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else teku.download_teku(network)
             val_ver = v_ver
             fee_params = f'--validators-proposer-default-fee-recipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--validators-builder-registration-default-enabled=true' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--validators-builder-registration-default-enabled=true' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beacon-node-api-endpoint={addr}'
             val_path = teku.install_teku_vc(
@@ -434,10 +507,14 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else lodestar.download_lodestar(network)
             val_ver = v_ver
             fee_params = f'--suggestedFeeRecipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--builder' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--builder' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beaconNodes={addr}'
             val_path = lodestar.install_lodestar_vc(
@@ -448,10 +525,14 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
             v_ver = cl_ver if vc_name == cc_name and cl_ver else prysm.download_prysm(network)
             val_ver = v_ver
             fee_params = f'--suggested-fee-recipient={fee_recipient}'
-            extra_params = _with_dvt_params(
-                '--enable-builder' if use_builder else '',
+            extra_params = _with_signer_params(
+                _with_dvt_params(
+                    '--enable-builder' if use_builder else '',
+                    vc_name,
+                    charon_enabled,
+                ),
                 vc_name,
-                charon_enabled,
+                web3signer_enabled,
             )
             bn_arg = f'--beacon-rest-api-provider={addr}'
             # gRPC beacon endpoint only when the local BN is also Prysm and Charon is off.
@@ -499,4 +580,7 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
         charon_enabled=charon_enabled,
         charon_version=charon_ver,
         charon_service_path=charon_path,
+        web3signer_enabled=web3signer_enabled,
+        web3signer_version=web3signer_ver,
+        web3signer_service_path=web3signer_path,
     )

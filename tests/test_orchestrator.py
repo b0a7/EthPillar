@@ -16,10 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from deploy.orchestrator import (
     resolve_role_flags, apply_csm_overrides,
     get_combo_menu, get_vc_menu, get_ec_menu, get_cc_menu,
-    get_vc_options_for_cc, resolve_vc_name, is_charon_vc_choice,
+    get_vc_options_for_cc, get_predefined_vc_mode_options, resolve_vc_name, is_charon_vc_choice,
     run_install, is_valid_combination,
     PREDEFINED_COMBOS, EXECUTION_CLIENTS, CONSENSUS_CLIENTS,
-    CHARON_VC_LABEL, _int_param, _with_dvt_params,
+    CHARON_VC_LABEL, WEB3SIGNER_VC_LABEL, _int_param, _with_dvt_params,
     lodestar_bn_vc_incompatibility_message, LODESTAR_BN_INCOMPATIBLE_VCS,
 )
 
@@ -140,6 +140,41 @@ class TestCustomClientMenuLogic:
         assert is_charon_vc_choice(CHARON_VC_LABEL)
         assert not is_charon_vc_choice("Lodestar")
 
+    def test_custom_vc_menu_lists_web3signer_after_charon(self):
+        menu = get_vc_options_for_cc("Lighthouse", include_web3signer=True)
+        assert menu[-2] == CHARON_VC_LABEL
+        assert menu[-1] == WEB3SIGNER_VC_LABEL
+
+    def test_web3signer_coupled_vc_excludes_charon_and_web3signer(self):
+        menu = get_vc_options_for_cc("Teku", for_web3signer_vc=True)
+        assert CHARON_VC_LABEL not in menu
+        assert WEB3SIGNER_VC_LABEL not in menu
+        assert menu[0] == "Same as CC"
+        assert "Lighthouse" in menu
+
+    def test_web3signer_coupled_vc_keeps_integrated_grandine(self):
+        menu = get_vc_options_for_cc("Grandine", for_web3signer_vc=True)
+        assert menu[0] == "Grandine (integrated)"
+        assert CHARON_VC_LABEL not in menu
+        assert WEB3SIGNER_VC_LABEL not in menu
+
+    def test_default_vc_menu_omits_web3signer(self):
+        menu = get_vc_options_for_cc("Lighthouse")
+        assert WEB3SIGNER_VC_LABEL not in menu
+        assert menu[-1] == CHARON_VC_LABEL
+
+    def test_vc_only_menu_lists_web3signer_after_charon(self):
+        menu = get_vc_menu(include_charon=True, include_web3signer=True)
+        assert menu[-2] == CHARON_VC_LABEL
+        assert menu[-1] == WEB3SIGNER_VC_LABEL
+        coupled = get_vc_menu(include_charon=False)
+        assert CHARON_VC_LABEL not in coupled
+        assert WEB3SIGNER_VC_LABEL not in coupled
+
+    def test_predefined_role_menu_lists_web3signer_after_charon(self):
+        menu = get_predefined_vc_mode_options()
+        assert menu == ["Same as CC", CHARON_VC_LABEL, WEB3SIGNER_VC_LABEL]
+
     def test_with_dvt_params_appends_client_specific_flags(self):
         assert _with_dvt_params("--builder", "Lodestar", True) == "--builder --distributed"
         assert _with_dvt_params("", "Lighthouse", True) == "--distributed"
@@ -222,6 +257,8 @@ class TestRunInstallRouting:
             mv_dl = stack.enter_context(patch('deploy.mevboost.install_mevboost', return_value=("v1", "p")))
             ch_dl = stack.enter_context(patch('deploy.charon.install_charon', return_value=("v1", "p")))
             ch_json = stack.enter_context(patch('deploy.charon.patch_json_requests_feature', return_value=False))
+            w3s = stack.enter_context(patch('deploy.web3signer.install_web3signer', return_value=("26.9.0", "p")))
+            w3s_defs = stack.enter_context(patch('deploy.web3signer.ensure_lighthouse_definitions_file'))
             
             stack.enter_context(patch('deploy.common.setup_node'))
             stack.enter_context(patch('deploy.common.finish_install'))
@@ -237,8 +274,8 @@ class TestRunInstallRouting:
                 'ls_bn': ls_bn, 'ls_vc': ls_vc, 'ls_dl': ls_dl,
                 'gr_bn': gr_bn, 'gr_dl': gr_dl,
                 'pr_bn': pr_bn, 'pr_vc': pr_vc, 'pr_dl': pr_dl,
-                'mev': mv_dl, 'charon': ch_dl,
-                '_charon_json': ch_json,
+                'mev': mv_dl, 'charon': ch_dl, 'web3signer': w3s,
+                '_charon_json': ch_json, '_w3s_defs': w3s_defs,
             }
     def _verify_only_called(self, mocks, expected_keys):
         """
@@ -485,3 +522,44 @@ class TestRunInstallRouting:
                 "Custom Setup", "Besu", "Grandine", "Grandine (integrated)",
                 flags_override={"validator": True, "charon": True},
             )
+
+    def test_web3signer_and_charon_are_mutually_exclusive(self):
+        with pytest.raises(ValueError, match="Web3Signer"):
+            self._run(
+                "Custom Setup", "Geth", "Teku", "Teku",
+                flags_override={"validator": True, "charon": True, "web3signer": True},
+            )
+
+    def test_web3signer_keeps_beacon_url_and_adds_teku_flags(self):
+        mocks = self._run(
+            "Custom Setup", "Geth", "Teku", "Teku",
+            flags_override={"validator": True, "web3signer": True},
+        )
+        self._verify_only_called(mocks, ['geth', 'tk_dl', 'tk_bn', 'tk_vc', 'web3signer'])
+        bn_arg = mocks['tk_vc'].call_args.args[4]
+        assert "127.0.0.1:5052" in bn_arg or "5052" in bn_arg
+        assert ":3600" not in bn_arg
+        extra = mocks['tk_vc'].call_args.args[6]
+        assert "--validators-external-signer-url=http://127.0.0.1:9000" in extra
+        assert "publicKeys" in extra
+        assert mocks['tk_vc'].call_args.kwargs.get("unit_after") == ["web3signer.service"]
+
+    def test_web3signer_lighthouse_disables_local_slashing_db(self):
+        mocks = self._run(
+            "Validator Client Only", None, None, "Lighthouse",
+            flags_override={"web3signer": True},
+        )
+        extra = mocks['lh_vc'].call_args.args[6]
+        assert "--disable-slashing-protection-web3signer" in extra
+        bn_arg = mocks['lh_vc'].call_args.args[4]
+        assert ":3600" not in bn_arg
+        mocks['_w3s_defs'].assert_called_once()
+
+    def test_web3signer_grandine_integrated_uses_signer_not_keystores(self):
+        mocks = self._run(
+            "Custom Setup", "Besu", "Grandine", "Grandine (integrated)",
+            flags_override={"validator": True, "web3signer": True},
+        )
+        self._verify_only_called(mocks, ['besu', 'gr_dl', 'gr_bn', 'web3signer'])
+        assert mocks['gr_bn'].call_args.kwargs.get("web3signer_url") == "http://127.0.0.1:9000"
+

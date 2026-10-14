@@ -663,7 +663,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                    skip_prompts: bool, cl_rest_port: str,
                    vc_name: str = '', vc_ver: str = '',
                    charon_enabled: bool = False, charon_version: Optional[str] = None,
-                   charon_service_path: Optional[str] = None) -> None:
+                   charon_service_path: Optional[str] = None,
+                   web3signer_enabled: bool = False, web3signer_version: Optional[str] = None,
+                   web3signer_service_path: Optional[str] = None) -> None:
     """Display installation summary and optionally start/enable services.
 
     Args:
@@ -690,6 +692,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         charon_enabled: Whether Obol Charon middleware was installed.
         charon_version: Charon version string.
         charon_service_path: Path to charon.service.
+        web3signer_enabled: Whether Web3Signer was installed.
+        web3signer_version: Web3Signer version string.
+        web3signer_service_path: Path to web3signer.service.
     """
     
     # Reload the systemd daemon
@@ -715,6 +720,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
 
     if charon_enabled and charon_version:
         print(f'Charon Version: \n{charon_version}\n')
+
+    if web3signer_enabled and web3signer_version:
+        print(f'Web3Signer Version: \n{web3signer_version}\n')
 
     print(f'Network: {eth_network.upper()}\n')
 
@@ -745,6 +753,8 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
             print(f'{mevboost_service_path}')
     if charon_enabled and charon_service_path:
         print(f'{charon_service_path}')
+    if web3signer_enabled and web3signer_service_path:
+        print(f'{web3signer_service_path}')
 
     if charon_enabled:
         from deploy.charon import CHARON_CLUSTER_DIR
@@ -801,6 +811,15 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
     except Exception as exc:  # noqa: BLE001 — optional monitoring when the stack is absent
         print(f'Note: Client Grafana/Prometheus provisioning skipped ({exc}).')
 
+    if web3signer_enabled:
+        from deploy.web3signer import DEFAULT_SIGNER_URL, WEB3SIGNER_KEYSTORE_DIR
+        print('\nWeb3Signer next steps:')
+        print(f'  Signer URL: {DEFAULT_SIGNER_URL} (localhost only)')
+        print(f'  Import new validator keystores into {WEB3SIGNER_KEYSTORE_DIR}')
+        print('  EthPillar → Web3Signer → Generate / Import Validator Keys')
+        print('  Keys stay in Web3Signer. The validator client does not load them.')
+        print('  See docs/web3signer.md for a Hoodi check with Teku and Lighthouse.\n')
+
     if skip_prompts:
         print(f'\nNon-interactive install successful! Skipped prompts.')
         exit(0)
@@ -823,6 +842,8 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                 from deploy.charon import CHARON_LOCK_FILE
                 if os.path.isfile(CHARON_LOCK_FILE):
                     services.append('charon')
+            if web3signer_enabled:
+                services.append('web3signer')
             # --no-block: Nimbus trustedNodeSync ExecStartPre can block for minutes.
             start_units_no_block(services)
             if services:
@@ -848,6 +869,8 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                 subprocess.run(['sudo', 'systemctl', 'enable', 'mevboost'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
             if charon_enabled:
                 subprocess.run(['sudo', 'systemctl', 'enable', 'charon'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if web3signer_enabled:
+                subprocess.run(['sudo', 'systemctl', 'enable', 'web3signer'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     if skip_prompts:
         exit(0)
@@ -1242,6 +1265,8 @@ def get_client_release_info(
         module_name = "mevboost"
     elif client in ["charon", "obol", "obol-charon"]:
         module_name = "charon"
+    elif client in ["web3signer", "web3-signer"]:
+        module_name = "web3signer"
     else:
         module_name = client
 

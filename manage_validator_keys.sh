@@ -402,8 +402,55 @@ function checkLido(){
     fi
 }
 
+function web3signerInstalled(){
+    [[ -f "${WEB3SIGNER_SERVICE_FILE:-/etc/systemd/system/web3signer.service}" ]]
+}
+
+# Copy EIP-2335 keystores into Web3Signer. Does not import them into the VC.
+function importKeysIntoWeb3Signer(){
+    local passfile=""
+    local -a py
+    if ! compgen -G "${KEYFOLDER}/keystore"*.txt >/dev/null; then
+        if [[ -z "${_KEYSTOREPASSWORD:-}" ]]; then
+            promptForKeystorePasswordForImport || return 1
+        fi
+        passfile=$(mktemp)
+        chmod 600 "$passfile"
+        printf '%s\n' "$_KEYSTOREPASSWORD" > "$passfile"
+    fi
+    py=(python3 -m deploy.web3signer import-keystores --directory "$KEYFOLDER")
+    if [[ -n "$passfile" ]]; then
+        py+=(--password-file "$passfile")
+    fi
+    PYTHONPATH="${BASE_DIR}" "${py[@]}"
+    local rc=$?
+    [[ -n "$passfile" ]] && rm -f "$passfile"
+    return $rc
+}
+
 # Load validator keys into validator client
 function loadKeys(){
+   if [[ "${1:-default}" == "default" ]] && web3signerInstalled; then
+        getClientVC
+        ohai "Loading keystores into Web3Signer (not the validator client)"
+        if [[ "$VC" == "Grandine" ]]; then
+            sudo systemctl stop consensus
+        else
+            sudo systemctl stop validator
+        fi
+        if ! importKeysIntoWeb3Signer; then
+            whiptail --title "Error" --msgbox "Web3Signer key import failed. See the terminal output." 10 70
+            return 1
+        fi
+        ohai "Starting Web3Signer and validator"
+        queryEntryQueue
+        setLaunchPadMessage
+        whiptail --title "Next Steps: Upload JSON Deposit Data File" --msgbox "$MSG_LAUNCHPAD" 25 95
+        whiptail --title "Tips: Things to Know" --msgbox "$MSG_TIPS" 24 78
+        ohai "Finished loading keys into Web3Signer"
+        promptViewLogs "$1"
+        return 0
+   fi
    case $1 in
        default)
         getClientVC
@@ -960,6 +1007,19 @@ keymanagerListKeys() {
 
 
 keymanagerImportKeystores() {
+    if web3signerInstalled; then
+        if ! whiptail --title "Import into Web3Signer" --defaultno --yesno \
+            "This node uses Web3Signer. Keystores will be copied to the signer, not into the validator client.\n\n${MSG_IMPORT}" 16 78; then
+            return 1
+        fi
+        KEYFOLDER=$(whiptail --title "Keystore Directory" --inputbox "$MSG_PATH" 16 78 --ok-button "Submit" 3>&1 1>&2 2>&3) || return 1
+        if [[ ! -d "$KEYFOLDER" ]]; then
+            whiptail --title "Error" --msgbox "Directory does not exist:\n$KEYFOLDER" 10 70
+            return 1
+        fi
+        importKeysIntoWeb3Signer
+        return $?
+    fi
     local key_dir password verify json err count statuses_text
     if ! keymanagerEnsureAvailable; then
         return 1

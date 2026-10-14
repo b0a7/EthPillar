@@ -1117,6 +1117,65 @@ def verify(args: Any):
 
     return success
 
+
+def run_web3signer_smoke() -> int:
+    """Install Web3Signer and check /upcheck plus an empty public-key list.
+
+    No beacon node and no validator keys. Proves the binary, the unit, and
+    the HTTP API.
+    """
+    print("\n🚀 Web3Signer smoke: install, start, /upcheck", flush=True)
+    install = subprocess.run(
+        [sys.executable, "-c", "from deploy.web3signer import install_web3signer; install_web3signer('hoodi')"],
+        cwd="/ethpillar",
+        env={**os.environ, "PYTHONPATH": "/ethpillar"},
+    )
+    if install.returncode != 0:
+        print("❌ Web3Signer install failed", flush=True)
+        return 1
+    subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
+    started = subprocess.run(["sudo", "systemctl", "start", "web3signer"], check=False)
+    if started.returncode != 0:
+        print("❌ systemctl start web3signer failed", flush=True)
+        subprocess.run(["sudo", "journalctl", "-u", "web3signer", "-n", "80", "--no-pager"])
+        return 1
+
+    import json
+    import time
+    import urllib.error
+    import urllib.request
+
+    upcheck_ok = False
+    last_error = ""
+    for _ in range(60):
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:9000/upcheck", timeout=2) as response:
+                if response.status == 200:
+                    upcheck_ok = True
+                    break
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last_error = str(exc)
+        time.sleep(2)
+    if not upcheck_ok:
+        print(f"❌ /upcheck did not succeed ({last_error})", flush=True)
+        subprocess.run(["sudo", "journalctl", "-u", "web3signer", "-n", "80", "--no-pager"])
+        return 1
+    print("✅ /upcheck", flush=True)
+
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:9000/api/v1/eth2/publicKeys", timeout=5) as response:
+            body = response.read().decode("utf-8")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"❌ /api/v1/eth2/publicKeys failed: {exc}", flush=True)
+        return 1
+    keys = json.loads(body)
+    if keys != []:
+        print(f"❌ expected an empty public key list, got {body}", flush=True)
+        return 1
+    print("✅ publicKeys []", flush=True)
+    return 0
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Docker Test Runner')
@@ -1166,6 +1225,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     require_non_root_integration_runner()
     require_production_python_deps()
+
+    if args.script_name == "web3signer-smoke":
+        sys.exit(run_web3signer_smoke())
 
     if args.script_name == "verify-service-health":
         if not args.service:

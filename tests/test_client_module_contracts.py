@@ -13,6 +13,7 @@ from deploy.protocols import (
     ALL_CLIENT_MODULES,
     CharonClientModule,
     ReleaseInfoProvider,
+    Web3SignerClientModule,
 )
 
 
@@ -40,3 +41,8 @@ def test_client_module_satisfies_release_info_provider(module_name: str) -> None
 def test_charon_module_satisfies_charon_protocol() -> None:
     module = importlib.import_module("deploy.charon")
     assert isinstance(module, CharonClientModule)
+
+
+def test_web3signer_module_satisfies_web3signer_protocol() -> None:
+    module = importlib.import_module("deploy.web3signer")
+    assert isinstance(module, Web3SignerClientModule)

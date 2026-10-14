@@ -208,6 +208,20 @@ check_charon_version() {
   assert_matches_latest "Charon" "charon" "$version"
 }
 
+check_web3signer_version() {
+  [[ -f /etc/systemd/system/web3signer.service ]] || return 0
+  local version
+  INSTALLED_COMMIT=""
+  if ! getWeb3SignerCurrentVersion; then
+    echo "❌ Web3Signer version parse failed: ${VERSION:-empty}"
+    fail=1
+    return 0
+  fi
+  version=$VERSION
+  echo "✅ Web3Signer version: ${version}"
+  assert_matches_latest "Web3Signer" "web3signer" "$version"
+}
+
 # Optional role filter so Upgrade two-phase can assert only the client that
 # just moved to LATEST (a still-seeded sibling must not fail the check).
 # Comma-separated: el,cl,vc,mevboost,charon. Empty / unset = all present roles.
@@ -231,6 +245,7 @@ should_check_role cl && check_cl_version
 should_check_role vc && check_vc_version
 should_check_role mevboost && check_mevboost_version
 should_check_role charon && check_charon_version
+should_check_role web3signer && check_web3signer_version
 
 if [[ "$fail" -ne 0 ]]; then
   exit 1

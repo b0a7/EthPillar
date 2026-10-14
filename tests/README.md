@@ -52,7 +52,7 @@ docker run --rm -v "${PWD}:/ethpillar" ethpillar-test bats tests/
 
 ## 4. Running Integration Tests (Docker)
 
-These tests perform end-to-end installations of various client combinations and roles in a sandbox container. The custom matrix includes `Geth-Lighthouse-Charon-Lodestar-SEPOLIA` (Charon + signer VC; health check is skipped without a cluster lock file).
+These tests perform end-to-end installations of various client combinations and roles in a sandbox container. The custom matrix includes `Geth-Lighthouse-Charon-Lodestar-SEPOLIA` (Charon + signer VC; health check is skipped without a cluster lock file) and `Web3Signer-Smoke` (Web3Signer only: `/upcheck` and an empty public-key list, no beacon node).
 
 ### On Windows (PowerShell)
 ```powershell

@@ -78,6 +78,7 @@ CLIENT_REPOS: list[tuple[str, str | None]] = [
     ("prysm", "prysmaticlabs/prysm"),
     ("mevboost", "flashbots/mev-boost"),
     ("charon", "ObolNetwork/charon"),
+    ("web3signer", "Consensys-Incorporated/web3signer"),
     ("ethrex", "lambdaclass/ethrex"),
 ]
 
