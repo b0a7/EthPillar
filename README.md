@@ -83,6 +83,7 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 - **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, Failover, or Obol Charon DV setups
 - **ePBS / Gloas migration**: Two-step MEV-Boost cutover under **MEV-Boost → ePBS migration** (Prysm, Lodestar, Teku v26.9.0+, and Erigon-Caplin TUI; Charon DVT hidden until Obol ships support; [guide](docs/ePBS-migration.md))
 - **Obol Charon DV**: DVT middleware + CDVN migrate ([guide](docs/charon.md))
+- **Web3Signer**: Remote signer for validator keys ([guide](docs/web3signer.md))
 
 ---
 
@@ -155,6 +156,14 @@ Recommended next key steps:
 Charon is Obol’s DVT **middleware** between your beacon node and a signer VC. EthPillar installs `charon.service` and points the VC at `http://127.0.0.1:3600`.
 
 See **[docs/charon.md](docs/charon.md)** for install, CDVN migrate (`ethpillar --migrate_cdvn`), beacon-node notes, and Grafana/Prometheus wiring.
+
+---
+
+## 🔏 Web3Signer
+
+Web3Signer is Consensys' remote signer. EthPillar installs `web3signer.service` and points the VC at `http://127.0.0.1:9000`.
+
+See **[docs/web3signer.md](docs/web3signer.md)** for install, key import, how each validator client finds keys, and the slashing-protection database.
 
 ---
 

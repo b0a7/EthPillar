@@ -8,6 +8,8 @@ This version is for new installs. It does not move keys out of a validator clien
 
 Web3Signer is listed after Obol Charon DV on every validator-client menu that offers Charon: Custom Setup, Solo/CSM/Failover, and Validator Client Only. Selecting it opens a second list for the validator client that will call the signer. That list does not include Charon or Web3Signer.
 
+Caplin (Erigon-integrated consensus) has no validator client of its own. With Caplin you pick a separate validator client, and that client uses Web3Signer.
+
 `--with_web3signer --vc <client>` installs the same pairing without the menus.
 
 ```bash
