@@ -1,7 +1,7 @@
 import os
 import subprocess
 from typing import List, Optional
-from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, install_system_binary, BASE_DATA_DIR, extract_and_install
+from deploy.common import write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_release_file, install_system_binary, BASE_DATA_DIR, extract_and_install
 from client_requirements import preferred_install_tag, validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
@@ -170,12 +170,7 @@ def download_lighthouse(eth_network: str) -> str:
             print(error_msg)
             exit(1)
 
-    download_url = info["download_urls"][0]
-    filename = info["filenames"][0]
-
-    # Download the latest release binary
-    download_path = f"{DOWNLOAD_DIR}/{filename}"
-    download_file(download_url, download_path, "Lighthouse")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "Lighthouse")
 
     # Extract to canonical temp dir and install
     extract_and_install(download_path, "lighthouse", f"{INSTALL_DIR}/lighthouse", "binary", 0)

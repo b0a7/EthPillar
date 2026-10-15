@@ -1,4 +1,4 @@
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, install_system_directory, ensure_java_available, ensure_jemalloc, BASE_DATA_DIR, extract_and_install
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_release_file, get_machine_architecture, install_system_directory, ensure_java_available, ensure_jemalloc, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from typing import List, Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
@@ -185,12 +185,7 @@ def download_teku(eth_network: str) -> str:
         print(error_msg)
         exit(1)
 
-    download_url = info["download_urls"][0]
-    filename = info["filenames"][0]
-
-    # Download the latest release binary
-    download_path = f"{DOWNLOAD_DIR}/{filename}"
-    download_file(download_url, download_path, "Teku")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "Teku")
 
     # Teku 26.6.0+ is compiled for JDK 25; an older runtime fails to start with
     # UnsupportedClassVersionError. Abort before replacing the installed Teku if

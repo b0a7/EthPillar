@@ -18,7 +18,7 @@ from deploy.common import (
     BASE_DATA_DIR,
     DOWNLOAD_DIR,
     INSTALL_DIR,
-    download_file,
+    download_release_file,
     extract_and_install,
     get_machine_architecture,
     setup_client_user_and_dir,
@@ -1924,10 +1924,7 @@ def install_charon(
     info = get_release_info("LATEST", arch_amd64)
     charon_version = info["version"]
 
-    download_url = info["download_urls"][0]
-    filename = info["filenames"][0]
-    download_path = f"{DOWNLOAD_DIR}/{filename}"
-    download_file(download_url, download_path, "charon")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "charon")
 
     extract_and_install(
         download_path,

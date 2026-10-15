@@ -1,7 +1,7 @@
 import os
 import subprocess
 from typing import List, Dict, Tuple
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, download_file, get_machine_architecture, extract_and_install
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, download_release_file, get_machine_architecture, extract_and_install
 
 def generate_mevboost_service(eth_network: str, mev_min_bid: str, relay_options: List[Dict[str, str]]) -> str:
     """Generate MEV-Boost systemd service file content.
@@ -88,12 +88,7 @@ def install_mevboost(eth_network: str, mev_min_bid: str, relay_options: List[Dic
     info = get_release_info("LATEST", arch_amd64)
     mevboost_version = info["version"]
 
-    download_url = info["download_urls"][0]
-    filename = info["filenames"][0]
-
-    # Download the latest release binary
-    download_path = f"{DOWNLOAD_DIR}/{filename}"
-    download_file(download_url, download_path, "mevboost")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "mevboost")
 
     extract_and_install(
         download_path, "mevboost", os.path.join(INSTALL_DIR, "mev-boost"), "binary", 0, binary_name="mev-boost"

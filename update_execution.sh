@@ -107,7 +107,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$EL"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/nethermind/nethermind")
 		DEST_DIR=$(dirname "$EXEC_PATH")
 		sudo systemctl stop execution
@@ -125,7 +125,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$EL"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/besu/bin/besu")
 		DEST_DIR=$(dirname "$(dirname "$EXEC_PATH")")
 		sudo systemctl stop execution
@@ -137,7 +137,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$EL"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/erigon")
 		sudo systemctl stop execution
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "erigon" "$EXEC_PATH" "binary" 1
@@ -148,7 +148,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$EL"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/geth")
 		sudo systemctl stop execution
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "geth" "$EXEC_PATH" "binary" 1
@@ -159,7 +159,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$EL"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/reth")
 		sudo systemctl stop execution
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "reth" "$EXEC_PATH" "binary" 0
@@ -170,7 +170,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$EL"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/execution.service" "/usr/local/bin/ethrex")
 		sudo systemctl stop execution
 		sudo rm -f "$EXEC_PATH"

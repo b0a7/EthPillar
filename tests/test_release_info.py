@@ -8,8 +8,10 @@ network requests.
 For live checks against upstream APIs (catches regex/page drift like the Geth
 pinned-version bug), run: bash tests/run_live_release_tests.sh
 """
+import json
 import sys
 import os
+import hashlib
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -22,12 +24,39 @@ from deploy.common import get_client_release_info
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _geth_downloads_page(rows):
+    """Build a downloads page whose table rows are ``(archive_url, md5)`` pairs."""
+    payload = {
+        "props": {
+            "pageProps": {
+                "data": {
+                    "ALL_LINUX_STABLE_RELEASES": [
+                        {
+                            "release": {"url": url},
+                            "checksum": md5,
+                            "signature": {"url": f"{url}.asc"},
+                        }
+                        for url, md5 in rows
+                    ]
+                }
+            }
+        }
+    }
+    links = "\n".join(url for url, _md5 in rows)
+    body = json.dumps(payload)
+    return f'<script id="__NEXT_DATA__" type="application/json">{body}</script>\n{links}'
+
+
 def _make_github_release(tag_name, asset_names, commit="abcdef0123456789abcdef0123456789abcdef01"):
     """Build a realistic GitHub release JSON structure (plus optional peel commit)."""
     data = {
         "tag_name": tag_name,
         "assets": [
-            {"name": name, "browser_download_url": f"https://github.com/fake/repo/releases/download/{tag_name}/{name}"}
+            {
+                "name": name,
+                "browser_download_url": f"https://github.com/fake/repo/releases/download/{tag_name}/{name}",
+                "digest": f"sha256:{hashlib.sha256(name.encode()).hexdigest()}",
+            }
             for name in asset_names
         ]
     }
@@ -50,6 +79,7 @@ class TestGetClientReleaseInfo:
         assert info["download_urls"][0].endswith("besu-26.5.0.tar.gz")
         assert len(info["filenames"]) == 1
         assert info["filenames"][0] == "besu-26.5.0.tar.gz"
+        assert info["sha256"] == [hashlib.sha256(b"besu-26.5.0.tar.gz").hexdigest()]
         assert info["commit"] == "abcdef0123456789abcdef0123456789abcdef01"
 
     @patch("deploy.common.get_github_release")
@@ -114,8 +144,9 @@ class TestGetClientReleaseInfo:
         assert "lodestar" in info["filenames"][0]
         assert info["commit"] == "abcdef0123456789abcdef0123456789abcdef01"
 
+    @patch("deploy.common.requests.get")
     @patch("deploy.common.get_github_release")
-    def test_teku_returns_expected_structure(self, mock_gh):
+    def test_teku_returns_expected_structure(self, mock_gh, mock_get):
         mock_gh.return_value = {
             "tag_name": "26.5.0",
             "assets": [],
@@ -124,10 +155,16 @@ class TestGetClientReleaseInfo:
                 "teku.tar.gz/versions/26.5.0/teku-26.5.0.tar.gz)"
             ),
         }
+        mock_get.return_value = MagicMock(
+            text=f"{'ab' * 32}  teku-26.5.0.tar.gz\n",
+            raise_for_status=lambda: None,
+        )
         info = get_client_release_info("teku", "LATEST")
         assert info["version"] == "26.5.0"
         assert info["filenames"][0] == "teku-26.5.0.tar.gz"
         assert info["download_urls"][0].endswith("teku-26.5.0.tar.gz")
+        assert info["sha256"] == ["ab" * 32]
+        assert mock_get.call_args.args[0].endswith("teku-26.5.0.tar.gz.sha256")
 
     @patch("deploy.common.get_github_release")
     def test_nimbus_returns_expected_structure(self, mock_gh):
@@ -183,17 +220,26 @@ class TestGetClientReleaseInfo:
         assert info["filenames"][0] == "charon-v1.10.3-linux-amd64.tar.gz"
         mock_gh.assert_called_once_with("ObolNetwork/charon", "LATEST")
 
+    @patch("deploy.common.requests.get")
     @patch("deploy.common.get_github_release")
-    def test_web3signer_prefers_tarball_over_checksum(self, mock_gh):
+    def test_web3signer_prefers_tarball_over_checksum(self, mock_gh, mock_get):
+        filename = "web3signer-26.9.0.tar.gz"
+        digest = hashlib.sha256(filename.encode()).hexdigest()
         mock_gh.return_value = _make_github_release("26.9.0", [
             "web3signer-26.9.0.tar.gz.sha256",
             "web3signer-26.9.0.zip",
-            "web3signer-26.9.0.tar.gz",
+            filename,
         ])
+        mock_get.return_value = MagicMock(
+            text=f"{digest}  {filename}\n",
+            raise_for_status=lambda: None,
+        )
         info = get_client_release_info("web3signer", "LATEST")
         assert info["version"] == "26.9.0"
-        assert info["filenames"][0] == "web3signer-26.9.0.tar.gz"
+        assert info["filenames"][0] == filename
+        assert info["sha256"] == [digest]
         mock_gh.assert_called_once_with("Consensys-Incorporated/web3signer", "LATEST")
+        mock_get.assert_called_once()
 
     @patch("deploy.common.get_github_release")
     def test_mevboost_returns_expected_structure(self, mock_gh):
@@ -224,31 +270,36 @@ class TestGetClientReleaseInfo:
 
     @patch("requests.get")
     def test_geth_scrapes_download_page(self, mock_req):
+        url = "https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.14.0-abcdef.tar.gz"
         mock_req.return_value = MagicMock(
             status_code=200,
-            text='https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.14.0-abcdef.tar.gz'
+            text=_geth_downloads_page([(url, "ab" * 16)]),
         )
         info = get_client_release_info("geth", "LATEST")
         assert info["version"] == "v1.14.0"
         assert "geth-linux-amd64" in info["download_urls"][0]
         assert info["filenames"][0].endswith(".tar.gz")
         assert info["commit"] == "abcdef"
+        assert info["md5"] == ["ab" * 16]
+        assert info["signature_urls"] == [f"{url}.asc"]
+        assert info["signature_key"] == "geth"
 
     @patch("requests.get")
     def test_geth_specific_version_tag(self, mock_req):
+        older = "https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.17.3-117e067f.tar.gz"
+        wanted = "https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.17.1-16783c16.tar.gz"
         mock_req.return_value = MagicMock(
             status_code=200,
-            text=(
-                "https://gethstore.blob.core.windows.net/builds/"
-                "geth-linux-amd64-1.17.3-117e067f.tar.gz "
-                "https://gethstore.blob.core.windows.net/builds/"
-                "geth-linux-amd64-1.17.1-16783c16.tar.gz"
-            ),
+            text=_geth_downloads_page([
+                (older, "11111111111111111111111111111111"),
+                (wanted, "22222222222222222222222222222222"),
+            ]),
         )
         info = get_client_release_info("geth", "v1.17.1")
         assert info["version"] == "v1.17.1"
         assert "1.17.1-16783c16" in info["download_urls"][0]
         assert info["commit"] == "16783c16"
+        assert info["md5"] == ["22222222222222222222222222222222"]
 
     @patch("requests.get")
     def test_geth_raises_when_no_match(self, mock_req):
@@ -268,16 +319,12 @@ class TestGetClientReleaseInfo:
 
         mock_req.return_value = MagicMock(
             status_code=200,
-            text=(
-                "https://gethstore.blob.core.windows.net/builds/"
-                "geth-linux-amd64-1.17.8-a5790770.tar.gz "
-                "https://gethstore.blob.core.windows.net/builds/"
-                "geth-linux-arm64-1.17.8-a5790770.tar.gz "
-                "https://gethstore.blob.core.windows.net/builds/"
-                "geth-linux-arm64-1.17.7-3d858f85.tar.gz "
-                "https://gethstore.blob.core.windows.net/builds/"
-                "geth-linux-amd64-1.17.6-3d84c6b2.tar.gz"
-            ),
+            text=_geth_downloads_page([
+                ("https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.17.8-a5790770.tar.gz", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                ("https://gethstore.blob.core.windows.net/builds/geth-linux-arm64-1.17.8-a5790770.tar.gz", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                ("https://gethstore.blob.core.windows.net/builds/geth-linux-arm64-1.17.7-3d858f85.tar.gz", "cccccccccccccccccccccccccccccccc"),
+                ("https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.17.6-3d84c6b2.tar.gz", "dddddddddddddddddddddddddddddddd"),
+            ]),
         )
         latest = get_release_info("LATEST", True)
         assert latest["version"] == "v1.17.8"
@@ -287,6 +334,22 @@ class TestGetClientReleaseInfo:
         arm_only = get_release_info("v1.17.7", False)
         assert arm_only["version"] == "v1.17.7"
         assert "linux-arm64-1.17.7" in arm_only["download_urls"][0]
+
+    @patch("requests.get")
+    def test_geth_checksum_is_not_taken_from_a_neighboring_build(self, mock_req):
+        amd64 = "https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.17.8-a5790770.tar.gz"
+        i386 = "https://gethstore.blob.core.windows.net/builds/geth-linux-386-1.17.8-a5790770.tar.gz"
+        mock_req.return_value = MagicMock(
+            status_code=200,
+            text=amd64 + "\n" + _geth_downloads_page([
+                (i386, "11111111111111111111111111111111"),
+                (amd64, "22222222222222222222222222222222"),
+            ]),
+        )
+        info = get_client_release_info("geth", "LATEST")
+        assert info["download_urls"] == [amd64]
+        assert info["md5"] == ["22222222222222222222222222222222"]
+        assert info["signature_urls"] == [f"{amd64}.asc"]
 
     def test_unsupported_client_raises(self):
         with pytest.raises(ValueError):

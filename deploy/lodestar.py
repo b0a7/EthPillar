@@ -1,5 +1,5 @@
 from typing import List, Tuple, Optional
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, BASE_DATA_DIR, extract_and_install
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_release_file, get_machine_architecture, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
@@ -151,12 +151,7 @@ def download_lodestar(eth_network: str) -> str:
         print(error_msg)
         exit(1)
 
-    download_url = info["download_urls"][0]
-    filename = info["filenames"][0]
-
-    # Download the latest release binary
-    download_path = f"{DOWNLOAD_DIR}/{filename}"
-    download_file(download_url, download_path, "Lodestar")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "Lodestar")
 
     # Single binary shared by beacon and validator; each role uses its own data/tmp dir under /var/lib.
     extract_and_install(download_path, "lodestar", f"{INSTALL_DIR}/lodestar", "binary", 0, binary_name="lodestar")

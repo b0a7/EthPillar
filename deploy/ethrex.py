@@ -1,6 +1,6 @@
 import os
 import subprocess
-from deploy.common import install_system_binary, write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, BASE_DATA_DIR
+from deploy.common import install_system_binary, write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_release_file, get_machine_architecture, BASE_DATA_DIR
 from client_requirements import validate_version_for_network
 from typing import Tuple, Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
@@ -115,12 +115,7 @@ def download_and_install_ethrex(eth_network: str, el_p2p_port: str, el_rpc_port:
         print(error_msg)
         exit(1)
 
-    download_url = info["download_urls"][0]
-    filename = info["filenames"][0]
-
-    # Download the latest release binary
-    download_path = f"{DOWNLOAD_DIR}/{filename}"
-    download_file(download_url, download_path, "Ethrex")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "Ethrex")
 
     # Move binary into place and ensure permissions
     dest_path = os.path.join(INSTALL_DIR, "ethrex")

@@ -1,6 +1,7 @@
 import os
 import sys
 import re
+import hashlib
 import platform
 import subprocess
 import requests
@@ -149,21 +150,161 @@ def setup_client_user_and_dir(user: str, client_name: str) -> None:
     subprocess.run(["sudo", "chown", "-R", f"{user}:{user}", data_dir], check=True)
 
 
-def download_file(url: str, dest_path: str, label: str = "file") -> None:
-    """Download a file with a progress bar and basic error handling.
+def _reject_download(dest_path: str, message: str) -> None:
+    """Delete a failed download and stop the install."""
+    try:
+        os.remove(dest_path)
+    except OSError:
+        pass
+    print(message)
+    exit(1)
+
+
+# Pinned OpenPGP keys for detached signatures. Fingerprints are compared after
+# import so a substituted key file cannot satisfy verification.
+_SIGNATURE_KEYS = {
+    "geth": (
+        os.path.join(os.path.dirname(__file__), "keys", "geth-linux-builder.asc"),
+        ("FDE5A1A044FA13D2F7ADA019A61A13569BA28146",),
+    ),
+}
+
+
+def _ensure_gpg() -> str:
+    """Return a ``gpg`` binary, installing Debian/Ubuntu ``gnupg`` when missing."""
+    import shutil
+    found = shutil.which("gpg")
+    if found:
+        return found
+    subprocess.run(
+        ["sudo", "apt-get", "-y", "-qq", "install", "--no-install-recommends", "gnupg"],
+        check=False,
+    )
+    found = shutil.which("gpg")
+    if not found:
+        print("Error: gpg is required to verify release signatures.")
+        exit(1)
+    return found
+
+
+def _gpg_fingerprints(colon_output: str) -> set[str]:
+    """Collect fingerprints from ``gpg --with-colons --fingerprint`` output."""
+    fingerprints = set()
+    for line in colon_output.splitlines():
+        if not line.startswith("fpr:"):
+            continue
+        parts = line.split(":")
+        if len(parts) > 9 and parts[9]:
+            fingerprints.add(parts[9].upper())
+    return fingerprints
+
+
+def _validsig_fingerprints(status_output: str) -> list[str]:
+    """Collect fingerprints from GnuPG ``VALIDSIG`` status lines."""
+    fingerprints = []
+    for line in status_output.splitlines():
+        if not line.startswith("[GNUPG:] VALIDSIG "):
+            continue
+        parts = line.split()
+        if len(parts) >= 3:
+            fingerprints.append(parts[2].upper())
+    return fingerprints
+
+
+def verify_detached_signature(payload_path: str, signature_path: str, key_name: str) -> None:
+    """Verify a detached signature with a pinned public key.
+
+    Uses a temporary ``GNUPGHOME`` so keys already on the machine are ignored.
+    The imported key's fingerprint and the ``VALIDSIG`` fingerprint must both
+    be in the allowlist for ``key_name``.
+
+    Raises:
+        ValueError: The key name is unknown, the pinned key does not match its
+            fingerprint, or the signature is not valid.
+    """
+    spec = _SIGNATURE_KEYS.get(key_name)
+    if spec is None:
+        raise ValueError(f"No pinned signature key named {key_name!r}")
+    key_path, allowed_fingerprints = spec
+    allowed = {fingerprint.upper() for fingerprint in allowed_fingerprints}
+    with open(key_path, encoding="utf-8") as handle:
+        armored = handle.read()
+    gpg = _ensure_gpg()
+    with tempfile.TemporaryDirectory(prefix="ep-gpg-") as home:
+        try:
+            os.chmod(home, 0o700)
+        except OSError:
+            pass
+        env = os.environ.copy()
+        env["GNUPGHOME"] = home
+        imported = subprocess.run(
+            [gpg, "--batch", "--import"],
+            input=armored,
+            text=True,
+            capture_output=True,
+            env=env,
+            check=False,
+        )
+        if imported.returncode != 0:
+            raise ValueError(f"Could not import the pinned {key_name} key: {imported.stderr.strip()}")
+        listed = subprocess.run(
+            [gpg, "--batch", "--with-colons", "--fingerprint"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        fingerprints = _gpg_fingerprints(listed.stdout)
+        if not fingerprints or not fingerprints <= allowed:
+            raise ValueError(
+                f"Pinned {key_name} key fingerprint {sorted(fingerprints) or 'missing'} "
+                "does not match the allowlist"
+            )
+        verified = subprocess.run(
+            [gpg, "--batch", "--status-fd", "1", "--verify", signature_path, payload_path],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        validsig = _validsig_fingerprints(verified.stdout)
+        if verified.returncode != 0 or not validsig or any(item not in allowed for item in validsig):
+            detail = (verified.stderr or verified.stdout).strip()
+            raise ValueError(f"OpenPGP signature rejected. {detail}")
+
+
+def download_file(
+    url: str,
+    dest_path: str,
+    label: str = "file",
+    expected_sha256: Optional[str] = None,
+    expected_md5: Optional[str] = None,
+    signature_url: Optional[str] = None,
+    signature_key: Optional[str] = None,
+) -> None:
+    """Download a file with a progress bar and verify a published checksum.
+
+    When ``expected_sha256`` or ``expected_md5`` is set, the digest is computed
+    while the body is written. A mismatch deletes the file and exits.
 
     Args:
         url: The URL to download from.
         dest_path: Absolute destination file path.
         label: Descriptive label for the download.
+        expected_sha256: Lower- or mixed-case hex SHA-256 of the file.
+        expected_md5: Lower- or mixed-case hex MD5 of the file.
+        signature_url: Detached signature to check after the checksum matches.
+        signature_key: Name of a pinned public key in :data:`_SIGNATURE_KEYS`.
     """
     from tqdm import tqdm
     print(f">> Downloading {label} > URL: {url}")
+    sha256 = hashlib.sha256() if expected_sha256 else None
+    md5 = hashlib.md5() if expected_md5 else None
     try:
         response = requests.get(url, stream=True)
         response.raise_for_status()
         total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024
+        block_size = 1024 * 64
         t = tqdm(total=total_size, unit='B', unit_scale=True)
 
         with open(dest_path, "wb") as f:
@@ -171,12 +312,107 @@ def download_file(url: str, dest_path: str, label: str = "file") -> None:
                 if chunk:
                     t.update(len(chunk))
                     f.write(chunk)
+                    if sha256 is not None:
+                        sha256.update(chunk)
+                    if md5 is not None:
+                        md5.update(chunk)
         t.close()
-        filename = os.path.basename(dest_path)
-        print(f">> Successfully downloaded: {filename}")
     except requests.exceptions.RequestException as e:
-        print(f"Error: Unable to download file. Try again later. {e}")
+        _reject_download(dest_path, f"Error: Unable to download file. Try again later. {e}")
+
+    filename = os.path.basename(dest_path)
+    if expected_sha256:
+        actual = sha256.hexdigest() if sha256 is not None else ""
+        if actual != expected_sha256.lower():
+            _reject_download(
+                dest_path,
+                f"Error: SHA-256 mismatch for {filename}.\n"
+                f"  expected {expected_sha256.lower()}\n"
+                f"  actual   {actual}",
+            )
+    if expected_md5:
+        actual = md5.hexdigest() if md5 is not None else ""
+        if actual != expected_md5.lower():
+            _reject_download(
+                dest_path,
+                f"Error: MD5 mismatch for {filename}.\n"
+                f"  expected {expected_md5.lower()}\n"
+                f"  actual   {actual}",
+            )
+    if expected_sha256 or expected_md5:
+        algorithms = []
+        if expected_sha256:
+            algorithms.append("sha256")
+        if expected_md5:
+            algorithms.append("md5")
+        print(f">> Checksum verified ({', '.join(algorithms)}): {filename}")
+    if signature_url:
+        if not signature_key:
+            _reject_download(dest_path, f"Error: no pinned public key for the {filename} signature.")
+        sig_path = dest_path + ".asc"
+        try:
+            sig_response = requests.get(signature_url, headers={"User-Agent": "ethpillar"}, timeout=60)
+            sig_response.raise_for_status()
+            with open(sig_path, "wb") as handle:
+                handle.write(sig_response.content)
+            verify_detached_signature(dest_path, sig_path, signature_key)
+        except (requests.RequestException, ValueError, OSError) as exc:
+            _reject_download(dest_path, f"Error: signature verification failed for {filename}. {exc}")
+        finally:
+            try:
+                os.remove(sig_path)
+            except OSError:
+                pass
+        print(f">> Signature verified: {filename}")
+    print(f">> Successfully downloaded: {filename}")
+
+
+def download_release_file(
+    info: dict,
+    dest_dir: str,
+    label: str,
+    index: int = 0,
+    dest_name: Optional[str] = None,
+) -> str:
+    """Download one release asset and verify its published checksum.
+
+    GitHub-hosted clients supply ``info["sha256"]``. Geth supplies ``info["md5"]``
+    from the downloads page. Install stops when neither checksum is present.
+
+    Args:
+        info: Release-info dict from :func:`get_client_release_info`.
+        dest_dir: Directory to write the file into.
+        label: Descriptive label for the download.
+        index: Which parallel ``download_urls`` / checksum entry to use.
+        dest_name: Override the on-disk filename. Checksums cover file bytes,
+            so a rename does not change verification.
+
+    Returns:
+        Absolute path of the verified download.
+    """
+    filename = dest_name or info["filenames"][index]
+    url = info["download_urls"][index]
+    sha_list = info.get("sha256") or []
+    md5_list = info.get("md5") or []
+    sha256 = sha_list[index] if index < len(sha_list) and sha_list[index] else None
+    md5 = md5_list[index] if index < len(md5_list) and md5_list[index] else None
+    sig_list = info.get("signature_urls") or []
+    signature_url = sig_list[index] if index < len(sig_list) and sig_list[index] else None
+    signature_key = info.get("signature_key") or None
+    if not sha256 and not md5 and not signature_url:
+        print(f"Error: no published checksum for {label} ({filename}). Refusing to install.")
         exit(1)
+    dest_path = os.path.join(dest_dir, filename)
+    download_file(
+        url,
+        dest_path,
+        label,
+        expected_sha256=sha256,
+        expected_md5=md5,
+        signature_url=signature_url,
+        signature_key=signature_key,
+    )
+    return dest_path
 
 
 def get_java_major_version() -> Optional[int]:
@@ -1183,16 +1419,108 @@ def get_github_tag_commit(repo: str, tag_name: str) -> Optional[str]:
         return None
 
 
+def _sha256_from_digest_field(digest: object) -> Optional[str]:
+    """Return the hex SHA-256 from a GitHub asset ``digest`` value, if present."""
+    text = str(digest or "").strip()
+    if not text.lower().startswith("sha256:"):
+        return None
+    hex_digest = text.split(":", 1)[1].strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", hex_digest):
+        return hex_digest
+    return None
+
+
+def _parse_sha256_checksum_text(text: str, filename: str) -> str:
+    """Parse a ``.sha256`` sidecar or checksum listing for ``filename``.
+
+    Accepts a bare hex digest or ``sha256sum`` lines (``<digest>  <name>``).
+    """
+    wanted = filename.lower()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
+            continue
+        if len(parts) == 1 or os.path.basename(parts[-1]).lower() == wanted:
+            return parts[0].lower()
+    raise ValueError(f"No sha256 line for {filename} in published checksum file")
+
+
+def _sha256_from_sidecar(url: str, filename: str) -> str:
+    """Download a checksum sidecar and return the SHA-256 it publishes."""
+    try:
+        # Release asset URLs reject a GitHub API token (401). User-Agent only.
+        response = requests.get(url, headers={"User-Agent": "ethpillar"}, timeout=30)
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise ValueError(f"Could not download checksum sidecar for {filename}: {exc}") from exc
+    return _parse_sha256_checksum_text(response.text, filename)
+
+
+def resolve_asset_sha256(github_release: dict, download_url: str, filename: str) -> str:
+    """Resolve the SHA-256 EthPillar must match before installing ``filename``.
+
+    Uses the ``digest`` GitHub records on the release asset. When the project
+    also publishes ``<filename>.sha256``, that sidecar must contain the same
+    digest. When GitHub has no digest (older releases), the sidecar is the
+    checksum.
+    """
+    assets = github_release.get("assets") or []
+    match = next(
+        (
+            asset for asset in assets
+            if asset.get("browser_download_url") == download_url or asset.get("name") == filename
+        ),
+        None,
+    )
+    if match is None:
+        # Some release notes point at an artifact host (Teku on artifacts.consensys.net)
+        # and publish the checksum as a sibling ``<file>.sha256``.
+        return _sha256_from_sidecar(f"{download_url}.sha256", filename)
+    published = _sha256_from_digest_field(match.get("digest"))
+    sidecar_name = f"{filename}.sha256"
+    sidecar = next((asset for asset in assets if asset.get("name") == sidecar_name), None)
+    sidecar_url = (sidecar or {}).get("browser_download_url")
+    if published and sidecar_url:
+        sidecar_hash = _sha256_from_sidecar(sidecar_url, filename)
+        if sidecar_hash != published:
+            raise ValueError(
+                f"SHA-256 mismatch for {filename}: GitHub asset digest {published} "
+                f"does not match {sidecar_name} ({sidecar_hash})"
+            )
+        return published
+    if published:
+        return published
+    if sidecar_url:
+        return _sha256_from_sidecar(sidecar_url, filename)
+    raise ValueError(
+        f"No sha256 digest published for {filename}. Refusing to install an unverified release asset."
+    )
+
+
 def release_info_from_github(
     github_release: dict,
     download_urls: list[str],
     filenames: list[str],
 ) -> dict:
-    """Build EthPillar release-info from a :func:`get_github_release` payload."""
+    """Build EthPillar release-info from a :func:`get_github_release` payload.
+
+    The returned ``sha256`` list is parallel to ``download_urls``. Each entry is
+    the GitHub asset digest, or the project's ``.sha256`` sidecar when the
+    digest field is absent.
+    """
+    if len(download_urls) != len(filenames):
+        raise ValueError("download_urls and filenames must be the same length")
     info = {
         "version": github_release["tag_name"],
         "download_urls": download_urls,
         "filenames": filenames,
+        "sha256": [
+            resolve_asset_sha256(github_release, url, name)
+            for url, name in zip(download_urls, filenames)
+        ],
     }
     if github_release.get("commit"):
         info["commit"] = github_release["commit"]
@@ -1253,8 +1581,10 @@ def get_client_release_info(
             detection uses ``NETWORK`` / ``ETH_NETWORK`` or installed unit files.
 
     Returns:
-        A dictionary with keys ``version``, ``download_urls``, ``filenames``, and
-        optionally ``commit`` (git SHA of the release tag when resolvable).
+        A dictionary with keys ``version``, ``download_urls``, ``filenames``,
+        ``sha256`` (GitHub asset digest, parallel to the URLs) or ``md5``
+        (Geth downloads page), and optionally ``commit`` (git SHA of the
+        release tag when resolvable).
     """
     from client_requirements import preferred_install_tag
 
@@ -1375,6 +1705,10 @@ if __name__ == '__main__':
     download_parser.add_argument("url", type=str, help="URL to download from")
     download_parser.add_argument("dest", type=str, help="Destination file path")
     download_parser.add_argument("label", type=str, nargs="?", default="file", help="Descriptive label")
+    download_parser.add_argument("--sha256", type=str, default=None, help="Expected SHA-256 hex digest")
+    download_parser.add_argument("--md5", type=str, default=None, help="Expected MD5 hex digest")
+    download_parser.add_argument("--signature-url", type=str, default=None, help="Detached signature URL")
+    download_parser.add_argument("--signature-key", type=str, default=None, help="Pinned key name, such as geth")
 
     info_parser = subparsers.add_parser("release_info", help="Get client release version and download URLs")
     info_parser.add_argument("client", type=str, help="Client name")
@@ -1396,7 +1730,15 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     if args.command == "download":
-        download_file(args.url, args.dest, args.label)
+        download_file(
+            args.url,
+            args.dest,
+            args.label,
+            expected_sha256=args.sha256 or None,
+            expected_md5=args.md5 or None,
+            signature_url=args.signature_url or None,
+            signature_key=args.signature_key or None,
+        )
     elif args.command == "release_info":
         try:
             info = get_client_release_info(args.client, args.version_tag, network=args.network)

@@ -1,6 +1,6 @@
 import subprocess
 import os
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, BASE_DATA_DIR
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_release_file, get_machine_architecture, BASE_DATA_DIR
 from deploy.common import install_system_binary
 from client_requirements import validate_version_for_network
 from typing import List, Optional
@@ -178,7 +178,7 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
     Returns:
         A dictionary with keys 'version', 'download_urls', and 'filenames'.
     """
-    from deploy.common import get_github_release, pick_github_release_asset, release_info_from_github
+    from deploy.common import get_github_release, pick_github_release_asset, release_info_from_github, resolve_asset_sha256
     repo = "prysmaticlabs/prysm"
     data = get_github_release(repo, version_tag)
     assets = data.get("assets", [])
@@ -194,7 +194,18 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
         role_contains="validator",
         client_label="Prysm validator",
     )
-    return release_info_from_github(data, [bn_url, vc_url], [bn_filename, vc_filename])
+    info = release_info_from_github(data, [bn_url, vc_url], [bn_filename, vc_filename])
+    ctl_filename = bn_filename.replace("beacon-chain", "prysmctl", 1)
+    if ctl_filename != bn_filename:
+        ctl_asset = next((asset for asset in assets if asset.get("name") == ctl_filename), None)
+        ctl_url = (ctl_asset or {}).get("browser_download_url")
+        if ctl_url:
+            info["prysmctl"] = {
+                "filename": ctl_filename,
+                "download_url": ctl_url,
+                "sha256": resolve_asset_sha256(data, ctl_url, ctl_filename),
+            }
+    return info
 
 
 
@@ -214,18 +225,8 @@ def download_prysm(eth_network: str) -> str:
         print(error_msg)
         exit(1)
 
-    bn_download_url = info["download_urls"][0]
-    vc_download_url = info["download_urls"][1]
-    bn_filename = info["filenames"][0]
-    vc_filename = info["filenames"][1]
-
-    # Download the beacon node
-    bn_download_path = f"{DOWNLOAD_DIR}/{bn_filename}"
-    download_file(bn_download_url, bn_download_path, "Prysm Beacon Node")
-
-    # Download the validator client
-    vc_download_path = f"{DOWNLOAD_DIR}/{vc_filename}"
-    download_file(vc_download_url, vc_download_path, "Prysm Validator Client")
+    bn_download_path = download_release_file(info, DOWNLOAD_DIR, "Prysm Beacon Node", 0)
+    vc_download_path = download_release_file(info, DOWNLOAD_DIR, "Prysm Validator Client", 1)
 
     # Move/configure the binaries into INSTALL_DIR
     install_system_binary(bn_download_path, os.path.join(INSTALL_DIR, "prysm-beacon-chain"))

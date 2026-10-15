@@ -117,7 +117,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$CLIENT"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lighthouse")
 		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "lighthouse" "$EXEC_PATH" "binary" 0
@@ -128,7 +128,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$CLIENT"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/lodestar")
 		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "lodestar" "$EXEC_PATH" "binary" 0 --binary-name "lodestar"
@@ -145,7 +145,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$CLIENT"
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/teku/bin/teku")
 		DEST_DIR=$(dirname "$(dirname "$EXEC_PATH")")
 		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
@@ -157,7 +157,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "$FILENAME" "$CLIENT"
 		BN_EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/nimbus_beacon_node")
 		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate
 		PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "nimbus" "$BN_EXEC_PATH" "binary" 1 --binary-name "nimbus_beacon_node"
@@ -165,14 +165,11 @@ function updateClient(){
 	    ;;
   	  Prysm)
 		cd "$HOME" || true
-		local _bn_url
-		_bn_url=$(echo "$RELEASE_DATA" | jq -r '.download_urls[0]')
-
-		local _prysmctl_url
-		_prysmctl_url="${_bn_url/beacon-chain/prysmctl}"
-
-		curl -L -f "${_bn_url}" -o beacon-chain || error "❌ Unable to download beacon-chain"
-		curl -L -f "${_prysmctl_url}" -o prysmctl || error "❌ Unable to download prysmctl"
+		download_release_asset 0 "beacon-chain" "Prysm beacon-chain"
+		local _prysmctl_url _prysmctl_sha
+		_prysmctl_url=$(echo "$RELEASE_DATA" | jq -r '.prysmctl.download_url // empty')
+		_prysmctl_sha=$(echo "$RELEASE_DATA" | jq -r '.prysmctl.sha256 // empty')
+		download_verified "$_prysmctl_url" "prysmctl" "prysmctl" "$_prysmctl_sha" ""
 		
 		chmod +x beacon-chain prysmctl
 		BN_EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/prysm-beacon-chain")
@@ -189,7 +186,7 @@ function updateClient(){
 		FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
 		info "✅ Downloading URL: $BINARIES_URL"
 		cd "$HOME" || true
-		wget -O grandine "$BINARIES_URL" || error "❌ Unable to wget file"
+		download_release_asset 0 "grandine" "$CLIENT"
 		chmod +x grandine
 		EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/consensus.service" "/usr/local/bin/grandine")
 		test -f /etc/systemd/system/consensus.service && stopConsensusStackForUpdate

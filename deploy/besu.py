@@ -1,5 +1,5 @@
 from typing import Tuple, Optional
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, ensure_java_available, ensure_jemalloc, BASE_DATA_DIR, extract_and_install
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_release_file, get_machine_architecture, ensure_java_available, ensure_jemalloc, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
@@ -110,12 +110,7 @@ def download_and_install_besu(eth_network: str, el_p2p_port: str, el_rpc_port: s
         print(error_msg)
         exit(1)
 
-    download_url = info["download_urls"][0]
-    filename = info["filenames"][0]
-
-    # Download the latest release binary
-    download_path = f"{DOWNLOAD_DIR}/{filename}"
-    download_file(download_url, download_path, "Besu")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "Besu")
 
     extract_and_install(download_path, "besu", f"{INSTALL_DIR}/besu", "directory", 1)
 

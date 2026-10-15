@@ -113,7 +113,7 @@ function updateClient(){
         FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
         info "✅ Downloading URL: $BINARIES_URL"
         cd "$HOME" || true
-        wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+        download_release_asset 0 "$FILENAME" "$CLIENT"
         EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/lighthouse")
         test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
         PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "lighthouse" "$EXEC_PATH" "binary" 0
@@ -124,7 +124,7 @@ function updateClient(){
         FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
         info "✅ Downloading URL: $BINARIES_URL"
         cd "$HOME" || true
-        wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+        download_release_asset 0 "$FILENAME" "$CLIENT"
         EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/lodestar")
         test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
         PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "lodestar" "$EXEC_PATH" "binary" 0 --binary-name "lodestar"
@@ -137,7 +137,7 @@ function updateClient(){
         FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
         info "✅ Downloading URL: $BINARIES_URL"
         cd "$HOME" || true
-        wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+        download_release_asset 0 "$FILENAME" "$CLIENT"
         EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/teku/bin/teku")
         DEST_DIR=$(dirname "$(dirname "$EXEC_PATH")")
         test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
@@ -149,7 +149,7 @@ function updateClient(){
         FILENAME=$(echo "$RELEASE_DATA" | jq -r '.filenames[0]')
         info "✅ Downloading URL: $BINARIES_URL"
         cd "$HOME" || true
-        wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Unable to wget file"
+        download_release_asset 0 "$FILENAME" "$CLIENT"
         VC_EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/nimbus_validator_client")
         test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate
         PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "nimbus" "$VC_EXEC_PATH" "binary" 1 --binary-name "nimbus_validator_client"
@@ -157,9 +157,7 @@ function updateClient(){
         ;;
       Prysm)
         cd "$HOME" || true
-        local _vc_url
-        _vc_url=$(echo "$RELEASE_DATA" | jq -r '.download_urls[1]')
-        curl -L -f "${_vc_url}" -o validator || error "❌ Unable to download validator"
+        download_release_asset 1 "validator" "Prysm validator"
         chmod +x validator
         VC_EXEC_PATH=$(get_systemd_exec_path "$VALIDATOR_SVC" "/usr/local/bin/prysm-validator")
         test -f "$VALIDATOR_SVC" && stopValidatorStackForUpdate

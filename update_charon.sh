@@ -69,7 +69,7 @@ function updateClient(){
 
 	info "ℹ️  Downloading URL: $BINARIES_URL"
 	cd "$HOME" || true
-	wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Failed to download Charon binary."
+	download_release_asset 0 "$FILENAME" "charon"
 	EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/charon.service" "/usr/local/bin/charon")
 	sudo systemctl stop charon
 	PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "charon" "$EXEC_PATH" "binary" 0 --binary-name "charon"

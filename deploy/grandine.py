@@ -1,6 +1,6 @@
 import os
 import subprocess
-from deploy.common import install_system_binary, write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, BASE_DATA_DIR
+from deploy.common import install_system_binary, write_service_file, get_machine_architecture, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_release_file, BASE_DATA_DIR
 from client_requirements import validate_version_for_network
 from typing import Optional
 from deploy.service_generators import form_exec_start, generate_systemd_template
@@ -147,12 +147,11 @@ def download_grandine(eth_network: str) -> str:
         print(error_msg)
         exit(1)
 
-    download_url = info["download_urls"][0]
     clean_version = gr_version.lstrip('v')
     dest_filename = f"grandine-{clean_version}-linux-{binary_arch}"
-
-    download_path = f"{DOWNLOAD_DIR}/{dest_filename}"
-    download_file(download_url, download_path, "Grandine")
+    download_path = download_release_file(
+        info, DOWNLOAD_DIR, "Grandine", dest_name=dest_filename
+    )
 
     # Move into place and ensure secure perms/ownership, then create stable symlink
     install_system_binary(download_path, os.path.join(INSTALL_DIR, dest_filename))
