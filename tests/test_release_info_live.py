@@ -193,8 +193,7 @@ def _assert_release_info_shape(info: dict, client: str) -> None:
             assert signature.endswith(".asc"), signature
         checksums = info.get("md5") or []
         checksum_width = 32
-        if checksums:
-            assert len(checksums) == len(info["download_urls"]), f"{client}: partial md5 list"
+        assert len(checksums) == len(info["download_urls"]), f"{client}: missing md5 checksums"
     else:
         checksums = info.get("sha256") or []
         checksum_width = 64

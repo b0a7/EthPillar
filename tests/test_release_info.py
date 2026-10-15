@@ -351,6 +351,31 @@ class TestGetClientReleaseInfo:
         assert info["md5"] == ["22222222222222222222222222222222"]
         assert info["signature_urls"] == [f"{amd64}.asc"]
 
+    @patch("requests.head")
+    @patch("requests.get")
+    def test_geth_uses_blob_content_md5_when_table_row_is_missing(self, mock_get, mock_head):
+        url = "https://gethstore.blob.core.windows.net/builds/geth-linux-amd64-1.17.8-a5790770.tar.gz"
+        payload = {
+            "props": {"pageProps": {"data": {"ALL_LINUX_STABLE_RELEASES": []}}}
+        }
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text=(
+                f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(payload)}</script>\n'
+                f"{url}"
+            ),
+        )
+        mock_head.return_value = MagicMock(
+            status_code=200,
+            headers={"Content-MD5": "Ck4iFeKe5dhd8betChS9lA=="},
+            raise_for_status=lambda: None,
+        )
+        info = get_client_release_info("geth", "LATEST")
+        assert info["download_urls"] == [url]
+        assert info["md5"] == ["0a4e2215e29ee5d85df1b7ad0a14bd94"]
+        assert info["signature_urls"] == [f"{url}.asc"]
+        mock_head.assert_called_once()
+
     def test_unsupported_client_raises(self):
         with pytest.raises(ValueError):
             get_client_release_info("notarealclient", "LATEST")

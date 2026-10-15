@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import re
@@ -140,12 +141,33 @@ def _geth_row_for_url(data: dict, url: str) -> Optional[dict]:
     return None
 
 
+def _md5_from_blob_header(url: str) -> str:
+    """Return the MD5 Azure publishes in the blob ``Content-MD5`` header.
+
+    The downloads page copies these checksums into its table. Some archives,
+    including the current linux-amd64 stable build, are linked from the page
+    but omitted from that table. The header is the same value.
+    """
+    import requests
+    response = requests.head(url, timeout=30, allow_redirects=True)
+    response.raise_for_status()
+    encoded = (response.headers.get("Content-MD5") or "").strip()
+    try:
+        digest = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        digest = b""
+    if len(digest) != 16:
+        raise ValueError(f"No MD5 checksum published for {url}")
+    return digest.hex()
+
+
 def _geth_archive_metadata(page: str, url: str) -> dict:
     """Return the MD5 checksum and detached signature URL for ``url``.
 
     Checksums are taken only from the table row for that archive. A nearby row
-    for another architecture must not be reused. The signature URL falls back
-    to ``<archive>.asc``, which is where the Linux builder publishes it.
+    for another architecture must not be reused. When the page links an archive
+    that has no table row, the Azure ``Content-MD5`` header is used instead.
+    The signature URL falls back to ``<archive>.asc``.
     """
     row = _geth_row_for_url(_geth_downloads_data(page), url)
     signature_url = f"{url}.asc"
@@ -159,6 +181,8 @@ def _geth_archive_metadata(page: str, url: str) -> dict:
         if not row_signature:
             raise ValueError(f"No OpenPGP signature published for {url}")
         signature_url = row_signature
+    else:
+        md5 = _md5_from_blob_header(url)
     return {"md5": md5, "signature_url": signature_url}
 
 
