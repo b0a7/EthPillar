@@ -35,6 +35,7 @@ setup() {
 	NODE_CHECKER_TROUBLESHOOT_PRINTED=0
 	NODE_CHECKER_PUBLIC_IPV4=""
 	NODE_CHECKER_QUIC_AUTO_INSTALL=0
+	NODE_CHECKER_QUIC_INSTALL_ERROR=""
 	unset TEKU_QUIC_IPV6_PORT || true
 }
 
@@ -376,16 +377,143 @@ check_inbound_quic_probe_capture() {
 	[ "$warning_checks" -eq 1 ]
 }
 
+# Mock python3 whose `python3 -m venv` writes an interpreter that can import pip,
+# and can import aioquic only after `python -m pip` has run.
+install_quic_venv_python_mock() {
+	local mock_bin command_log
+	mock_bin="$1"
+	command_log="$2"
+	mkdir -p "$mock_bin"
+	cat > "$mock_bin/python3" <<EOF
+#!/bin/bash
+echo "python3 \$*" >> "$command_log"
+if [[ "\$*" == *"-m venv"* ]]; then
+  venv_path="\${@: -1}"
+  mkdir -p "\$venv_path/bin"
+  cat > "\$venv_path/bin/python3" <<'PY'
+#!/bin/bash
+echo "venv-python \$*" >> "COMMAND_LOG_PATH"
+if [[ "\$*" == *"import pip"* ]]; then
+  exit 0
+fi
+if [[ "\$*" == *"-m pip"* ]]; then
+  touch "VENV_PATH/aioquic-installed"
+  exit 0
+fi
+if [[ "\$*" == *"import aioquic"* ]]; then
+  [[ -f "VENV_PATH/aioquic-installed" ]]
+  exit \$?
+fi
+exit 1
+PY
+  sed -i "s|COMMAND_LOG_PATH|$command_log|; s|VENV_PATH|\$venv_path|g" "\$venv_path/bin/python3"
+  chmod +x "\$venv_path/bin/python3"
+  cat > "\$venv_path/bin/pip" <<'PIP'
+#!/bin/bash
+echo "stale-pip" >> "COMMAND_LOG_PATH"
+exit 1
+PIP
+  sed -i "s|COMMAND_LOG_PATH|$command_log|" "\$venv_path/bin/pip"
+  chmod +x "\$venv_path/bin/pip"
+  exit 0
+fi
+if [[ "\$*" == *"import aioquic"* ]]; then
+  exit 1
+fi
+exit 0
+EOF
+	chmod +x "$mock_bin/python3"
+}
+
+@test "maybe_install_quic_probe_deps recreates a venv that cannot import pip" {
+	local mock_bin command_log venv
+	mock_bin="$TEST_DIR/mock-bin"
+	command_log="$TEST_DIR/commands.log"
+	venv="$TEST_DIR/.venv-quic"
+	install_quic_venv_python_mock "$mock_bin" "$command_log"
+	export PATH="$mock_bin:$PATH"
+	NODE_CHECKER_QUIC_AUTO_INSTALL=1
+	NODE_CHECKER_QUIC_VENV="$venv"
+	unset NODE_CHECKER_QUIC_PYTHON || true
+
+	mkdir -p "$venv/bin"
+	cat > "$venv/bin/python3" <<EOF
+#!/bin/bash
+echo "broken-python \$*" >> "$command_log"
+exit 1
+EOF
+	cat > "$venv/bin/pip" <<EOF
+#!/bin/bash
+echo "broken-pip \$*" >> "$command_log"
+exit 1
+EOF
+	chmod +x "$venv/bin/python3" "$venv/bin/pip"
+	echo leftover > "$venv/from-old-release"
+
+	run maybe_install_quic_probe_deps
+
+	[ "$status" -eq 0 ]
+	[ ! -f "$venv/from-old-release" ]
+	grep -q "python3 -m venv $venv" "$command_log"
+	grep -q "venv-python -m pip install -r " "$command_log"
+	! grep -q "broken-pip" "$command_log"
+	! grep -q "stale-pip" "$command_log"
+}
+
+@test "maybe_install_quic_probe_deps reuses a healthy venv and retries pip" {
+	local mock_bin command_log venv
+	mock_bin="$TEST_DIR/mock-bin"
+	command_log="$TEST_DIR/commands.log"
+	venv="$TEST_DIR/.venv-quic"
+	install_quic_venv_python_mock "$mock_bin" "$command_log"
+	export PATH="$mock_bin:$PATH"
+	NODE_CHECKER_QUIC_AUTO_INSTALL=1
+	NODE_CHECKER_QUIC_VENV="$venv"
+	unset NODE_CHECKER_QUIC_PYTHON || true
+
+	mkdir -p "$venv/bin"
+	cat > "$venv/bin/python3" <<EOF
+#!/bin/bash
+echo "healthy-python \$*" >> "$command_log"
+if [[ "\$*" == *"import pip"* ]]; then
+  exit 0
+fi
+if [[ "\$*" == *"-m pip"* ]]; then
+  touch "$venv/aioquic-installed"
+  exit 0
+fi
+if [[ "\$*" == *"import aioquic"* ]]; then
+  [[ -f "$venv/aioquic-installed" ]]
+  exit \$?
+fi
+exit 1
+EOF
+	chmod +x "$venv/bin/python3"
+	echo keep > "$venv/keep"
+
+	run maybe_install_quic_probe_deps
+
+	[ "$status" -eq 0 ]
+	[ -f "$venv/keep" ]
+	grep -q "healthy-python -m pip install -r " "$command_log"
+	! grep -q "python3 -m venv" "$command_log"
+}
+
 @test "check_inbound_quic_probe WARNs when auto-install fails and does not FAIL" {
 	write_consensus Lighthouse
 	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"
 	NODE_CHECKER_QUIC_AUTO_INSTALL=1
 	node_checker_quic_python() { return 1; }
-	maybe_install_quic_probe_deps() { return 1; }
+	maybe_install_quic_probe_deps() {
+		NODE_CHECKER_QUIC_INSTALL_ERROR="No matching distribution found for aioquic"
+		return 1
+	}
 
 	check_inbound_quic_probe_capture
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"Installing aioquic once"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"probe tools missing"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"aioquic install failed"* ]]
+	[[ "$(cat "$TEST_DIR/qprobe.out")" == *"No matching distribution found for aioquic"* ]]
 	[[ "$(cat "$TEST_DIR/qprobe.out")" != *"[FAIL]"* ]]
 	[ "$failed_checks" -eq 0 ]
 	[ "$warning_checks" -eq 1 ]

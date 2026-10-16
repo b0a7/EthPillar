@@ -45,6 +45,8 @@ NODE_CHECKER_QUIC_PYTHON="${NODE_CHECKER_QUIC_PYTHON:-}"
 NODE_CHECKER_QUIC_TIMEOUT="${NODE_CHECKER_QUIC_TIMEOUT:-5}"
 # Default on so Plugins → node-checker just works. Set 0 to skip the one-time pip.
 NODE_CHECKER_QUIC_AUTO_INSTALL="${NODE_CHECKER_QUIC_AUTO_INSTALL:-1}"
+# Tail of the last .venv-quic create/pip failure. Empty when install did not run or succeeded.
+NODE_CHECKER_QUIC_INSTALL_ERROR="${NODE_CHECKER_QUIC_INSTALL_ERROR:-}"
 # Bats / dry-run: skip live JSON-RPC and use this connected-peer count (decimal or 0x).
 NODE_CHECKER_EL_PEER_COUNT="${NODE_CHECKER_EL_PEER_COUNT:-}"
 
@@ -724,21 +726,79 @@ quic_probe_install_hint() {
     req="${root}/plugins/node-checker/requirements-quic.txt"
     echo "  Node-checker auto-creates \"${venv}\" and pip-installs aioquic on first probe."
     echo "    python3 -m venv \"${venv}\""
-    echo "    \"${venv}/bin/pip\" install -r \"${req}\""
+    echo "    \"${venv}/bin/python3\" -m pip install -r \"${req}\""
     echo "  To skip auto-install: NODE_CHECKER_QUIC_AUTO_INSTALL=0. Adapted from https://github.com/bojanisc/quicmap (Apache-2.0)."
 }
 
+node_checker_quic_note_install_error() {
+    NODE_CHECKER_QUIC_INSTALL_ERROR="$(printf '%s\n' "$1" | tail -n 12)"
+}
+
+# True when .venv-quic is missing or left over from a distro upgrade
+# (bin/pip can still be executable while this Python can no longer import pip).
+node_checker_quic_venv_unusable() {
+    local venv="$1"
+    [[ -x "${venv}/bin/python3" ]] || return 0
+    "${venv}/bin/python3" -c "import pip" >/dev/null 2>&1 || return 0
+    return 1
+}
+
 # One-time side venv. Default on; NODE_CHECKER_QUIC_AUTO_INSTALL=0 disables.
+# An existing directory is reused when its pip still works. python3 -m venv
+# refuses to run against a directory that already exists, which used to abort
+# every retry after the first failed pip.
 maybe_install_quic_probe_deps() {
     node_checker_quic_auto_install_enabled || return 1
-    local venv req
+    local venv req py log
     venv="$(node_checker_quic_default_venv)"
     req="$(node_checker_quic_root)/plugins/node-checker/requirements-quic.txt"
     [[ -f "$req" ]] || return 1
-    python3 -m venv "$venv" || return 1
-    "${venv}/bin/pip" install -q -r "$req" || return 1
+    NODE_CHECKER_QUIC_INSTALL_ERROR=""
+
+    if node_checker_quic_venv_unusable "$venv"; then
+        [[ -d "$venv" ]] && rm -rf "$venv"
+        log="$(mktemp)"
+        if ! python3 -m venv "$venv" >"$log" 2>&1; then
+            node_checker_quic_note_install_error "$(cat "$log")"
+            rm -f "$log"
+            return 1
+        fi
+        rm -f "$log"
+        py="${venv}/bin/python3"
+        if ! "$py" -c "import pip" >/dev/null 2>&1; then
+            log="$(mktemp)"
+            if ! "$py" -m ensurepip --upgrade >"$log" 2>&1; then
+                node_checker_quic_note_install_error "$(cat "$log")"
+                rm -f "$log"
+                return 1
+            fi
+            rm -f "$log"
+        fi
+    fi
+
+    py="${venv}/bin/python3"
+    if ! "$py" -c "import aioquic" >/dev/null 2>&1; then
+        log="$(mktemp)"
+        # Interpreter -m pip, not bin/pip: after a release upgrade the launcher
+        # can still be executable while this Python cannot import pip.
+        if ! "$py" -m pip install -r "$req" >"$log" 2>&1; then
+            node_checker_quic_note_install_error "$(cat "$log")"
+            rm -f "$log"
+            return 1
+        fi
+        rm -f "$log"
+    fi
     NODE_CHECKER_QUIC_VENV="$venv"
     node_checker_quic_python >/dev/null
+}
+
+node_checker_quic_print_install_error() {
+    local line
+    [[ -n "${NODE_CHECKER_QUIC_INSTALL_ERROR:-}" ]] || return 0
+    print_check_result "INFO" "aioquic install failed:"
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && echo "    $line"
+    done <<< "$NODE_CHECKER_QUIC_INSTALL_ERROR"
 }
 
 # True when this IPv4 is assigned to a local interface (no NAT hairpin).
@@ -826,6 +886,7 @@ check_inbound_quic_probe() {
         total_checks=$((total_checks + 1))
         print_check_result "WARN" "Inbound QUIC probe tools missing (aioquic). Not a FAIL — install:"
         quic_probe_install_hint
+        node_checker_quic_print_install_error
         warning_checks=$((warning_checks + 1))
         return 0
     fi
