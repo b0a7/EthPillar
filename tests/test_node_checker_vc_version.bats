@@ -204,3 +204,10 @@ EOF
 		return 1
 	fi
 }
+
+@test "Ethrex and Grandine have GitHub release URLs and unknown clients do not abort" {
+	[[ "$(client_release_url Ethrex)" == "https://api.github.com/repos/lambdaclass/ethrex/releases/latest" ]]
+	[[ "$(client_release_url Grandine)" == "https://api.github.com/repos/grandinetech/grandine/releases/latest" ]]
+	[[ "$(client_release_url Erigon-Caplin)" == "https://api.github.com/repos/erigontech/erigon/releases/latest" ]]
+	[[ -z "$(client_release_url NotAClient)" ]]
+}

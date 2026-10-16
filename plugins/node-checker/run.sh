@@ -14,7 +14,7 @@ ETHPILLAR_ROOT="$(cd "${SOURCE_DIR}/../.." && pwd)"
 source "${ETHPILLAR_ROOT}/functions.sh"
 
 # Process / systemd inventory (port arrays live in networking.sh).
-p2p_processes=("geth" "besu" "teku" "lighthouse" "prysm" "nimbus_beacon_node" "nimbus_validator" "lodestar" "erigon" "nethermind" "reth" "mev-boost" "charon")
+p2p_processes=("geth" "besu" "teku" "lighthouse" "prysm" "nimbus_beacon_node" "nimbus_validator" "lodestar" "erigon" "nethermind" "reth" "ethrex" "grandine" "mev-boost" "charon")
 services=("consensus" "execution" "validator" "mevboost")
 if isCharonEnabled; then
     services+=("charon")
@@ -32,10 +32,19 @@ client_github_url['Prysm']='https://api.github.com/repos/OffchainLabs/prysm/rele
 client_github_url['Nethermind']='https://api.github.com/repos/NethermindEth/nethermind/releases/latest'
 client_github_url['Besu']='https://api.github.com/repos/hyperledger/besu/releases/latest'
 client_github_url['Erigon']='https://api.github.com/repos/erigontech/erigon/releases/latest'
+client_github_url['Erigon-Caplin']='https://api.github.com/repos/erigontech/erigon/releases/latest'
 client_github_url['Geth']='https://api.github.com/repos/ethereum/go-ethereum/releases/latest'
 client_github_url['Reth']='https://api.github.com/repos/paradigmxyz/reth/releases/latest'
+client_github_url['Ethrex']='https://api.github.com/repos/lambdaclass/ethrex/releases/latest'
+client_github_url['Grandine']='https://api.github.com/repos/grandinetech/grandine/releases/latest'
 client_github_url['mev-boost']='https://api.github.com/repos/flashbots/mev-boost/releases/latest'
 client_github_url['Charon']='https://api.github.com/repos/ObolNetwork/charon/releases/latest'
+
+# Missing keys are empty under set -u. An unknown client is a failed check, not a crash.
+client_release_url() {
+    local name=$1
+    echo "${client_github_url[$name]-}"
+}
 
 # Load environment variables overrides
 if [[ -f "$SOURCE_DIR"/../../.env.overrides ]]; then
@@ -523,7 +532,7 @@ echo
 check_execution_version() {
     [[ ! -f /etc/systemd/system/execution.service ]] && return
     EL=$(grep "Description=" /etc/systemd/system/execution.service | awk -F'=' '{print $2}' | awk '{print $1}')
-    tag_url=${client_github_url["$EL"]}
+    tag_url=$(client_release_url "$EL")
     name="Execution client ($EL)"
 
     if [[ -z "$tag_url" ]]; then
@@ -537,7 +546,7 @@ check_execution_version() {
 check_consensus_version() {
     [[ ! -f /etc/systemd/system/consensus.service ]] && return
     CL=$(grep "Description=" /etc/systemd/system/consensus.service | awk -F'=' '{print $2}' | awk '{print $1}')
-    tag_url=${client_github_url["$CL"]}
+    tag_url=$(client_release_url "$CL")
     name="Consensus client ($CL)"
 
     check_client_version "$name" "$tag_url"
@@ -547,7 +556,7 @@ check_validator_version() {
     local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
     [[ ! -f "$validator_svc" ]] && return
     VAL=$(grep "Description=" "$validator_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
-    tag_url=${client_github_url["$VAL"]}
+    tag_url=$(client_release_url "$VAL")
     name="Validator client ($VAL)"
 
     check_client_version "$name" "$tag_url"
@@ -610,7 +619,7 @@ check_mevboost_version() {
         MEV_VERSION=$(mev-boost --version 2>&1 | sed 's/.*\s\([0-9]*\.[0-9]*\).*/\1/')
         if [[ $MEV_VERSION ]]; then
             # Get latest version
-            TAG_URL=${client_github_url["mev-boost"]}
+            TAG_URL=$(client_release_url "mev-boost")
             LATEST_VERSION=$(curl -s "$TAG_URL" | jq -r .tag_name | sed 's/.*v\([0-9]*\.[0-9]*\).*/\1/')
             
             if [[ -n "$LATEST_VERSION" && "${MEV_VERSION#v}" == "${LATEST_VERSION#v}" ]]; then
@@ -635,7 +644,7 @@ check_charon_version() {
     fi
     ((total_checks++))
     if getCharonCurrentVersion; then
-        TAG_URL=${client_github_url["Charon"]}
+        TAG_URL=$(client_release_url "Charon")
         LATEST_VERSION=$(curl -s "$TAG_URL" | jq -r .tag_name 2>/dev/null || true)
         if [[ -n "$LATEST_VERSION" && "${VERSION}" == "${LATEST_VERSION}" ]]; then
             print_check_result "PASS" "Charon version: ${VERSION} (latest)"
