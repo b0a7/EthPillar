@@ -22,30 +22,6 @@ fi
 API_BN_ENDPOINT="http://localhost:5052"
 EL_RPC_ENDPOINT="http://localhost:8545"
 
-# -g so the map stays visible when this file is sourced from a function (bats setup).
-declare -gA client_github_url
-client_github_url['Lighthouse']='https://api.github.com/repos/sigp/lighthouse/releases/latest'
-client_github_url['Lodestar']='https://api.github.com/repos/ChainSafe/lodestar/releases/latest'
-client_github_url['Teku']='https://api.github.com/repos/ConsenSys/teku/releases/latest'
-client_github_url['Nimbus']='https://api.github.com/repos/status-im/nimbus-eth2/releases/latest'
-client_github_url['Prysm']='https://api.github.com/repos/OffchainLabs/prysm/releases/latest'
-client_github_url['Nethermind']='https://api.github.com/repos/NethermindEth/nethermind/releases/latest'
-client_github_url['Besu']='https://api.github.com/repos/hyperledger/besu/releases/latest'
-client_github_url['Erigon']='https://api.github.com/repos/erigontech/erigon/releases/latest'
-client_github_url['Erigon-Caplin']='https://api.github.com/repos/erigontech/erigon/releases/latest'
-client_github_url['Geth']='https://api.github.com/repos/ethereum/go-ethereum/releases/latest'
-client_github_url['Reth']='https://api.github.com/repos/paradigmxyz/reth/releases/latest'
-client_github_url['Ethrex']='https://api.github.com/repos/lambdaclass/ethrex/releases/latest'
-client_github_url['Grandine']='https://api.github.com/repos/grandinetech/grandine/releases/latest'
-client_github_url['mev-boost']='https://api.github.com/repos/flashbots/mev-boost/releases/latest'
-client_github_url['Charon']='https://api.github.com/repos/ObolNetwork/charon/releases/latest'
-
-# Missing keys are empty under set -u. An unknown client is a failed check, not a crash.
-client_release_url() {
-    local name=$1
-    echo "${client_github_url[$name]-}"
-}
-
 # Load environment variables overrides
 if [[ -f "$SOURCE_DIR"/../../.env.overrides ]]; then
     # shellcheck source=/dev/null
@@ -529,140 +505,70 @@ echo
     done
 }
 
-check_execution_version() {
-    [[ ! -f /etc/systemd/system/execution.service ]] && return
-    EL=$(grep "Description=" /etc/systemd/system/execution.service | awk -F'=' '{print $2}' | awk '{print $1}')
-    tag_url=$(client_release_url "$EL")
-    name="Execution client ($EL)"
-
-    if [[ -z "$tag_url" ]]; then
-      print_check_result "FAIL" "$name no GitHub URL mapping found"
-      ((failed_checks++))
-      return
+# Same installed/latest comparison as the update menus (load_client_versions +
+# version_matches_latest). Parsing stays in functions.sh.
+report_loaded_client_version() {
+    local target="$1"
+    local label="$2"
+    ((total_checks++))
+    load_client_versions "$target" >/dev/null 2>&1 || true
+    if [[ -z "${VERSION:-}" || "$VERSION" == NotInstalled || "$VERSION" == unknown || "$VERSION" == Unable* ]]; then
+        print_check_result "FAIL" "$label not running or unable to query version"
+        ((failed_checks++))
+        return
     fi
-    check_client_version "$name" "$tag_url"
+    if [[ -z "${TAG:-}" ]]; then
+        print_check_result "WARN" "$label version: ${VERSION} (latest: unavailable)"
+        ((warning_checks++))
+        return
+    fi
+    if version_matches_latest; then
+        print_check_result "PASS" "$label version: ${VERSION} (latest)"
+    else
+        print_check_result "WARN" "$label version: ${VERSION} (latest: ${TAG})"
+        ((warning_checks++))
+    fi
+}
+
+check_execution_version() {
+    local exec_svc="${EXEC_SERVICE_FILE:-/etc/systemd/system/execution.service}"
+    [[ -f "$exec_svc" ]] || return 0
+    getClient
+    report_loaded_client_version execution "Execution client (${EL})"
 }
 
 check_consensus_version() {
-    [[ ! -f /etc/systemd/system/consensus.service ]] && return
-    CL=$(grep "Description=" /etc/systemd/system/consensus.service | awk -F'=' '{print $2}' | awk '{print $1}')
-    tag_url=$(client_release_url "$CL")
-    name="Consensus client ($CL)"
-
-    check_client_version "$name" "$tag_url"
+    local consensus_svc="${CONSENSUS_SERVICE_FILE:-/etc/systemd/system/consensus.service}"
+    [[ -f "$consensus_svc" ]] || return 0
+    getClient
+    report_loaded_client_version consensus "Consensus client (${CL})"
 }
 
 check_validator_version() {
-    local validator_svc="${VALIDATOR_SERVICE_FILE:-/etc/systemd/system/validator.service}"
-    [[ ! -f "$validator_svc" ]] && return
-    VAL=$(grep "Description=" "$validator_svc" | awk -F'=' '{print $2}' | awk '{print $1}')
-    tag_url=$(client_release_url "$VAL")
-    name="Validator client ($VAL)"
-
-    check_client_version "$name" "$tag_url"
-}
-
-check_client_version() {
-  ((total_checks++))
-  local name=$1 tag_url=$2
-  # Validate mapping
-  if [[ -z "$tag_url" ]]; then
-    print_check_result "FAIL" "$name no GitHub URL mapping found"
-    ((failed_checks++))
-    return
-  fi
-
-  if [[ "$name" =~ "Validator" ]]; then
-    # VC version from the validator binary (not BN REST). Mixed CL/VC stacks
-    # otherwise compare the beacon node's version to the VC GitHub latest.
+    [[ "$(getValidatorMode)" == "none" ]] && return 0
     getClient
-    getValidatorClient >/dev/null 2>&1 || true
-    local vc_name="${VALIDATOR_CLIENT:-${VAL:-$VC}}"
-    VERSION=""
-    getClVcCurrentVersion "$vc_name" vc 2>/dev/null || true
-    version=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "${VERSION:-}" | head -1 || true)
-  elif [[ "$name" =~ "Consensus" ]]; then
-    # Grandine reports "Grandine/2.0.4-<commit>/arch-os" with no leading v.
-    version=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/version" \
-      -H "accept: application/json" \
-      | jq -r '.data.version' \
-      | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' \
-      | head -1 || true)
-    if [[ -n "$version" && "$version" != v* ]]; then
-      version="v$version"
-    fi
-  else
-    version=$(curl -s -X POST \
-      -H "Content-Type: application/json" \
-      --data '{"jsonrpc":"2.0","method":"web3_clientVersion","params":[],"id":2}' \
-      "${EL_RPC_ENDPOINT}" \
-      | jq -r '.result' \
-      | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
-  fi
-
-  if [[ -z $version ]]; then
-    print_check_result "FAIL" "$name not running or unable to query version"
-    ((failed_checks++))
-    return
-  fi
-
-  latest=$(curl -s "$tag_url" \
-    | jq -r .tag_name \
-    | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-
-  if [[ -n "$latest" && "${version#v}" == "${latest#v}" ]]; then
-    print_check_result "PASS" "$name version: $version (latest)"
-  else
-    print_check_result "WARN" "$name version: $version (latest: $latest)"
-    ((warning_checks++))
-  fi
+    [[ -z "${VC:-}" ]] && return 0
+    report_loaded_client_version validator "Validator client (${VC})"
 }
 
 check_mevboost_version() {
-    ((total_checks++))
-    if command -v mev-boost &> /dev/null; then
-        MEV_VERSION=$(mev-boost --version 2>&1 | sed 's/.*\s\([0-9]*\.[0-9]*\).*/\1/')
-        if [[ $MEV_VERSION ]]; then
-            # Get latest version
-            TAG_URL=$(client_release_url "mev-boost")
-            LATEST_VERSION=$(curl -s "$TAG_URL" | jq -r .tag_name | sed 's/.*v\([0-9]*\.[0-9]*\).*/\1/')
-            
-            if [[ -n "$LATEST_VERSION" && "${MEV_VERSION#v}" == "${LATEST_VERSION#v}" ]]; then
-                print_check_result "PASS" "MEV-Boost version: $MEV_VERSION (latest)"
-            else
-                print_check_result "WARN" "MEV-Boost version: $MEV_VERSION (latest: $LATEST_VERSION)"
-                ((warning_checks++))
-            fi
-        else
-            print_check_result "FAIL" "MEV-Boost installed but unable to query version"
-            ((failed_checks++))
-        fi
-    else
+    local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    local bin
+    bin=$(get_systemd_exec_path "$mev_svc" "/usr/local/bin/mev-boost")
+    if [[ ! -x "$bin" ]] && ! command -v mev-boost &>/dev/null; then
+        ((total_checks++))
         print_check_result "WARN" "MEV-Boost not installed"
         ((warning_checks++))
+        return
     fi
+    report_loaded_client_version mevboost "MEV-Boost"
 }
 
 check_charon_version() {
     if ! isCharonEnabled; then
         return 0
     fi
-    ((total_checks++))
-    if getCharonCurrentVersion; then
-        TAG_URL=$(client_release_url "Charon")
-        LATEST_VERSION=$(curl -s "$TAG_URL" | jq -r .tag_name 2>/dev/null || true)
-        if [[ -n "$LATEST_VERSION" && "${VERSION}" == "${LATEST_VERSION}" ]]; then
-            print_check_result "PASS" "Charon version: ${VERSION} (latest)"
-        elif [[ -n "$LATEST_VERSION" ]]; then
-            print_check_result "WARN" "Charon version: ${VERSION} (latest: ${LATEST_VERSION})"
-            ((warning_checks++))
-        else
-            print_check_result "PASS" "Charon version: ${VERSION}"
-        fi
-    else
-        print_check_result "FAIL" "Charon installed but unable to query version"
-        ((failed_checks++))
-    fi
+    report_loaded_client_version charon "Charon"
 }
 
 check_history_expiry() {
