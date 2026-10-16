@@ -25,7 +25,8 @@ three scenarios that mirror the update menus:
 For each scenario we assert:
 
 * ``get_client_release_info()`` returns ``version``, ``download_urls``,
-  ``filenames``, and ``commit`` (git SHA) with consistent URL/filename lengths
+  ``filenames``, a published checksum (``sha256``, or ``md5`` for Geth), and
+  ``commit`` (git SHA) with consistent URL/filename lengths
 * ``commit`` is a non-empty hex string (7–40 chars) suitable for prefix matching
 * Every download URL responds (HEAD, or ranged GET fallback)
 
@@ -184,6 +185,23 @@ def _assert_release_info_shape(info: dict, client: str) -> None:
     assert info.get("download_urls"), f"{client}: missing download_urls"
     assert info.get("filenames"), f"{client}: missing filenames"
     assert len(info["download_urls"]) == len(info["filenames"]), client
+    if client == "geth":
+        signatures = info.get("signature_urls") or []
+        assert info.get("signature_key") == "geth"
+        assert len(signatures) == len(info["download_urls"]), f"{client}: missing signatures"
+        for signature in signatures:
+            assert signature.endswith(".asc"), signature
+        checksums = info.get("md5") or []
+        checksum_width = 32
+        assert len(checksums) == len(info["download_urls"]), f"{client}: missing md5 checksums"
+    else:
+        checksums = info.get("sha256") or []
+        checksum_width = 64
+        assert len(checksums) == len(info["download_urls"]), f"{client}: missing checksums"
+    for digest in checksums:
+        assert re.fullmatch(rf"[0-9a-f]{{{checksum_width}}}", str(digest)), (
+            f"{client}: checksum is not {checksum_width} hex chars: {digest!r}"
+        )
     for url in info["download_urls"]:
         assert url.startswith("http"), f"{client}: invalid URL {url!r}"
     commit = info.get("commit")
@@ -288,7 +306,7 @@ def _assert_url_reachable(url: str, client: str) -> None:
 def _assert_release_info(info: dict, client: str) -> None:
     """Validate structure and reachability for every URL in *info*."""
     _assert_release_info_shape(info, client)
-    for url in info["download_urls"]:
+    for url in list(info["download_urls"]) + list(info.get("signature_urls") or []):
         _assert_url_reachable(url, client)
 
 
@@ -411,7 +429,7 @@ def test_client_release_info_live(client: str, repo: str | None) -> None:
     This is the production update path:
 
     * ``update_*.sh`` calls ``python3 -m deploy.common release_info <Client> <tag>``
-    * The returned ``download_urls`` are passed to ``wget``
+    * The returned ``download_urls`` are downloaded and checked against ``sha256`` or ``md5``
 
     Steps:
 

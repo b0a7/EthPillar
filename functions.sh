@@ -50,6 +50,48 @@ function error {
   exit 1
 }
 
+# Download a URL and refuse to keep the file unless published checks pass.
+# $1 url  $2 dest  $3 label  $4 sha256  $5 md5  $6 signature url  $7 signature key name
+function download_verified() {
+  local _url="$1"
+  local _dest="$2"
+  local _label="$3"
+  local _sha256="${4:-}"
+  local _md5="${5:-}"
+  local _sig_url="${6:-}"
+  local _sig_key="${7:-}"
+  local _args=()
+  if [[ -z "$_sha256" && -z "$_md5" && -z "$_sig_url" ]]; then
+    error "❌ No published checksum for ${_label}; refusing to install"
+  fi
+  _args=(download "$_url" "$_dest" "$_label")
+  if [[ -n "$_sha256" ]]; then
+    _args+=(--sha256 "$_sha256")
+  fi
+  if [[ -n "$_md5" ]]; then
+    _args+=(--md5 "$_md5")
+  fi
+  if [[ -n "$_sig_url" ]]; then
+    _args+=(--signature-url "$_sig_url" --signature-key "$_sig_key")
+  fi
+  PYTHONPATH="${BASE_DIR}" python3 -m deploy.common "${_args[@]}" \
+    || error "❌ Unable to download ${_label}"
+}
+
+# Download RELEASE_DATA entry $1 to path $2, verifying sha256 or md5 from that JSON.
+function download_release_asset() {
+  local _index="$1"
+  local _dest="$2"
+  local _label="$3"
+  local _url _sha _md5 _sig _key
+  _url=$(echo "$RELEASE_DATA" | jq -r ".download_urls[${_index}]")
+  _sha=$(echo "$RELEASE_DATA" | jq -r ".sha256[${_index}] // empty")
+  _md5=$(echo "$RELEASE_DATA" | jq -r ".md5[${_index}] // empty")
+  _sig=$(echo "$RELEASE_DATA" | jq -r ".signature_urls[${_index}] // empty")
+  _key=$(echo "$RELEASE_DATA" | jq -r ".signature_key // empty")
+  download_verified "$_url" "$_dest" "$_label" "$_sha" "$_md5" "$_sig" "$_key"
+}
+
 get_systemd_exec_path() {
   local service_file="$1"
   local default_path="$2"

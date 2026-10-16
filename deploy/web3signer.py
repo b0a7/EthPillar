@@ -27,7 +27,7 @@ from deploy.common import (
     BASE_DATA_DIR,
     DOWNLOAD_DIR,
     INSTALL_DIR,
-    download_file,
+    download_release_file,
     ensure_java_available,
     extract_and_install,
     setup_client_user_and_dir,
@@ -443,8 +443,7 @@ def install_web3signer(eth_network: str) -> tuple[str, str]:
 
     info = get_release_info("LATEST", True)
     version = info["version"]
-    download_path = f"{DOWNLOAD_DIR}/{info['filenames'][0]}"
-    download_file(info["download_urls"][0], download_path, "web3signer")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "web3signer")
     extract_and_install(download_path, "web3signer", WEB3SIGNER_INSTALL_DIR, "directory", 1)
     # Web3Signer does not migrate on startup. An empty database fails with
     # "Failed to read database version, expected 12".

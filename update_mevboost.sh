@@ -75,7 +75,7 @@ function updateClient(){
 
 	info "ℹ️  Downloading URL: $BINARIES_URL"
 	cd "$HOME" || true
-	wget -O "$FILENAME" "$BINARIES_URL" || error "❌ Failed to download mev-boost binary."
+	download_release_asset 0 "$FILENAME" "mev-boost"
 	EXEC_PATH=$(get_systemd_exec_path "/etc/systemd/system/mevboost.service" "/usr/local/bin/mev-boost")
 	sudo systemctl stop mevboost
 	PYTHONPATH="${BASE_DIR}" python3 -m deploy.common extract_and_install "$FILENAME" "mevboost" "$EXEC_PATH" "binary" 0 --binary-name "mev-boost"

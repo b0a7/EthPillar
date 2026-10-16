@@ -6,6 +6,7 @@ ccze
 chrony
 curl
 git
+gnupg
 iproute2
 jq
 nano

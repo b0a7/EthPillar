@@ -1,7 +1,10 @@
+import base64
+import json
 import os
+import re
 import subprocess
 from typing import Tuple, Optional
-from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_file, get_machine_architecture, install_system_binary, BASE_DATA_DIR, extract_and_install
+from deploy.common import write_service_file, DOWNLOAD_DIR, INSTALL_DIR, setup_client_user_and_dir, download_release_file, get_machine_architecture, install_system_binary, BASE_DATA_DIR, extract_and_install
 from client_requirements import validate_version_for_network
 from deploy.service_generators import form_exec_start, generate_systemd_template
 
@@ -72,8 +75,10 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
         arch_amd64: True if the architecture is amd64/x86_64, False for arm64.
 
     Returns:
-        A dictionary with keys 'version', 'download_urls', 'filenames', and
-        optionally 'commit' (hash embedded in the Azure blob filename).
+        A dictionary with keys 'version', 'download_urls', 'filenames',
+        'signature_urls', 'signature_key', 'commit' (hash embedded in the Azure
+        blob filename), and 'md5' when the downloads page lists a checksum for
+        that exact archive.
     """
     import requests
     import re
@@ -99,12 +104,86 @@ def get_release_info(version_tag: str, arch_amd64: bool) -> dict:
         version = f"v{ver}"
 
     filename = download_url.split("/")[-1]
-    return {
+    metadata = _geth_archive_metadata(res.text, download_url)
+    info = {
         "version": version,
         "download_urls": [download_url],
         "filenames": [filename],
+        "signature_urls": [metadata["signature_url"]],
+        "signature_key": "geth",
         "commit": commit,
     }
+    if metadata["md5"]:
+        info["md5"] = [metadata["md5"]]
+    return info
+
+
+def _geth_downloads_data(page: str) -> dict:
+    """Return the release tables embedded in the Geth downloads page."""
+    match = re.search(
+        r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+        page,
+    )
+    if not match:
+        raise ValueError("Geth downloads page is missing release metadata")
+    payload = json.loads(match.group(1))
+    return payload["props"]["pageProps"]["data"]
+
+
+def _geth_row_for_url(data: dict, url: str) -> Optional[dict]:
+    """Return the downloads-page row whose archive URL is exactly ``url``."""
+    for rows in data.values():
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if (row.get("release") or {}).get("url") == url:
+                return row
+    return None
+
+
+def _md5_from_blob_header(url: str) -> str:
+    """Return the MD5 Azure publishes in the blob ``Content-MD5`` header.
+
+    The downloads page copies these checksums into its table. Some archives,
+    including the current linux-amd64 stable build, are linked from the page
+    but omitted from that table. The header is the same value.
+    """
+    import requests
+    response = requests.head(url, timeout=30, allow_redirects=True)
+    response.raise_for_status()
+    encoded = (response.headers.get("Content-MD5") or "").strip()
+    try:
+        digest = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError):
+        digest = b""
+    if len(digest) != 16:
+        raise ValueError(f"No MD5 checksum published for {url}")
+    return digest.hex()
+
+
+def _geth_archive_metadata(page: str, url: str) -> dict:
+    """Return the MD5 checksum and detached signature URL for ``url``.
+
+    Checksums are taken only from the table row for that archive. A nearby row
+    for another architecture must not be reused. When the page links an archive
+    that has no table row, the Azure ``Content-MD5`` header is used instead.
+    The signature URL falls back to ``<archive>.asc``.
+    """
+    row = _geth_row_for_url(_geth_downloads_data(page), url)
+    signature_url = f"{url}.asc"
+    md5 = None
+    if row:
+        published = str(row.get("checksum") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{32}", published):
+            raise ValueError(f"No MD5 checksum published for {url}")
+        md5 = published
+        row_signature = (row.get("signature") or {}).get("url")
+        if not row_signature:
+            raise ValueError(f"No OpenPGP signature published for {url}")
+        signature_url = row_signature
+    else:
+        md5 = _md5_from_blob_header(url)
+    return {"md5": md5, "signature_url": signature_url}
 
 
 
@@ -131,13 +210,7 @@ def download_and_install_geth(eth_network: str, el_p2p_port: str, el_rpc_port: s
         print(error_msg)
         exit(1)
 
-    download_url = info["download_urls"][0]
-    filename = info["filenames"][0]
-
-
-    # Download the latest release binary
-    download_path = f"{DOWNLOAD_DIR}/{filename}"
-    download_file(download_url, download_path, "Geth")
+    download_path = download_release_file(info, DOWNLOAD_DIR, "Geth")
 
     # Extract to canonical temp dir and install
     extract_and_install(download_path, "geth", f"{INSTALL_DIR}/geth", "binary", 1)

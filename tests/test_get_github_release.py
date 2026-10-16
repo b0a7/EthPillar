@@ -8,14 +8,19 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import hashlib
+
 from deploy.common import (
     _fetch_github_release_by_tag,
     _find_github_release_by_normalized_tag,
     _github_release_tag_candidates,
     _normalize_release_version_key,
+    _validsig_fingerprints,
+    download_file,
     get_github_release,
     get_github_tag_commit,
     release_info_from_github,
+    verify_detached_signature,
 )
 
 
@@ -147,8 +152,13 @@ class TestGetGithubTagCommit:
         assert get_github_tag_commit("org/repo", "   ") is None
 
     def test_release_info_from_github_copies_commit(self):
+        digest = "ab" * 32
         info = release_info_from_github(
-            {"tag_name": "v1.0.0", "commit": "deadbeef"},
+            {
+                "tag_name": "v1.0.0",
+                "commit": "deadbeef",
+                "assets": [{"name": "f", "browser_download_url": "u", "digest": f"sha256:{digest}"}],
+            },
             ["u"],
             ["f"],
         )
@@ -156,16 +166,85 @@ class TestGetGithubTagCommit:
             "version": "v1.0.0",
             "download_urls": ["u"],
             "filenames": ["f"],
+            "sha256": [digest],
             "commit": "deadbeef",
         }
 
     def test_release_info_from_github_omits_missing_commit(self):
+        digest = "cd" * 32
         info = release_info_from_github(
-            {"tag_name": "v1.0.0"},
+            {
+                "tag_name": "v1.0.0",
+                "assets": [{"name": "f", "browser_download_url": "u", "digest": f"sha256:{digest}"}],
+            },
             ["u"],
             ["f"],
         )
         assert "commit" not in info
+        assert info["sha256"] == [digest]
+
+    def test_release_info_refuses_asset_without_checksum(self):
+        with pytest.raises(ValueError, match="No sha256 digest"):
+            release_info_from_github(
+                {
+                    "tag_name": "v1.0.0",
+                    "assets": [{"name": "f", "browser_download_url": "u"}],
+                },
+                ["u"],
+                ["f"],
+            )
+
+    @patch("deploy.common.requests.get")
+    def test_release_info_uses_sha256_sidecar_when_digest_missing(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  client.tar.gz\n",
+            raise_for_status=lambda: None,
+        )
+        info = release_info_from_github(
+            {
+                "tag_name": "v1.0.0",
+                "assets": [
+                    {"name": "client.tar.gz", "browser_download_url": "https://example/client.tar.gz"},
+                    {
+                        "name": "client.tar.gz.sha256",
+                        "browser_download_url": "https://example/client.tar.gz.sha256",
+                    },
+                ],
+            },
+            ["https://example/client.tar.gz"],
+            ["client.tar.gz"],
+        )
+        assert info["sha256"] == ["0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+        mock_get.assert_called_once()
+        assert "Authorization" not in (mock_get.call_args.kwargs.get("headers") or {})
+
+    @patch("deploy.common.requests.get")
+    def test_release_info_rejects_sidecar_that_disagrees_with_github_digest(self, mock_get):
+        digest = "ab" * 32
+        mock_get.return_value = MagicMock(
+            text=f"{'cd' * 32}  client.tar.gz\n",
+            raise_for_status=lambda: None,
+        )
+        with pytest.raises(ValueError, match="does not match"):
+            release_info_from_github(
+                {
+                    "tag_name": "v1.0.0",
+                    "assets": [
+                        {
+                            "name": "client.tar.gz",
+                            "browser_download_url": "https://example/client.tar.gz",
+                            "digest": f"sha256:{digest}",
+                        },
+                        {
+                            "name": "client.tar.gz.sha256",
+                            "browser_download_url": "https://example/client.tar.gz.sha256",
+                        },
+                    ],
+                },
+                ["https://example/client.tar.gz"],
+                ["client.tar.gz"],
+            )
 
     @patch("deploy.common.get_github_tag_commit", return_value="peeledsha")
     @patch("deploy.common.requests.get")
@@ -177,3 +256,89 @@ class TestGetGithubTagCommit:
         release = get_github_release("org/repo", "LATEST")
         assert release["tag_name"] == "v1.0.0"
         assert release["commit"] == "peeledsha"
+
+
+class _Body:
+    def __init__(self, payload: bytes):
+        self.headers = {"content-length": str(len(payload))}
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def iter_content(self, block_size):
+        yield self._payload
+
+
+class TestDownloadFileChecksum:
+    @patch("deploy.common.requests.get")
+    def test_matching_sha256_keeps_file(self, mock_get, tmp_path):
+        payload = b"client-bytes"
+        mock_get.return_value = _Body(payload)
+        dest = tmp_path / "client.tar.gz"
+        download_file(
+            "https://example/client.tar.gz",
+            str(dest),
+            "Client",
+            expected_sha256=hashlib.sha256(payload).hexdigest(),
+        )
+        assert dest.read_bytes() == payload
+
+    @patch("deploy.common.requests.get")
+    def test_sha256_mismatch_deletes_file(self, mock_get, tmp_path):
+        mock_get.return_value = _Body(b"tampered")
+        dest = tmp_path / "client.tar.gz"
+        with pytest.raises(SystemExit):
+            download_file(
+                "https://example/client.tar.gz",
+                str(dest),
+                "Client",
+                expected_sha256="ab" * 32,
+            )
+        assert not dest.exists()
+
+
+GETH_FINGERPRINT = "FDE5A1A044FA13D2F7ADA019A61A13569BA28146"
+
+
+class TestDetachedSignature:
+    def test_validsig_parser_reads_fingerprint(self):
+        status = f"[GNUPG:] VALIDSIG {GETH_FINGERPRINT} 1 2 3 4 5 6 7 8\n"
+        assert _validsig_fingerprints(status) == [GETH_FINGERPRINT]
+
+    @patch("deploy.common._ensure_gpg", return_value="gpg")
+    @patch("deploy.common.subprocess.run")
+    def test_accepts_validsig_from_pinned_key(self, mock_run, _gpg, tmp_path):
+        payload = tmp_path / "geth.tar.gz"
+        signature = tmp_path / "geth.tar.gz.asc"
+        payload.write_bytes(b"archive")
+        signature.write_text("-----BEGIN PGP SIGNATURE-----\n-----END PGP SIGNATURE-----\n")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),
+            MagicMock(returncode=0, stdout=f"fpr:::::::::{GETH_FINGERPRINT}:\n"),
+            MagicMock(
+                returncode=0,
+                stdout=f"[GNUPG:] VALIDSIG {GETH_FINGERPRINT} 1 2 3 4 5 6 7 8\n",
+                stderr="",
+            ),
+        ]
+        verify_detached_signature(str(payload), str(signature), "geth")
+
+    @patch("deploy.common._ensure_gpg", return_value="gpg")
+    @patch("deploy.common.subprocess.run")
+    def test_rejects_signature_from_a_different_key(self, mock_run, _gpg, tmp_path):
+        payload = tmp_path / "geth.tar.gz"
+        signature = tmp_path / "geth.tar.gz.asc"
+        payload.write_bytes(b"archive")
+        signature.write_text("sig")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),
+            MagicMock(returncode=0, stdout=f"fpr:::::::::{GETH_FINGERPRINT}:\n"),
+            MagicMock(
+                returncode=0,
+                stdout="[GNUPG:] VALIDSIG " + ("ab" * 20) + " 1 2 3 4 5 6 7 8\n",
+                stderr="",
+            ),
+        ]
+        with pytest.raises(ValueError, match="rejected"):
+            verify_detached_signature(str(payload), str(signature), "geth")
