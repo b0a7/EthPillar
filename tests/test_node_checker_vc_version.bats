@@ -2,7 +2,7 @@
 #
 # tests/test_node_checker_vc_version.bats
 #
-# Node-checker validator version uses the VC binary, not CL REST.
+# Node-checker versions use the same binary helpers as the update menus.
 # Mixed CL/VC and integrated Grandine. No network and no running client.
 #
 # Run: bats tests/test_node_checker_vc_version.bats
@@ -34,13 +34,16 @@ setup() {
 	failed_checks=0
 	warning_checks=0
 
+	# Latest tag comes from deploy.common in production. Tests supply MOCK_LATEST.
+	fetch_latest_release() {
+		TAG="${MOCK_LATEST:-}"
+		TAG_COMMIT=""
+		[[ -n "$TAG" ]]
+	}
+
 	curl() {
 		echo "$*" >> "$CURL_LOG"
-		if [[ "$*" == *api.github.com* ]]; then
-			echo "{\"tag_name\":\"${MOCK_LATEST}\"}"
-		else
-			echo "{\"data\":{\"version\":\"${MOCK_BN_VERSION}\"}}"
-		fi
+		return 1
 	}
 }
 
@@ -71,6 +74,17 @@ ExecStart=${bin} ${extra}
 EOF
 }
 
+write_execution() {
+	local name="$1"
+	local bin="$2"
+	cat > "$EXEC_SERVICE_FILE" <<EOF
+[Unit]
+Description=${name} Execution Layer Client service for MAINNET
+[Service]
+ExecStart=${bin}
+EOF
+}
+
 write_validator() {
 	local name="$1"
 	local bin="$2"
@@ -91,7 +105,6 @@ EOF
 	write_consensus Grandine "$grandine"
 	write_validator Lighthouse "$lighthouse" "vc --network=sepolia"
 	export MOCK_LATEST=v8.1.3
-	export MOCK_BN_VERSION="Grandine/v1.2.3/linux"
 
 	check_validator_version >"$TEST_DIR/out" 2>&1
 
@@ -108,8 +121,8 @@ EOF
 		cat "$BIN_LOG" >&2
 		return 1
 	fi
-	if grep -q "/eth/v1/node/version" "$CURL_LOG"; then
-		echo "validator row queried CL REST" >&2
+	if [[ -s "$CURL_LOG" ]]; then
+		echo "validator row queried the network" >&2
 		cat "$CURL_LOG" >&2
 		return 1
 	fi
@@ -117,7 +130,7 @@ EOF
 	[ "$warning_checks" -eq 0 ]
 }
 
-@test "check_client_version validator row reads prysm vc when consensus is nimbus" {
+@test "check_validator_version reads prysm vc when consensus is nimbus" {
 	local nimbus="$BIN_DIR/nimbus_beacon_node"
 	local prysm="$BIN_DIR/prysm-validator"
 	write_stub "$nimbus" "Nimbus beacon node v24.8.0-00aedddf"
@@ -125,11 +138,8 @@ EOF
 	write_consensus Nimbus "$nimbus"
 	write_validator Prysm "$prysm" "--beacon-rpc-provider=127.0.0.1:4000"
 	export MOCK_LATEST=v7.1.2
-	export MOCK_BN_VERSION="Nimbus/v24.8.0/linux"
 
-	check_client_version "Validator client (Prysm)" \
-		"https://api.github.com/repos/OffchainLabs/prysm/releases/latest" \
-		>"$TEST_DIR/out" 2>&1
+	check_validator_version >"$TEST_DIR/out" 2>&1
 
 	grep -q "\[PASS\]" "$TEST_DIR/out"
 	grep -q "Validator client (Prysm) version: v7.1.2" "$TEST_DIR/out"
@@ -143,24 +153,21 @@ EOF
 		echo "nimbus binary was executed for the validator row" >&2
 		return 1
 	fi
-	if grep -q "/eth/v1/node/version" "$CURL_LOG"; then
-		echo "validator row queried CL REST" >&2
+	if [[ -s "$CURL_LOG" ]]; then
+		echo "validator row queried the network" >&2
 		return 1
 	fi
 }
 
-@test "check_client_version validator row reads integrated grandine from the consensus binary" {
+@test "check_validator_version reads integrated grandine from the consensus binary" {
 	local grandine="$BIN_DIR/grandine"
 	write_stub "$grandine" "grandine 2.1.0"
 	write_consensus Grandine "$grandine" "--keystore-dir=/var/lib/grandine/validator_keys"
 	rm -f "$VALIDATOR_SERVICE_FILE"
 	export VALIDATOR_SERVICE_FILE="$TEST_DIR/missing-validator.service"
 	export MOCK_LATEST=v2.1.0
-	export MOCK_BN_VERSION="OtherClient/v9.9.9/linux"
 
-	check_client_version "Validator client (Grandine)" \
-		"https://api.github.com/repos/grandinetech/grandine/releases/latest" \
-		>"$TEST_DIR/out" 2>&1
+	check_validator_version >"$TEST_DIR/out" 2>&1
 
 	grep -q "\[PASS\]" "$TEST_DIR/out"
 	grep -q "Validator client (Grandine) version: v2.1.0" "$TEST_DIR/out"
@@ -170,13 +177,13 @@ EOF
 		return 1
 	fi
 	grep -q "$grandine" "$BIN_LOG"
-	if grep -q "/eth/v1/node/version" "$CURL_LOG"; then
-		echo "integrated Grandine validator row queried CL REST" >&2
+	if [[ -s "$CURL_LOG" ]]; then
+		echo "integrated Grandine validator row queried the network" >&2
 		return 1
 	fi
 }
 
-@test "check_client_version consensus row queries beacon REST not the validator binary" {
+@test "check_consensus_version reads the consensus binary not the validator binary" {
 	local grandine="$BIN_DIR/grandine"
 	local lighthouse="$BIN_DIR/lighthouse"
 	write_stub "$grandine" "grandine 1.2.3"
@@ -184,23 +191,49 @@ EOF
 	write_consensus Grandine "$grandine"
 	write_validator Lighthouse "$lighthouse" "vc"
 	export MOCK_LATEST=v1.2.3
-	export MOCK_BN_VERSION="Grandine/v1.2.3/linux"
 
-	check_client_version "Consensus client (Grandine)" \
-		"https://api.github.com/repos/grandinetech/grandine/releases/latest" \
-		>"$TEST_DIR/out" 2>&1
+	check_consensus_version >"$TEST_DIR/out" 2>&1
 
 	grep -q "\[PASS\]" "$TEST_DIR/out"
 	grep -q "Consensus client (Grandine) version: v1.2.3" "$TEST_DIR/out"
-	grep -q "/eth/v1/node/version" "$CURL_LOG"
+	grep -q "$grandine" "$BIN_LOG"
 	if grep -q "$lighthouse" "$BIN_LOG"; then
 		echo "consensus row executed the validator binary" >&2
 		cat "$BIN_LOG" >&2
 		return 1
 	fi
-	if grep -q "$grandine" "$BIN_LOG"; then
-		echo "consensus row executed the beacon binary" >&2
-		cat "$BIN_LOG" >&2
+	if [[ -s "$CURL_LOG" ]]; then
+		echo "consensus row queried the network" >&2
+		cat "$CURL_LOG" >&2
+		return 1
+	fi
+}
+
+@test "check_consensus_version accepts grandine binary output without a v prefix" {
+	local grandine="$BIN_DIR/grandine"
+	write_stub "$grandine" "grandine 2.0.4"
+	write_consensus Grandine "$grandine"
+	export MOCK_LATEST=v2.0.4
+
+	check_consensus_version >"$TEST_DIR/out" 2>&1
+
+	grep -q "\[PASS\]" "$TEST_DIR/out"
+	grep -q "Consensus client (Grandine) version: v2.0.4 (latest)" "$TEST_DIR/out"
+}
+
+@test "check_execution_version keeps the Ethrex version and drops the rustc version" {
+	local ethrex="$BIN_DIR/ethrex"
+	write_stub "$ethrex" "ethrex/v29.0.1/x86_64-unknown-linux-gnu/rustc-v1.93.0"
+	write_execution Ethrex "$ethrex"
+	export MOCK_LATEST=v29.0.1
+
+	check_execution_version >"$TEST_DIR/out" 2>&1
+
+	grep -q "\[PASS\]" "$TEST_DIR/out"
+	grep -q "Execution client (Ethrex) version: 29.0.1 (latest)" "$TEST_DIR/out"
+	if grep -q "v1.93.0" "$TEST_DIR/out"; then
+		echo "Ethrex row kept the rustc version" >&2
+		cat "$TEST_DIR/out" >&2
 		return 1
 	fi
 }
