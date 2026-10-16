@@ -33,15 +33,18 @@ Support levels:
   ``--builder-boost-factor``; v7.2.0 falls back to proposer-settings schema v2),
   Lodestar v1.47.0+ (VC ``--builder.urls`` / ``--builder.minBid``),
   Teku v26.9.0+ (VC ``--Xbuilder-urls`` / ``--Xbuilder-min-bid`` /
-  ``--Xbuilder-boost-factor``), and Erigon-Caplin v3.7.1+
-  (``caplin-builders.json`` plus the existing ``--caplin.mev-relay-url``
-  sidecar). Lodestar prepare still probes ``lodestar validator --help``.
-  Prysm, Teku, and Caplin prepare probe ``--version`` (Teku's ``--Xbuilder-*``
-  flags are hidden from ``--help``) so older binaries are skipped or, for
-  Prysm v7.2.0, kept on the settings-file path.
-* ``placeholder`` — Lighthouse, Nimbus, Grandine: no released VC relay
-  list; prepare is a documented no-op. Complete is refused without
-  ``--force``.
+  ``--Xbuilder-boost-factor``), Nimbus v26.10.1+ (VC ``--payload-builder`` /
+  one ``--payload-builder-url`` / ``--builder-min-bid`` /
+  ``--builder-max-execution-payment`` / ``--builder-boost-factor``), and
+  Erigon-Caplin v3.7.1+ (``caplin-builders.json`` plus the existing
+  ``--caplin.mev-relay-url`` sidecar). Lodestar prepare still probes
+  ``lodestar validator --help``. Prysm, Teku, Nimbus, and Caplin prepare
+  probe ``--version`` (Teku's ``--Xbuilder-*`` flags are hidden from
+  ``--help``) so older binaries are skipped or, for Prysm v7.2.0, kept on
+  the settings-file path. Nimbus writes a URL only when exactly one
+  non-sidecar relay is configured.
+* ``placeholder`` — Lighthouse, Grandine: no released VC relay list;
+  prepare is a documented no-op. Complete is refused without ``--force``.
 """
 
 from __future__ import annotations
@@ -92,6 +95,12 @@ TEKU_XBUILDER_MIN_VERSION = "26.9.0"
 # --builder-boost-factor, 0x-hex builder auth, and the 200M GAS_LIMIT_SCHEDULE.
 # v7.2.0 has the settings-file builders list but none of those.
 PRYSM_BUILDER_CLI_MIN_VERSION = "7.2.1"
+# Nimbus v26.10.1 is the first release whose external validator client puts
+# one builder on Gloas produceBlockV4 (buildBuilderConfig) and submits
+# proposer preferences. --payload-builder-url stays a single string: #9236
+# reverted the seq[string] change.
+NIMBUS_EPBS_MIN_VERSION = "26.10.1"
+NIMBUS_SUGGESTED_GAS_FLAG = "--suggested-gas-limit"
 # eth-docker EPBS_BUILD_FACTOR=always → uint64 max (prefer the bid).
 BOOST_FACTOR_UINT64_MAX = "18446744073709551615"
 TEKU_BOOST_FACTOR_UINT64_MAX = BOOST_FACTOR_UINT64_MAX
@@ -174,8 +183,11 @@ BN_URL_FLAGS: Dict[str, Tuple[str, ...]] = {
 }
 
 # BN boolean enable flags that only exist to talk to mev-boost.
+# Nimbus getPayloadBuilderAddress returns Opt.some("") when the enable flag
+# is set and the URL was removed, so the enable flag goes with the sidecar.
 BN_BOOL_FLAGS: Dict[str, Tuple[str, ...]] = {
     "Lodestar": ("--builder",),
+    "Nimbus": ("--payload-builder",),
 }
 
 # Prysm before v7.2.1 ships Sepolia Gloas without the upstream 200M schedule.
@@ -201,6 +213,13 @@ TEKU_SEPOLIA_GAS_NOTE = (
     "EthPillar sets "
     f"{TEKU_SEPOLIA_GAS_FLAG}={SEPOLIA_GLOAS_GAS_LIMIT} unless that flag is "
     "already present."
+)
+NIMBUS_SEPOLIA_GAS_NOTE = (
+    "Sepolia on Nimbus sends proposer-preferences target_gas_limit from "
+    f"{NIMBUS_SUGGESTED_GAS_FLAG} (compile-time default 60000000; that path "
+    "does not read GAS_LIMIT_SCHEDULE). EthPillar sets "
+    f"{NIMBUS_SUGGESTED_GAS_FLAG}={SEPOLIA_GLOAS_GAS_LIMIT} unless that flag "
+    "is already present."
 )
 
 # v7.2.0 still accepts these builder keys but ignores or warns on them.
@@ -248,8 +267,19 @@ SUPPORT_NOTES: Dict[str, str] = {
         "stays through prepare; run complete after Gloas to remove it."
     ),
     "Nimbus": (
-        "Placeholder: VC has --payload-builder=true only. Prepare is a no-op. "
-        "Complete is refused without --force."
+        "Full: Nimbus v26.10.1+ writes VC --payload-builder=true, one "
+        "--payload-builder-url (the non-sidecar relay), --builder-min-bid "
+        "(ETH min-bid as integer Gwei), --builder-max-execution-payment=0 "
+        "(trustless-only), and --builder-boost-factor from "
+        f"{EPBS_BUILD_FACTOR_ENV} (same tokens as Prysm; unset omits the flag, "
+        "Nimbus default 100, and drops a leftover 0). Prepare writes the URL "
+        "only when `nimbus_validator_client --version` is at least 26.10.1 "
+        "and exactly one non-sidecar relay is configured. Multiple relays are "
+        "not written: #9236 reverted making --payload-builder-url repeatable, "
+        "and buildBuilderConfig adds one BuilderEntry. On Sepolia, sets "
+        f"{NIMBUS_SUGGESTED_GAS_FLAG}={SEPOLIA_GLOAS_GAS_LIMIT} unless already "
+        "set. BN --payload-builder-url stays until complete, which also drops "
+        "BN --payload-builder when no builder URL remains."
     ),
     "Grandine": (
         "Placeholder: integrated client; --builder-url takes a single sidecar. "
@@ -689,13 +719,14 @@ def support_level(client: str) -> str:
         client: Validator client name (``Prysm``, ``Lodestar``, …).
 
     Returns:
-        ``full`` (Prysm, Lodestar, Teku, Erigon-Caplin) or ``placeholder``.
-        The MEV-Boost TUI (``epbsTuiSupported`` in ``functions.sh``) mirrors
-        this for local validators (shown for Prysm, Lodestar, Teku, and
-        integrated Caplin), but is always shown on MEV hosts without a local
-        validator (split LXC) and hidden when Charon is enabled.
+        ``full`` (Prysm, Lodestar, Teku, Nimbus, Erigon-Caplin) or
+        ``placeholder``. The MEV-Boost TUI (``epbsTuiSupported`` in
+        ``functions.sh``) mirrors this for local validators (shown for Prysm,
+        Lodestar, Teku, Nimbus, and integrated Caplin), but is always shown
+        on MEV hosts without a local validator (split LXC) and hidden when
+        Charon is enabled.
     """
-    if client in ("Prysm", "Lodestar", "Teku", "Erigon-Caplin"):
+    if client in ("Prysm", "Lodestar", "Teku", "Nimbus", "Erigon-Caplin"):
         return "full"
     return "placeholder"
 
@@ -806,14 +837,17 @@ def map_epbs_build_factor(
     )
 
 
-def builder_url_hostname(url: str) -> str:
-    """Return the ASCII hostname Prysm uses as default builder ``auth_data``.
+def builder_url_hostname(url: str, *, client: str = "Prysm v7.2.1") -> str:
+    """Return the ASCII hostname used as default builder auth data.
 
-    Prysm v7.2.1 rejects URLs with an empty or non-ASCII hostname
-    (``https://:8080``). Internationalized names must already be punycode.
+    Prysm v7.2.1 and Nimbus ``get_default_auth_data`` both reject an empty
+    or non-ASCII hostname (``https://:8080``). Internationalized names must
+    already be punycode. Nimbus lowercases the host and, for IPv6, compresses
+    it itself; this helper only checks that a hostname exists.
 
     Args:
         url: Builder or relay URL.
+        client: Name included in the error when the URL is rejected.
 
     Returns:
         Lowercased hostname, without brackets.
@@ -825,7 +859,7 @@ def builder_url_hostname(url: str) -> str:
     host = parsed.hostname or ""
     if not host:
         raise EpbsError(
-            f"Builder URL has no hostname (rejected by Prysm v7.2.1): {url}"
+            f"Builder URL has no hostname (rejected by {client}): {url}"
         )
     try:
         host.encode("ascii")
@@ -1463,6 +1497,89 @@ def apply_relays_teku(
     return _rebuild_unit(vc_content, args), ("; ".join(warnings) or None)
 
 
+def _apply_nimbus_boost_flag(args: List[str], raw: str) -> Tuple[List[str], Optional[str]]:
+    """Set ``--builder-boost-factor`` for an ePBS-on Nimbus VC.
+
+    Same token table as Prysm. A mapped value is written. An empty token
+    removes a leftover ``0`` so Nimbus's default of 100 applies. Any other
+    existing value is kept.
+
+    Args:
+        args: Normalized VC arguments.
+        raw: Build-factor token, or empty.
+
+    Returns:
+        ``(args, warning)``.
+    """
+    value, warning = map_epbs_build_factor(
+        raw, enabled=True, client="Nimbus", flag="--builder-boost-factor"
+    )
+    if value is not None:
+        return upsert_flag(args, "--builder-boost-factor", value), warning
+    if warning:
+        return args, warning
+    if get_flag_value(args, "--builder-boost-factor") == "0":
+        args = remove_flags(args, "--builder-boost-factor")
+    return args, None
+
+
+def apply_relays_nimbus(
+    vc_content: str,
+    relays: RelaysConfig,
+    build_factor: str = "",
+) -> Tuple[str, Optional[str]]:
+    """Add Nimbus VC builder flags for exactly one relay (v26.10.1+).
+
+    Writes ``--payload-builder=true`` and one ``--payload-builder-url``.
+    ``buildBuilderConfig`` adds that URL as the only ``BuilderEntry`` on
+    Gloas ``produceBlockV4``. ``--builder-min-bid`` is MEV-Boost ``-min-bid``
+    in integer Gwei. ``--builder-max-execution-payment=0`` caps execution
+    payment at zero (trustless-only; the Nimbus default is uint64 max).
+    ``--builder-boost-factor`` follows :func:`_apply_nimbus_boost_flag`.
+    On Sepolia, ``--suggested-gas-limit`` is set to 200000000 when absent
+    because proposer preferences copy that flag into ``target_gas_limit``.
+
+    Args:
+        vc_content: Current ``validator.service`` text.
+        relays: Relays and optional min-bid from MEV-Boost. ``min_bid`` is ETH.
+        build_factor: Raw factor token (empty omits a new value).
+
+    Returns:
+        ``(new_unit, warning)``.
+
+    Raises:
+        EpbsError: If the non-sidecar list is not exactly one URL, or that
+            URL has no hostname (``get_default_auth_data`` would drop the
+            builder).
+    """
+    urls = _non_sidecar_urls(relays.urls)
+    if len(urls) != 1:
+        raise EpbsError(
+            "Nimbus v"
+            f"{NIMBUS_EPBS_MIN_VERSION} accepts one --payload-builder-url "
+            f"(got {len(urls)} non-sidecar relay(s))"
+        )
+    url = urls[0]
+    builder_url_hostname(url, client=f"Nimbus v{NIMBUS_EPBS_MIN_VERSION}")
+    unit = parse_unit(vc_content)
+    args = normalize_cli_args(unit.exec_args)
+    args = upsert_flag(args, "--payload-builder", "true")
+    args = upsert_flag(args, "--payload-builder-url", url)
+    if relays.min_bid:
+        args = upsert_flag(args, "--builder-min-bid", eth_min_bid_to_gwei(relays.min_bid))
+    else:
+        args = remove_flags(args, "--builder-min-bid")
+    args = upsert_flag(args, "--builder-max-execution-payment", "0")
+    args, warning = _apply_nimbus_boost_flag(args, build_factor)
+    warnings: List[str] = []
+    if warning:
+        warnings.append(warning)
+    if relays.network == "sepolia" and not has_flag(args, NIMBUS_SUGGESTED_GAS_FLAG):
+        args = upsert_flag(args, NIMBUS_SUGGESTED_GAS_FLAG, SEPOLIA_GLOAS_GAS_LIMIT)
+        warnings.append(NIMBUS_SEPOLIA_GAS_NOTE)
+    return _rebuild_unit(vc_content, args), ("; ".join(warnings) or None)
+
+
 def _command_help(fs: EpbsFilesystem, argv: Sequence[str]) -> str:
     """Return ``--help`` text for *argv*, or empty string on failure.
 
@@ -1620,6 +1737,59 @@ def prysm_supports_builder_cli(fs: EpbsFilesystem, unit_content: str) -> bool:
     return _version_meets_floor(
         _unit_version_text(fs, unit_content), PRYSM_BUILDER_CLI_MIN_VERSION
     )
+
+
+def nimbus_supports_epbs(fs: EpbsFilesystem, unit_content: str) -> bool:
+    """True when the Nimbus VC binary is at least v26.10.1.
+
+    That release sends one builder URL from ``--payload-builder-url`` on
+    Gloas ``produceBlockV4`` and submits proposer preferences. Older or
+    unreadable binaries are False so prepare does not write flags the
+    release will reject, or a URL that cannot receive a bid (the
+    pre-26.10.1 ``Date-Milliseconds`` header used monotonic time).
+
+    Args:
+        fs: IO adapter used to run ``nimbus_validator_client --version``.
+        unit_content: ``validator.service`` text.
+    """
+    return _version_meets_floor(
+        _unit_version_text(fs, unit_content), NIMBUS_EPBS_MIN_VERSION
+    )
+
+
+def nimbus_payload_builder_enabled(args: Sequence[str]) -> bool:
+    """Return True when ``--payload-builder`` is set and not explicitly off.
+
+    Nimbus defaults the flag to false. ``false``, ``0``, and ``no`` disable
+    it. A bare flag or any other value enables it. ``buildBuilderConfig``
+    returns no builders when the flag is off, even if a URL is set.
+
+    Args:
+        args: Normalized VC arguments.
+    """
+    if not has_flag(args, "--payload-builder"):
+        return False
+    value = get_flag_value(args, "--payload-builder").strip().lower()
+    return value not in {"false", "0", "no"}
+
+
+def nimbus_has_builder_url(vc_content: str) -> bool:
+    """Return True when the VC has one enabled non-sidecar builder URL.
+
+    The value must be a single URL. A comma is not a relay list:
+    ``payloadBuilderUrl`` is one string, and ``buildBuilderConfig`` would
+    treat the whole value as one URL.
+
+    Args:
+        vc_content: ``validator.service`` text.
+    """
+    args = normalize_cli_args(parse_unit(vc_content).exec_args)
+    if not nimbus_payload_builder_enabled(args):
+        return False
+    raw = get_flag_value(args, "--payload-builder-url").strip()
+    if not raw or "," in raw or is_sidecar_url(raw):
+        return False
+    return True
 
 
 def resolve_epbs_build_factor(fs: EpbsFilesystem, client: str) -> str:
@@ -1805,14 +1975,13 @@ def apply_relays_placeholder(client: str) -> str:
     """Return a planned-flag blurb; do not mutate units.
 
     Args:
-        client: Placeholder VC name (Lighthouse, Nimbus, Grandine).
+        client: Placeholder VC name (Lighthouse, Grandine).
 
     Returns:
         Human-readable description of the unreleased relay-list surface.
     """
     planned = {
         "Lighthouse": "--builder-relays=<urls> (not shipped; VC still --builder-proposals)",
-        "Nimbus": "--payload-builder-relays=<urls> (not shipped; VC still --payload-builder=true)",
         "Grandine": "multi --builder-url list (not shipped; single --builder-url today)",
     }
     return planned.get(client, "no VC relay-list flag shipped")
@@ -2306,6 +2475,63 @@ def _apply_vc_relays(
                 plan.warnings.append(
                     "Teku VC already has these builder flags; nothing to change."
                 )
+    elif vc_name == "Nimbus":
+        if not nimbus_supports_epbs(fs, vc_content):
+            plan.actions.append(
+                PlanAction(
+                    "Nimbus VC",
+                    "skipped: nimbus_validator_client --version is older than "
+                    f"{NIMBUS_EPBS_MIN_VERSION} (no Gloas builder URL)",
+                )
+            )
+            plan.warnings.append(
+                "Prepare: no-op on this Nimbus build — Complete will stop "
+                "MEV-Boost without a VC relay replacement. Install Nimbus "
+                f"{NIMBUS_EPBS_MIN_VERSION} or later (first release whose VC "
+                "sends one builder on produceBlockV4)."
+            )
+        elif len(_non_sidecar_urls(relays.urls)) > 1:
+            count = len(_non_sidecar_urls(relays.urls))
+            plan.actions.append(
+                PlanAction(
+                    "Nimbus VC",
+                    "skipped: --payload-builder-url is a single URL "
+                    f"({count} non-sidecar relays)",
+                )
+            )
+            plan.warnings.append(
+                "Nimbus v"
+                f"{NIMBUS_EPBS_MIN_VERSION} --payload-builder-url is one "
+                "string. nimbus-eth2#9236 reverted the repeatable form, and "
+                "buildBuilderConfig adds one BuilderEntry. Prepare did not "
+                f"pick among {count} relays. Keep MEV-Boost, or use a single "
+                "relay."
+            )
+        else:
+            factor_raw = resolve_epbs_build_factor(fs, "Nimbus")
+            new_vc, factor_warning = apply_relays_nimbus(
+                vc_content, relays, factor_raw
+            )
+            if factor_warning:
+                plan.warnings.append(factor_warning)
+            detail = (
+                "add --payload-builder=true --payload-builder-url "
+                "--builder-max-execution-payment=0"
+            )
+            if relays.min_bid:
+                detail += " --builder-min-bid"
+            factor_value, _ = map_epbs_build_factor(
+                factor_raw, enabled=True, client="Nimbus", flag="--builder-boost-factor"
+            )
+            if factor_value is not None:
+                detail += f" --builder-boost-factor={factor_value}"
+            if _write_unit_if_changed(fs, vc_path, vc_content, new_vc, apply):
+                plan.actions.append(PlanAction(vc_path, detail))
+                plan.services_to_restart.append("validator")
+            else:
+                plan.warnings.append(
+                    "Nimbus VC already has this builder URL; nothing to change."
+                )
     else:
         planned = apply_relays_placeholder(vc_name)
         plan.actions.append(PlanAction(f"{vc_name} VC (placeholder)", planned))
@@ -2328,7 +2554,10 @@ def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> Migrati
     JSON. Lodestar gets ``--builder.urls`` when the binary documents that
     flag. Teku gets ``--Xbuilder-urls`` (plus min-bid, boost factor, and
     on Sepolia an explicit 200M gas limit) when ``teku --version`` is at
-    least v26.9.0. Erigon-Caplin writes ``caplin-builders.json`` when
+    least v26.9.0. Nimbus v26.10.1+ gets one ``--payload-builder-url``
+    (plus min-bid, max execution payment, boost factor, and on Sepolia an
+    explicit 200M gas limit) when exactly one non-sidecar relay is
+    configured. Erigon-Caplin writes ``caplin-builders.json`` when
     ``erigon --version`` is at least v3.7.1 and leaves
     ``--caplin.mev-relay-url`` in place. Other VCs are a documented no-op.
     When Charon is installed, VC relay writes are skipped (Charon
@@ -2512,11 +2741,13 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         ``default_config.builder.builders`` has a non-sidecar URL, for
         Lodestar when ``--builder.urls`` is set and is not the sidecar, for
         Teku when ``--Xbuilder-urls`` has a non-sidecar URL and the binary
-        is v26.9.0+, or for Erigon-Caplin when ``caplin-builders.json`` has
+        is v26.9.0+, for Nimbus when ``--payload-builder`` is enabled,
+        ``--payload-builder-url`` is one non-sidecar URL, and the binary is
+        v26.10.1+, or for Erigon-Caplin when ``caplin-builders.json`` has
         a non-sidecar ``builders[].url`` and the binary is v3.7.1+. Legacy
         ``builder.relays`` does not count. Always False for placeholder
-        clients, for a Teku binary older than v26.9.0, and for an Erigon
-        binary older than v3.7.1.
+        clients, for a Teku binary older than v26.9.0, for a Nimbus binary
+        older than v26.10.1, and for an Erigon binary older than v3.7.1.
     """
     if vc_name == "Prysm":
         if prysm_has_builder_urls(vc_content):
@@ -2531,6 +2762,10 @@ def _vc_has_relays(fs: EpbsFilesystem, vc_name: str, vc_content: str) -> bool:
         if not teku_supports_epbs(fs, vc_content):
             return False
         return teku_has_builder_urls(vc_content)
+    if vc_name == "Nimbus":
+        if not nimbus_supports_epbs(fs, vc_content):
+            return False
+        return nimbus_has_builder_url(vc_content)
     if vc_name == "Erigon-Caplin":
         if not caplin_supports_epbs(fs, vc_content):
             return False
@@ -2690,7 +2925,7 @@ def complete(
     if "consensus" in plan.services_to_restart and mode == "integrated_grandine":
         # Integrated Grandine restarts with consensus.service only.
         pass
-    elif vc_name in ("Prysm", "Lodestar", "Teku", "Erigon-Caplin"):
+    elif vc_name in ("Prysm", "Lodestar", "Teku", "Nimbus", "Erigon-Caplin"):
         # VC flags / builder file do not change on complete; BN restart is enough.
         pass
 
@@ -2764,6 +2999,22 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
                 f"{TEKU_XBUILDER_MIN_VERSION}; --Xbuilder-* is not used. "
                 "Prepare is a no-op."
             )
+        if vc_name == "Nimbus" and not nimbus_supports_epbs(fs, vc_content):
+            lines.append(
+                "Nimbus binary: older than "
+                f"{NIMBUS_EPBS_MIN_VERSION}; the Gloas builder URL is not "
+                "used. Prepare is a no-op."
+            )
+        elif vc_name == "Nimbus" and not has_relays and fs.exists(mev_path):
+            extra = _non_sidecar_urls(
+                parse_mevboost_relays(fs.read_text(mev_path) or "").urls
+            )
+            if len(extra) > 1:
+                lines.append(
+                    "Nimbus relays: "
+                    f"{len(extra)} non-sidecar URLs, but --payload-builder-url "
+                    "accepts one. Prepare will not choose among them."
+                )
         if charon_installed(fs):
             if charon_ready_for_complete(fs):
                 lines.append(
