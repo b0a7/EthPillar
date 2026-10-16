@@ -205,6 +205,23 @@ EOF
 	fi
 }
 
+@test "check_client_version accepts Grandine beacon version without a v prefix" {
+	export MOCK_LATEST=v2.0.4
+	export MOCK_BN_VERSION="Grandine/2.0.4-abc1234/x86_64-linux"
+
+	check_client_version "Consensus client (Grandine)" \
+		"https://api.github.com/repos/grandinetech/grandine/releases/latest" \
+		>"$TEST_DIR/out" 2>&1
+
+	grep -q "\[PASS\]" "$TEST_DIR/out"
+	grep -q "Consensus client (Grandine) version: v2.0.4" "$TEST_DIR/out"
+	if grep -q "unable to query version" "$TEST_DIR/out"; then
+		echo "Grandine version without v was rejected" >&2
+		cat "$TEST_DIR/out" >&2
+		return 1
+	fi
+}
+
 @test "Ethrex and Grandine have GitHub release URLs and unknown clients do not abort" {
 	[[ "$(client_release_url Ethrex)" == "https://api.github.com/repos/lambdaclass/ethrex/releases/latest" ]]
 	[[ "$(client_release_url Grandine)" == "https://api.github.com/repos/grandinetech/grandine/releases/latest" ]]

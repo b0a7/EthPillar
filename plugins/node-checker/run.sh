@@ -582,10 +582,15 @@ check_client_version() {
     getClVcCurrentVersion "$vc_name" vc 2>/dev/null || true
     version=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "${VERSION:-}" | head -1 || true)
   elif [[ "$name" =~ "Consensus" ]]; then
+    # Grandine reports "Grandine/2.0.4-<commit>/arch-os" with no leading v.
     version=$(curl -s -X GET "${API_BN_ENDPOINT}/eth/v1/node/version" \
       -H "accept: application/json" \
       | jq -r '.data.version' \
-      | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
+      | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+' \
+      | head -1 || true)
+    if [[ -n "$version" && "$version" != v* ]]; then
+      version="v$version"
+    fi
   else
     version=$(curl -s -X POST \
       -H "Content-Type: application/json" \
