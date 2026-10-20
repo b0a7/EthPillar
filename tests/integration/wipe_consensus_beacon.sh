@@ -2,7 +2,7 @@
 # Integration-only helper for Upgrade-matrix consensus downgrades.
 #
 # When the seeded consensus binary is newer than official LATEST (an RC such
-# as Lighthouse v8.3.0-rc.0 vs LATEST v8.2.3), the newer process has already
+# as Lighthouse v8.3.0 vs an older LATEST), the newer process has already
 # written a beacon DB the older binary cannot open. Stop consensus and delete
 # only the beacon DB, then return without starting the unit. ethpillar upgrade
 # installs the older binary and is the next process to create the DB.

@@ -38,7 +38,7 @@ How each client finds keys:
 - **Prysm:** the same public-key URL. Install still creates an empty wallet and `password.txt`, because the unit keeps `--wallet-dir` and `--wallet-password-file`. Prysm reads the public-key list at startup, so importing keys restarts the validator.
 - **Nimbus:** `--web3-signer-url` (discovers keys itself).
 - **Lodestar:** `--externalSigner.url` and `--externalSigner.fetch`.
-- **Lighthouse:** `validator_definitions.yml` entries of `type: web3signer`. Import appends one entry per key and records that pubkey in `slashing_protection.sqlite`. Lighthouse does not create that file itself and exits if it is missing. Local slashing protection for those keys is disabled; Web3Signer records signatures.
+- **Lighthouse:** `validator_definitions.yml` entries of `type: web3signer`. Import appends one entry per key and records that pubkey in `slashing_protection.sqlite`. Lighthouse does not create that file itself and exits if it is missing. Local slashing protection for those keys is disabled; Web3Signer records signatures. For **Gloas / ePBS**, Lighthouse v8.3.0+ requires **Web3Signer 26.9.0 or newer** (remote-signing-api v1.4.0). EthPillar installs GitHub LATEST Web3Signer; upgrade an older signer before Hoodi/Sepolia Gloas if you pair it with Lighthouse.
 - **Grandine (integrated):** `--web3signer-api-urls` on the consensus unit. No local keystore directory.
 
 ## Import keys
@@ -65,3 +65,5 @@ After that smoke is green, use a throwaway Hoodi validator:
 ## Updates
 
 `ethpillar upgrade web3signer` or **Web3Signer → Update to latest release**.
+
+For Lighthouse Gloas / ePBS, keep Web3Signer at **26.9.0 or newer**. Install and upgrade track GitHub LATEST; an older leftover install will not work with Lighthouse v8.3.0+ Gloas signing requests.

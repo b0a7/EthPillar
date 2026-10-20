@@ -9,7 +9,7 @@ Networks gated on Fusaka fork (PeerDAS support) minimum versions:
 - Hoodi: Fusaka active since epoch 50688
 
 Networks gated on Gloas / Glamsterdam (Sepolia, activated 2026-10-06):
-- Sepolia: Gloas epoch 353024; GitHub Lighthouse LATEST may lag (use preferred RC).
+- Sepolia: Gloas epoch 353024; Lighthouse floor is stable v8.3.0.
 Other networks (including mainnet) are not Gloas-gated here.
 """
 
@@ -35,17 +35,15 @@ FUSAKA_MIN_VERSIONS = {
 
 # Minimum client versions for Sepolia Gloas (activated 2026-10-06 epoch 353024).
 GLOAS_SEPOLIA_MIN_VERSIONS = {
-    'lighthouse': 'v8.3.0-rc.0',
+    'lighthouse': 'v8.3.0',
     'lodestar': 'v1.49.0',
     'teku': '26.9.1',
     'prysm': 'v7.2.0',
 }
 
 # Install tag to use when GitHub LATEST fails the Sepolia Gloas floor.
-# Drop lighthouse once a stable >= v8.3.0 is GitHub LATEST.
-GLOAS_SEPOLIA_PREFERRED_TAGS = {
-    'lighthouse': 'v8.3.0-rc.0',
-}
+# Empty: Lighthouse v8.3.0 is GitHub LATEST, so no preferred remap is needed.
+GLOAS_SEPOLIA_PREFERRED_TAGS: dict[str, str] = {}
 
 
 def parse_version(version_string):
@@ -181,8 +179,8 @@ def preferred_install_tag(
 ) -> Optional[str]:
     """Return an alternate install tag when *latest_tag* fails the network floor.
 
-    Today this only remaps Sepolia Lighthouse to the Gloas RC while GitHub
-    LATEST remains on a pre-Gloas stable. Returns ``None`` when *latest_tag*
+    Returns an alternate tag from :data:`GLOAS_SEPOLIA_PREFERRED_TAGS` when
+    *latest_tag* fails the Sepolia floor. Returns ``None`` when *latest_tag*
     already meets the floor or no preferred tag is configured.
 
     Args:

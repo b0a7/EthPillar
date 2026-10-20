@@ -42,15 +42,23 @@ def test_sepolia_rejects_pre_gloas_lighthouse():
     assert ok is False
     assert msg is not None
     assert "Gloas" in msg
-    assert "v8.3.0-rc.0" in msg
+    assert "v8.3.0" in msg
 
 
-def test_sepolia_accepts_gloas_lighthouse_rc():
+def test_sepolia_accepts_gloas_lighthouse_stable():
     ok, msg = client_requirements.validate_version_for_network(
-        "lighthouse", "v8.3.0-rc.0", "SEPOLIA"
+        "lighthouse", "v8.3.0", "SEPOLIA"
     )
     assert ok is True
     assert msg is None
+
+
+def test_sepolia_rejects_gloas_lighthouse_rc_when_stable_required():
+    ok, msg = client_requirements.validate_version_for_network(
+        "lighthouse", "v8.3.0-rc.0", "SEPOLIA"
+    )
+    assert ok is False
+    assert msg is not None
 
 
 def test_sepolia_rejects_pre_gloas_lodestar_and_teku():
@@ -72,13 +80,14 @@ def test_mainnet_not_gloas_gated():
     assert msg is None
 
 
-def test_preferred_install_tag_lighthouse_sepolia():
+def test_preferred_install_tag_lighthouse_sepolia_noop_after_stable():
+    # Preferred remap table is empty now that v8.3.0 is GitHub LATEST.
     assert (
         client_requirements.preferred_install_tag("lighthouse", "sepolia", "v8.2.3")
-        == "v8.3.0-rc.0"
+        is None
     )
     assert (
-        client_requirements.preferred_install_tag("lighthouse", "sepolia", "v8.3.0-rc.0")
+        client_requirements.preferred_install_tag("lighthouse", "sepolia", "v8.3.0")
         is None
     )
     assert (

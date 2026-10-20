@@ -21,7 +21,28 @@ from tests.integration.latest_override import (
     remap_latest_tag,
     write_override,
     write_seeds_manifest,
+    lighthouse_epbs_pin_tag,
+    pin_lighthouse_epbs_install,
 )
+
+
+def test_lighthouse_epbs_pin_only_when_latest_is_older(tmp_path):
+    assert lighthouse_epbs_pin_tag("v8.2.3") == "v8.3.0"
+    assert lighthouse_epbs_pin_tag("") == "v8.3.0"
+    assert lighthouse_epbs_pin_tag("v8.3.0-rc.0") == "v8.3.0"
+    assert lighthouse_epbs_pin_tag("v8.3.0") is None
+    assert lighthouse_epbs_pin_tag("v8.3.1") is None
+
+    path = str(tmp_path / "override.json")
+    assert pin_lighthouse_epbs_install("v8.3.0", path=path) is None
+    assert not Path(path).exists()
+    assert pin_lighthouse_epbs_install("v8.2.3", path=path) == "v8.3.0"
+    saved = load_override(path)
+    assert saved["clients"]["lighthouse"] == "v8.3.0"
+    assert saved["repos"]["sigp/lighthouse"] == "v8.3.0"
+    assert saved["kinds"]["lighthouse"] == "stable"
+    assert "reth" not in saved["clients"]
+
 
 
 def test_remap_latest_tag_noop_without_file(tmp_path):
@@ -209,10 +230,12 @@ def test_prepare_soft_skips_lighthouse_rc_downgrade_on_sepolia(tmp_path):
     path = str(tmp_path / "override.json")
 
     def fake_find_rc(client: str, _repo):
+        # Seed meets the Gloas floor; GitHub LATEST does not. An RC→stable
+        # upgrade harness would wipe the BN DB then install a pre-Gloas binary.
         return {
             "client": "lighthouse",
-            "rc_tag": "v8.3.0-rc.0",
-            "seed_tag": "v8.3.0-rc.0",
+            "rc_tag": "v8.3.1-rc.0",
+            "seed_tag": "v8.3.1-rc.0",
             "seed_kind": "rc",
             "latest": "v8.2.3",
             "status": "ok",
@@ -235,7 +258,7 @@ def test_prepare_soft_skips_lighthouse_rc_downgrade_on_sepolia(tmp_path):
         find_rc_fn=fake_find_rc,
         network="hoodi",
     )
-    assert kept["clients"]["lighthouse"] == "v8.3.0-rc.0"
+    assert kept["clients"]["lighthouse"] == "v8.3.1-rc.0"
 
 
 def test_install_github_release_hook_remaps_latest(tmp_path):
