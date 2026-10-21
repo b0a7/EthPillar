@@ -81,7 +81,7 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 - **Grafana Dashboards**: Built-in Ethereum node monitoring
 - **Troubleshooting Tools**: Built-in checks for common node issues with Node Checker
 - **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, Failover, or Obol Charon DV setups
-- **ePBS / Gloas migration**: Two-step MEV-Boost cutover under **MEV-Boost → ePBS migration** (Prysm, Lodestar, Teku v26.9.0+, and Erigon-Caplin TUI; Charon DVT hidden until Obol ships support; [guide](docs/ePBS-migration.md))
+- **ePBS / Gloas migration**: Two-step MEV-Boost cutover under **MEV-Boost → ePBS migration** (Prysm, Lodestar, Teku v26.9.0+, Erigon-Caplin, and Lighthouse v8.3.0+ TUI; Charon DVT hidden until Obol ships support; [guide](docs/ePBS-migration.md))
 - **Obol Charon DV**: DVT middleware + CDVN migrate ([guide](docs/charon.md))
 - **Web3Signer**: Remote signer for validator keys ([guide](docs/web3signer.md))
 

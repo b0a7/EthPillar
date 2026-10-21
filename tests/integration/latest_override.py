@@ -40,6 +40,8 @@ from typing import Any, Callable, Iterable
 OVERRIDE_PATH = "/tmp/ethpillar-integration-latest-override.json"
 SEEDS_PATH = "/tmp/ethpillar-integration-upgrade-seeds.json"
 ENV_VAR = "ETHPILLAR_INTEGRATION_LATEST_OVERRIDE"
+# ePBS integration floor for Lighthouse builder_definitions.yml (stable Gloas).
+LIGHTHOUSE_EPBS_TAG = "v8.3.0"
 SEEDS_ENV = "ETHPILLAR_INTEGRATION_UPGRADE_SEEDS"
 _HOOK_ATTR = "_ethpillar_latest_override_wrapped"
 _GETH_HOOK_ATTR = "_ethpillar_geth_latest_override_wrapped"
@@ -233,8 +235,8 @@ def is_consensus_downgrade(client: str, path: str | None = None) -> bool:
     """Return True when upgrading *client* to official LATEST downgrades the BN.
 
     True only for a consensus client whose seed tag is semver-newer than the
-    official LATEST stored in the seeds manifest (Lighthouse ``v8.3.0-rc.0``
-    vs LATEST ``v8.2.3``). Previous-stable seeds are older, so they stay a
+    official LATEST stored in the seeds manifest (for example a newer
+    Lighthouse seed vs an older LATEST). Previous-stable seeds are older, so they stay a
     forward upgrade and keep the beacon DB. Execution, MEV, and Charon seeds
     are ignored: this check only gates a consensus beacon wipe.
     """
@@ -553,6 +555,47 @@ def prepare_rc_overrides(
 
 
 prepare_upgrade_seeds = prepare_rc_overrides
+
+
+
+def lighthouse_epbs_pin_tag(latest_tag: str) -> str | None:
+    """Return the Gloas Lighthouse tag when *latest_tag* is older than it.
+
+    GitHub ``/releases/latest`` can lag briefly after a stable cut. The ePBS
+    integration case pins :data:`LIGHTHOUSE_EPBS_TAG` until latest itself is
+    that tag or newer.
+
+    Args:
+        latest_tag: Official Lighthouse latest tag (may be empty).
+
+    Returns:
+        ``v8.3.0`` when latest is missing or older, otherwise None.
+    """
+    from client_requirements import compare_versions
+
+    latest = (latest_tag or "").strip()
+    if not latest:
+        return LIGHTHOUSE_EPBS_TAG
+    if compare_versions(latest, LIGHTHOUSE_EPBS_TAG) >= 0:
+        return None
+    return LIGHTHOUSE_EPBS_TAG
+
+
+def pin_lighthouse_epbs_install(latest_tag: str, path: str | None = None) -> str | None:
+    """Write a Lighthouse-only LATEST override when the Gloas stable is not latest.
+
+    Args:
+        latest_tag: Official Lighthouse latest tag.
+        path: Override file path. Defaults to the integration override path.
+
+    Returns:
+        The pinned tag, or None when no override was written.
+    """
+    tag = lighthouse_epbs_pin_tag(latest_tag)
+    if tag is None:
+        return None
+    write_override({"lighthouse": tag}, path=path, kinds={"lighthouse": "stable"})
+    return tag
 
 
 def install_github_release_hook() -> bool:

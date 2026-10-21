@@ -32,9 +32,11 @@ CAPLIN_POLL_ATTEMPTS = 72      # 360s — HOODI checkpoint + header sync before 
 from checkpoint_cache_common import checkpoint_sync_url_for_network  # noqa: E402
 from latest_override import (  # noqa: E402
     ENV_VAR as LATEST_OVERRIDE_ENV,
+    LIGHTHOUSE_EPBS_TAG,
     clear_override,
     normalize_deploy_clients,
     override_path,
+    pin_lighthouse_epbs_install,
     prepare_rc_overrides,
 )
 from latest_snapshot import ENV_VAR as LATEST_SNAPSHOT_ENV, SNAPSHOT_PATH, write_snapshot  # noqa: E402
@@ -351,6 +353,52 @@ def _missing_module(module: str) -> bool:
         return True
 
 
+def _pin_lighthouse_epbs(args: Any) -> None:
+    """Pin the Lighthouse ePBS install to v8.3.0 when GitHub latest is older.
+
+    Production installs track ``/releases/latest``. This migration case needs a
+    binary that reads ``builder_definitions.yml``. When latest is already
+    v8.3.0 or newer, no override is written.
+    """
+    names = " ".join(
+        part.lower()
+        for part in (
+            getattr(args, "cc", "") or "",
+            getattr(args, "vc", "") or "",
+            getattr(args, "combo", "") or "",
+        )
+        if part
+    )
+    if "lighthouse" not in names:
+        return
+    latest = ""
+    try:
+        from deploy.common import get_github_release
+
+        latest = str(get_github_release("sigp/lighthouse", "LATEST").get("tag_name") or "")
+    except Exception as exc:  # noqa: BLE001 — pin the known stable if latest cannot be read
+        print(
+            f"[ePBS] Could not read Lighthouse LATEST ({exc}); "
+            f"pinning {LIGHTHOUSE_EPBS_TAG}",
+            flush=True,
+        )
+    pinned = pin_lighthouse_epbs_install(latest)
+    if pinned is None:
+        print(
+            f"[ePBS] Lighthouse LATEST {latest} already includes builder_definitions.yml; "
+            "not pinning",
+            flush=True,
+        )
+        return
+    os.environ[LATEST_OVERRIDE_ENV] = override_path()
+    print(
+        f"[ePBS] Pinning Lighthouse install to {pinned} "
+        f"(GitHub latest is {latest or 'unknown'})",
+        flush=True,
+    )
+
+
+
 def run_install(args: Any, fee_address: str):
     """Run ``deploy-node.py`` with integration overrides (checkpoint URL, caches)."""
     print(f"\n🚀 Running: deploy/deploy-node.py for {args.combo or args.ec}...")
@@ -386,6 +434,8 @@ def run_install(args: Any, fee_address: str):
             )
             prepare_rc_overrides(clients, network=args.network)
             os.environ[LATEST_OVERRIDE_ENV] = override_path()
+        elif getattr(args, "test_epbs", False):
+            _pin_lighthouse_epbs(args)
         subprocess.run(cmd, capture_output=False, check=True, env=integration_subprocess_env())
     except subprocess.CalledProcessError as e:
         print(f"❌ Script failed with return code {e.returncode}")
@@ -1195,7 +1245,7 @@ if __name__ == "__main__":
         '--test-epbs',
         action='store_true',
         default=False,
-        help='After a Prysm/Lodestar/Teku or Erigon-Caplin+MEV install, apply ePBS prepare/complete',
+        help='After a Prysm/Lodestar/Teku/Lighthouse or Erigon-Caplin+MEV install, apply ePBS prepare/complete',
     )
     parser.add_argument(
         '--rpc-exposure-el',

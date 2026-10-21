@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS signed_attestations (
 
 # Web3Signer 26.x distribution ships for JDK 25 (same floor as current Teku).
 JAVA_MAJOR = 25
+# Lighthouse v8.3.0+ Gloas signing needs remote-signing-api v1.4.0 (Web3Signer 26.9.0+).
+WEB3SIGNER_GLOAS_MIN_VERSION = "26.9.0"
 
 GITHUB_REPO = "Consensys-Incorporated/web3signer"
 
@@ -443,6 +445,15 @@ def install_web3signer(eth_network: str) -> tuple[str, str]:
 
     info = get_release_info("LATEST", True)
     version = info["version"]
+    from client_requirements import compare_versions
+
+    if compare_versions(version, WEB3SIGNER_GLOAS_MIN_VERSION) < 0:
+        print(
+            f"WARNING: Web3Signer {version} is older than "
+            f"{WEB3SIGNER_GLOAS_MIN_VERSION}. Lighthouse v8.3.0+ Gloas signing "
+            "requires Web3Signer 26.9.0 or newer (remote-signing-api v1.4.0). "
+            "Upgrade before pairing this signer with Lighthouse on a Gloas network."
+        )
     download_path = download_release_file(info, DOWNLOAD_DIR, "web3signer")
     extract_and_install(download_path, "web3signer", WEB3SIGNER_INSTALL_DIR, "directory", 1)
     # Web3Signer does not migrate on startup. An empty database fails with

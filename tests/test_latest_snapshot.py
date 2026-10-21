@@ -30,7 +30,7 @@ def test_write_snapshot_passes_network_for_remap(tmp_path):
     def fake_release_info(client, tag="LATEST", network=None):
         seen[client.lower()] = network
         if client.lower() == "lighthouse" and (network or "").lower() == "sepolia":
-            return {"version": "v8.3.0-rc.0"}
+            return {"version": "v8.3.0"}
         if client.lower() == "lighthouse":
             return {"version": "v8.2.3"}
         return {"version": "v1.0.0"}
@@ -40,4 +40,4 @@ def test_write_snapshot_passes_network_for_remap(tmp_path):
         written = write_snapshot(str(snapshot_path), network="SEPOLIA")
 
     assert seen["lighthouse"] == "SEPOLIA"
-    assert written["lighthouse"] == "v8.3.0-rc.0"
+    assert written["lighthouse"] == "v8.3.0"

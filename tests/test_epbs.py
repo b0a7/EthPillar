@@ -28,6 +28,7 @@ from manage.epbs import (
     TEKU_EPBS_BUILD_FACTOR_ENV,
     TEKU_SEPOLIA_GAS_FLAG,
     TEKU_XBUILDER_MIN_VERSION,
+    _default_write_data,
     default_auth_data_hex,
     map_epbs_build_factor,
     EpbsError,
@@ -123,7 +124,8 @@ def test_tui_is_gated_to_full_support_only() -> None:
     assert support_level("Lodestar") == "full"
     assert support_level("Teku") == "full"
     assert support_level("Erigon-Caplin") == "full"
-    for client in ("Lighthouse", "Nimbus", "Grandine", ""):
+    assert support_level("Lighthouse") == "full"
+    for client in ("Nimbus", "Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -918,15 +920,30 @@ def test_lodestar_prepare_adds_builder_urls(tmp_path: Path) -> None:
     assert has_flag(vc_args, "--builder.urls")
 
 
-def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) -> None:
-    """Lighthouse prepare is a no-op; complete requires ``--force`` to strip BN sidecar."""
+def _lighthouse_fs(tmp_path: Path, version: str) -> EpbsFilesystem:
+    """Filesystem whose Lighthouse version probe returns *version*."""
     fs = _fs(tmp_path)
-    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    fs.lighthouse_builders_path = str(tmp_path / "builder_definitions.yml")
+
+    def run_version(argv: list[str]) -> str:
+        if argv and argv[-1] == "--version":
+            return f"Lighthouse {version}\n"
+        return ""
+
+    fs.run_version = run_version
+    return fs
+
+
+def _write_lighthouse_stack(
+    fs: EpbsFilesystem, network: str = "mainnet", extra: str = "--builder-proposals"
+) -> None:
+    """Write MEV, Lighthouse BN sidecar, and VC units."""
+    _write(fs, "mevboost", generate_mevboost_service(network, "0.006", RELAYS))
     _write(
         fs,
         "consensus",
         generate_lighthouse_bn_service(
-            "mainnet", SYNC, JWT, "5052", "9000", "9001", "100",
+            network, SYNC, JWT, "5052", "9000", "9001", "100",
             mev_parameters="--builder http://127.0.0.1:18550",
         ),
     )
@@ -934,18 +951,86 @@ def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) ->
         fs,
         "validator",
         generate_lighthouse_vc_service(
-            "mainnet",
+            network,
             "ep",
             "--beacon-nodes=http://127.0.0.1:5052",
-            extra_parameters="--builder-proposals",
+            extra_parameters=extra,
         ),
     )
+
+
+def test_lighthouse_prepare_writes_builder_definitions(tmp_path: Path) -> None:
+    """Lighthouse v8.3.0 prepare writes builders[].url and keeps the sidecar."""
+    import yaml
+
+    fs = _lighthouse_fs(tmp_path, "v8.3.0")
+    _write_lighthouse_stack(fs, network="sepolia")
+    # Sibling of builder_definitions.yml so gas-limit override detection works
+    (tmp_path / "validator_definitions.yml").write_text(
+        '---\n- enabled: true\n  voting_public_key: "0xabc"\n  gas_limit: 30000000\n',
+        encoding="utf-8",
+    )
     plan = prepare(fs, apply=True)
-    assert plan.support == "placeholder"
+    assert plan.support == "full"
+    assert any("200000000" in w for w in plan.warnings)
+    assert any("overrides" in w for w in plan.warnings)
     vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
     assert "--builder-proposals" in vc
+    assert "--gas-limit" not in vc
     assert "boost-relay.flashbots.net" not in vc
-    assert any("no-op on this client" in w for w in plan.warnings)
+    raw = Path(fs.lighthouse_builders_path).read_text(encoding="utf-8")
+    data = yaml.safe_load(raw)
+    assert data["min_bid"] == 6000000
+    assert data["builder_boost_factor"] == 100
+    urls = [entry["url"] for entry in data["builders"]]
+    assert len(urls) == 2
+    assert all(entry["enabled"] is True for entry in data["builders"])
+    assert all(entry["max_execution_payment"] == 0 for entry in data["builders"])
+    assert "gas_limit" not in raw
+    assert "18550" in Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+
+    again = prepare(fs, apply=True)
+    assert any("nothing to change" in w for w in again.warnings)
+    assert "validator" not in again.services_to_restart
+
+    complete(fs, apply=True)
+    bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "18550" not in bn
+    assert Path(fs.lighthouse_builders_path).read_text(encoding="utf-8") == raw
+    assert "--builder-proposals" in Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+
+
+def test_lighthouse_prepare_preserves_validator_configs(tmp_path: Path) -> None:
+    """Existing per-validator builder config and boost factor survive prepare."""
+    import yaml
+
+    fs = _lighthouse_fs(tmp_path, "v8.3.0")
+    _write_lighthouse_stack(fs)
+    Path(fs.lighthouse_builders_path).write_text(
+        "min_bid: 1\nbuilder_boost_factor: 120\nbuilders: []\n"
+        "validator_configs:\n  '0xabc':\n    builders: []\n",
+        encoding="utf-8",
+    )
+    plan = prepare(fs, apply=True)
+    assert plan.support == "full"
+    assert not any("200000000" in w for w in plan.warnings)
+    data = yaml.safe_load(Path(fs.lighthouse_builders_path).read_text(encoding="utf-8"))
+    assert data["builder_boost_factor"] == 120
+    assert data["validator_configs"]["0xabc"]["builders"] == []
+    assert data["min_bid"] == 6000000
+    assert len(data["builders"]) == 2
+
+
+def test_lighthouse_old_binary_prepare_is_noop(tmp_path: Path) -> None:
+    """Lighthouse before v8.3.0 does not write builder_definitions.yml."""
+    fs = _lighthouse_fs(tmp_path, "v8.2.3")
+    _write_lighthouse_stack(fs)
+    plan = prepare(fs, apply=True)
+    assert plan.support == "full"
+    assert not Path(fs.lighthouse_builders_path).exists()
+    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    assert "--builder-proposals" in vc
+    assert any("no-op on this Lighthouse build" in w for w in plan.warnings)
     with pytest.raises(EpbsError, match="Complete refused"):
         complete(fs, apply=False)
 
@@ -954,6 +1039,35 @@ def test_lighthouse_prepare_is_placeholder_complete_strips_bn(tmp_path: Path) ->
     bn = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
     assert "18550" not in bn
     assert "--builder-proposals" in Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+
+
+def test_default_write_data_chowns_validators_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prepare must own …/validators so Lighthouse can create logs and definitions.
+
+    Integration failure mode: sudo mkdir created a root-owned validators dir,
+    then only the YAML file was chowned — VC hit Permission denied on
+    validator_definitions.yml / logs/.
+    """
+    import manage.epbs as epbs_mod
+
+    validators_dir = tmp_path / "lighthouse_validator" / "validators"
+    target = validators_dir / "builder_definitions.yml"
+    calls: list[list[str]] = []
+
+    def fake_run(argv, *args, **kwargs):  # noqa: ANN001, ARG001
+        calls.append(list(argv))
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(epbs_mod.subprocess, "run", fake_run)
+    _default_write_data(str(target), "builders: []\n")
+
+    chowns = [c for c in calls if c[:3] == ["sudo", "chown", "validator:validator"]]
+    owned_paths = {c[3] for c in chowns}
+    assert str(validators_dir) in owned_paths, calls
+    assert str(target) in owned_paths, calls
+    assert any(c[:3] == ["sudo", "mkdir", "-p"] and c[3] == str(validators_dir) for c in calls)
 
 
 def test_lodestar_prepare_skips_tagged_release_without_builder_urls(

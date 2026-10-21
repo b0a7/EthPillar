@@ -29,7 +29,7 @@ Use this when execution, consensus, MEV-Boost, and a **solo** validator client a
 
 **MEV-Boost → ePBS migration**
 
-That item appears when the local validator fully supports migration (**Prysm**, **Lodestar** v1.47.0+, **Teku** v26.9.0+, or integrated **Erigon-Caplin** v3.7.1+). Lighthouse, Nimbus, and Grandine do not get the TUI entry. The menu is shown for Teku and Caplin even when the installed binary is older; Prepare then explains that it did not write a builder list.
+That item appears when the local validator fully supports migration (**Prysm**, **Lodestar** v1.47.0+, **Teku** v26.9.0+, integrated **Erigon-Caplin** v3.7.1+, or **Lighthouse** v8.3.0+). Nimbus and Grandine do not get the TUI entry. The menu is shown for Teku, Caplin, and Lighthouse even when the installed binary is older; Prepare then explains that it did not write a builder list.
 
 | Menu item | When to use it |
 |-----------|----------------|
@@ -60,13 +60,20 @@ Those labels are the order. Prepare does not finish the migration. After the for
 | **Lodestar** (v1.47.0+) | Writes `--builder.urls` and `--builder.minBid` on the validator. Older Lodestar builds skip this so the client can still start. **Does not** stop MEV-Boost. |
 | **Teku** (v26.9.0+) | Writes `--Xbuilder-urls` and `--Xbuilder-min-bid` (integer Gwei) on the validator client. `--Xbuilder-boost-factor` is written only when a build factor is set (`TEKU_EPBS_BUILD_FACTOR`, else `EPBS_BUILD_FACTOR`, else the beacon node's `--builder-bid-compare-factor`): `0`/`local` → `0`, `always`/`BUILDER_ALWAYS` → uint64 max, `maxprofit` → `100`, a number as-is. Unset leaves Teku's default (90). On Sepolia, sets `--validators-builder-registration-default-gas-limit=200000000` unless you already set that flag (Teku still has no 200M schedule). Older Teku builds skip this so the client can still start. **Does not** stop MEV-Boost. The beacon node keeps `--builder-endpoint` until the after-fork step. |
 | **Erigon-Caplin** (v3.7.1+) | Writes each MEV-Boost relay URL into `/var/lib/erigon/caplin-builders.json` (`builders[].url`, `max_execution_payment` `"0"`). Keeps `--caplin.mev-relay-url` pointed at local MEV-Boost. Older Erigon builds skip this so the node can still start. **Does not** stop MEV-Boost. v3.7.1 already schedules Sepolia's 200M gas limit; EthPillar does not set one. |
-| **Lighthouse, Nimbus, Grandine** | Not offered in the TUI. |
+| **Lighthouse** (v8.3.0+) | Writes each MEV-Boost relay URL into `<datadir>/validators/builder_definitions.yml` as `builders[].url` (`enabled: true`, `max_execution_payment: 0`). That file is the post-Gloas builder list (applies from Gloas only). Keeps `--builder-proposals` and does **not** set `--gas-limit`. Older Lighthouse builds skip this so the client can still start. **Does not** stop MEV-Boost. |
+| **Nimbus, Grandine** | Not offered in the TUI. |
 
 After **Before Gloas Fork**, the beacon node still uses local MEV-Boost. That overlap is only the staging window. After Gloas on this network, run **After Gloas Fork** yourself. The fork does not strip the sidecar.
 
 If an older EthPillar already wrote `builder.relays` (and `--enable-builder`), run the before-fork step again. Prysm ignores `relays`. Complete stays refused until `--builder-urls` or a `builders` list is present.
 
 **Sepolia gas limit.** Prysm v7.2.1 includes the 200M `GAS_LIMIT_SCHEDULE`, so EthPillar does not write a Prysm gas limit. `--suggested-gas-limit` overrides that schedule from Gloas onward and the client warns if it is set; remove it to follow the schedule. Prysm before v7.2.1 still defaults to 60M. Teku still has no 200M schedule: on Sepolia, prepare sets `--validators-builder-registration-default-gas-limit=200000000` unless that flag is already present.
+
+**Lighthouse gas limit (v8.3.0+).** Lighthouse schedules 200000000 gas at Sepolia Gloas epoch 353024 and Hoodi Gloas epoch 132352 (26 October 2026). EthPillar does not set `--gas-limit` or a per-validator `gas_limit` in `validator_definitions.yml`, because those override the schedule. If either is already set, the preview says so and leaves it. Use Lighthouse v8.3.0 or newer on both the beacon node and the validator client for Gloas networks.
+
+**Web3Signer + Lighthouse.** Gloas signing follows `remote-signing-api` v1.4.0. If the validator uses Web3Signer, run **Web3Signer 26.9.0 or newer** before Gloas (see [web3signer.md](web3signer.md)).
+
+**MEV-Boost on mainnet vs Gloas.** Lighthouse v8.3.0 on mainnet keeps using the BN `--builder` sidecar with current MEV-Boost (v1.12 serves `submitBlindedBlockV2` and falls back to V1 per relay). There is still no Gloas-capable MEV-Boost release ([flashbots/mev-boost#914](https://github.com/flashbots/mev-boost/pull/914)); after Gloas, use the VC `builder_definitions.yml` path from prepare rather than waiting on a sidecar update.
 
 If you never run **Before Gloas Fork**, classic MEV-Boost stays; ePBS is optional. If you did prepare, run **After Gloas Fork** after the fork so both paths are not left on. No builders were onboarded on Sepolia before the fork (ACDT #99); a successful prepare does not mean a live builder bid will arrive.
 
@@ -106,13 +113,13 @@ Use this when Charon sits between your validator client and beacon node on the *
 
 On the pre-Gloas path, `charon.service` runs with **`--builder-api`** (MEV-Boost builder proxy). Charon owns the builder path — not the signer VC.
 
-**TUI:** **MEV-Boost → ePBS migration** is **hidden** while Charon is installed, even if the signer VC is Prysm or Lodestar. Obol has not shipped stable Gloas/ePBS support yet (`charonEpbsSupported` is false). When upstream support lands, that same **MEV-Boost → ePBS migration** entry will be shown again for co-located Charon nodes.
+**TUI:** **MEV-Boost → ePBS migration** is **hidden** while Charon is installed, even if the signer VC is Prysm, Lodestar, Teku, or Lighthouse. Obol has not shipped stable Gloas/ePBS support yet (`charonEpbsSupported` is false). When upstream support lands, that same **MEV-Boost → ePBS migration** entry will be shown again for co-located Charon nodes.
 
 **CLI today** (`python -m manage.epbs`):
 
 | Step | Behavior |
 |------|----------|
-| **prepare** | Keeps `--builder-api`; **does not** write Prysm/Lodestar VC relay lists (those would bypass Charon) |
+| **prepare** | Keeps `--builder-api`; **does not** write Prysm/Lodestar/Teku/Lighthouse VC relay lists (those would bypass Charon) |
 | **complete** | Removes `--builder-api` from `charon.service`, strips the BN sidecar URL, disables MEV-Boost. Allowed while `--builder-api` is still present (no VC relay list required) |
 
 After **complete**, restart in order: **consensus → charon → validator**.
@@ -131,7 +138,7 @@ You still do the same two steps (before Gloas / after Gloas), but relays move vi
 
 1. **MEV/CC host** — **MEV-Boost → ePBS migration** (always shown when MEV is present and there is no local `validator.service`). The submenu title is **ePBS migration (remote VC)**. Choose **Before Gloas Fork — Export migration file**. EthPillar writes `~/hostname-YYYYMMDD-HHMMSS.ethpillar.epbs-migration` immediately (relays + min-bid) and shows one result textbox. There is no dry-run/confirm — Export always writes. Copy that file to the VC/DV host.
 
-2. **Solo VC host** (no Charon, no local MEV) — **Validator → ePBS migration (import)** when the VC is Prysm, Lodestar, or Teku. Submenu title **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. Path inputbox, then the usual four-screen dry-run → confirm → apply → optional restart.
+2. **Solo VC host** (no Charon, no local MEV) — **Validator → ePBS migration (import)** when the VC is Prysm, Lodestar, Teku, or Lighthouse. Submenu title **ePBS migration (import)**. Choose **Before Gloas Fork — Import migration file**. Path inputbox, then the usual four-screen dry-run → confirm → apply → optional restart.
 
 3. **Charon + VC host** (no local MEV) — **Charon → ePBS migration (import)** only when `charonEpbsSupported` is true. Until Obol ships Charon ePBS, that entry is **hidden** (not under Validator). The CLI `import` command also **refuses** while Charon is installed without ePBS support.
 
@@ -196,7 +203,8 @@ Relays and `-min-bid` are read from `mevboost.service` (or from a migration file
 | **Lodestar** (v1.47.0+, no Charon) | Adds VC flags `--builder`, `--builder.urls=<comma URLs>`, and `--builder.minBid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `lodestar validator --help` lists `--builder.urls`. `EPBS_BUILD_FACTOR` maps to `--builder.selection` (`0`/`local` → `executionalways`, `always` → `builderalways`, `maxprofit` or a number → `maxprofit` plus `--builder.boostFactor`). Older builds are skipped so the VC can still start. |
 | **Teku** (v26.9.0+, no Charon) | Adds VC flags `--Xbuilder-urls=<comma URLs>` and `--Xbuilder-min-bid` (MEV-Boost ETH min-bid converted to integer Gwei), **only when** `teku --version` is at least 26.9.0. The flags are hidden, so prepare does not use `--help`. `--Xbuilder-boost-factor` uses the same token map as Prysm, from `TEKU_EPBS_BUILD_FACTOR`, else `EPBS_BUILD_FACTOR`, else the beacon node's `--builder-bid-compare-factor`. Unset omits the flag (Teku default 90). On Sepolia, sets `--validators-builder-registration-default-gas-limit=200000000` when that flag is absent. Keeps `--validators-builder-registration-default-enabled` for pre-Gloas registration. EthPillar does not run an embedded Teku validator inside the beacon node; the flags are written on `validator.service` only. Older binaries are skipped. |
 | **Erigon-Caplin** (v3.7.1+, no separate VC) | Writes `/var/lib/erigon/caplin-builders.json` **only when** `erigon --version` is at least v3.7.1. Each MEV-Boost relay becomes `builders[].url` with `max_execution_payment` `"0"` (trustless-only). `min_bid` is MEV-Boost `-min-bid` in integer Gwei. Does **not** replace `--caplin.mev-relay-url` (that flag is a single pre-Gloas sidecar; Caplin v3.7.1 has no multi-relay CLI flag). Complete removes it, which switches Caplin from the legacy relay client to the Gloas dynamic builder client. A validator client still supplies builder URLs on each block-production request; this file is the list EthPillar requires before that switch. Older binaries are skipped. |
-| **Lighthouse, Nimbus, Grandine** | Documented no-op; units are not mutated. |
+| **Lighthouse** (v8.3.0+, no Charon) | Writes `<datadir>/validators/builder_definitions.yml` **only when** `lighthouse --version` is at least v8.3.0. Each MEV-Boost relay becomes `builders[].url` with `enabled: true` and `max_execution_payment: 0` (trustless-only). `auth_data` is omitted (Lighthouse signs the URL hostname). Global `min_bid` is MEV-Boost `-min-bid` in integer Gwei. Keeps `--builder-proposals` and the beacon-node `--builder` sidecar. Does not set `--gas-limit` or a per-validator `gas_limit` (Sepolia/Hoodi schedules are already 200M at Gloas; an existing override is left in place and warned about). Older builds are skipped so the VC can still start. Does not stop MEV-Boost. |
+| **Nimbus, Grandine** | Documented no-op; units are not mutated. |
 
 Prepare leaves BN sidecar flags in place on every network. Fork activation does not remove them. After prepare, run `complete` yourself once Gloas is live on that network. MEV-Boost plus VC builder flags together is only the staging window between the two steps. If you never prepare, classic MEV stays.
 
@@ -224,7 +232,7 @@ On a **MEV/CC** host:
 
 3. Do not rewrite VC relay config from `prepare` / `import`.
 
-Restart `consensus` after apply so the BN drops the sidecar URL. Integrated Caplin restarts `execution` instead (the sidecar is `--caplin.mev-relay-url` on `execution.service`). When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare/import). Prysm/Lodestar/Teku VC flags and `caplin-builders.json` do not change on this step alone.
+Restart `consensus` after apply so the BN drops the sidecar URL. Integrated Caplin restarts `execution` instead (the sidecar is `--caplin.mev-relay-url` on `execution.service`). When Charon is installed, also restart `charon` (and `validator` if its flags changed on prepare/import). Prysm/Lodestar/Teku VC flags, `caplin-builders.json`, and the Lighthouse `builder_definitions.yml` file do not change on this step alone.
 
 ### Client support levels
 
@@ -234,7 +242,7 @@ Restart `consensus` after apply so the BN drops the sidecar URL. Integrated Capl
 | Lodestar v1.47.0+ | **full** | TUI + CLI. VC `--builder.urls` / `--builder.minBid` written only if `--help` lists them. |
 | Teku v26.9.0+ | **full** | TUI + CLI. Separate VC (no embedded validator on the beacon node). Prepare writes `--Xbuilder-urls` / `--Xbuilder-min-bid` when `teku --version` is at least 26.9.0. Optional `--Xbuilder-boost-factor` from `TEKU_EPBS_BUILD_FACTOR` or BN `--builder-bid-compare-factor`. BN `--builder-endpoint` stays until complete. |
 | Erigon-Caplin v3.7.1+ | **full** | TUI + CLI. Integrated client (no `validator.service`). Prepare writes `/var/lib/erigon/caplin-builders.json` when `erigon --version` is at least v3.7.1. `--caplin.mev-relay-url` stays until complete. QUIC is `--caplin.discovery.quicport` on UDP 9001 (`CL_P2P_PORT_2`, eth-docker #2836); Caplin's native QUIC default is UDP 4001, which collides with its native TCP port. |
-| Lighthouse | **placeholder** | VC `--builder-proposals` only; one BN `--builder` URL. |
+| Lighthouse v8.3.0+ | **full** | TUI + CLI. `builder_definitions.yml` `builders[].url` written only if `lighthouse --version` is new enough. BN `--builder` sidecar until complete. Does not set `--gas-limit` (Sepolia/Hoodi schedule is 200M). Web3Signer users need 26.9.0+. |
 | Nimbus | **placeholder** | VC `--payload-builder=true`; URL on BN. |
 | Grandine | **placeholder** | Integrated client; single `--builder-url`. |
 
