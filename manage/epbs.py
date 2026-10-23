@@ -112,6 +112,12 @@ PRYSM_BUILDER_CLI_MIN_VERSION = "7.2.1"
 # --payload-builder-url=… flags (CLI) / a TOML list (if used).
 NIMBUS_EPBS_MIN_VERSION = "26.10.2"
 NIMBUS_SUGGESTED_GAS_FLAG = "--suggested-gas-limit"
+# Nimbus silent caps in buildBuilderConfig (beacon_chain/spec/mev/gloas_mev.nim
+# @ v26.10.2): URLs with len > MAX_BUILDER_URL_SIZE are skipped with no log,
+# and builders.add() stops after MAX_BUILDER_ENTRIES with a silent break.
+# EthPillar rejects over-limit lists so prepare does not write a partial config.
+NIMBUS_MAX_BUILDER_ENTRIES = 64
+NIMBUS_MAX_BUILDER_URL_SIZE = 2048
 # eth-docker EPBS_BUILD_FACTOR=always → uint64 max (prefer the bid).
 BOOST_FACTOR_UINT64_MAX = "18446744073709551615"
 TEKU_BOOST_FACTOR_UINT64_MAX = BOOST_FACTOR_UINT64_MAX
@@ -309,7 +315,11 @@ SUPPORT_NOTES: Dict[str, str] = {
         f"{EPBS_BUILD_FACTOR_ENV} (same tokens as Prysm; unset omits the flag, "
         "Nimbus default 100, and drops a leftover 0). Prepare writes URLs "
         "only when `nimbus_validator_client --version` is at least 26.10.2. "
-        "On Sepolia, sets "
+        f"At most {NIMBUS_MAX_BUILDER_ENTRIES} URLs and "
+        f"{NIMBUS_MAX_BUILDER_URL_SIZE} bytes per URL (Nimbus "
+        "MAX_BUILDER_ENTRIES / MAX_BUILDER_URL_SIZE); over-limit lists are "
+        "rejected because Nimbus would drop the extras silently. On Sepolia, "
+        "sets "
         f"{NIMBUS_SUGGESTED_GAS_FLAG}={SEPOLIA_GLOAS_GAS_LIMIT} unless already "
         "set. BN --payload-builder-url stays until complete, which also drops "
         "BN --payload-builder when no builder URL remains. EthPillar uses "
@@ -1615,6 +1625,43 @@ def _apply_nimbus_boost_flag(args: List[str], raw: str) -> Tuple[List[str], Opti
     return args, None
 
 
+def validate_nimbus_builder_urls(urls: Sequence[str]) -> None:
+    """Reject builder URLs that Nimbus would silently drop.
+
+    Nimbus ``buildBuilderConfig`` (v26.10.2) skips empty URLs and those longer
+    than :data:`NIMBUS_MAX_BUILDER_URL_SIZE` with no log, and stops adding
+    after :data:`NIMBUS_MAX_BUILDER_ENTRIES` with a silent ``break``. EthPillar
+    refuses those lists instead of writing a partial VC config.
+
+    Args:
+        urls: Non-sidecar builder URLs (already cleaned).
+
+    Raises:
+        EpbsError: If there are more than
+            :data:`NIMBUS_MAX_BUILDER_ENTRIES` URLs, or any URL exceeds
+            :data:`NIMBUS_MAX_BUILDER_URL_SIZE` UTF-8 bytes, or a URL has no
+            hostname (``get_default_auth_data`` would skip that builder).
+    """
+    if len(urls) > NIMBUS_MAX_BUILDER_ENTRIES:
+        raise EpbsError(
+            "Nimbus accepts at most "
+            f"{NIMBUS_MAX_BUILDER_ENTRIES} --payload-builder-url entries "
+            f"(got {len(urls)}; MAX_BUILDER_ENTRIES). Extra URLs would be "
+            "dropped silently by buildBuilderConfig."
+        )
+    client = f"Nimbus v{NIMBUS_EPBS_MIN_VERSION}"
+    for url in urls:
+        builder_url_hostname(url, client=client)
+        size = len(url.encode("utf-8"))
+        if size > NIMBUS_MAX_BUILDER_URL_SIZE:
+            shown = url if len(url) <= 96 else f"{url[:93]}…"
+            raise EpbsError(
+                "Nimbus builder URL exceeds "
+                f"{NIMBUS_MAX_BUILDER_URL_SIZE} bytes "
+                f"(got {size}; MAX_BUILDER_URL_SIZE): {shown}"
+            )
+
+
 def apply_relays_nimbus(
     vc_content: str,
     relays: RelaysConfig,
@@ -1641,16 +1688,17 @@ def apply_relays_nimbus(
         ``(new_unit, warning)``.
 
     Raises:
-        EpbsError: If no non-sidecar relay remains, or a URL has no hostname
-            (``get_default_auth_data`` would skip that builder).
+        EpbsError: If no non-sidecar relay remains, a URL has no hostname,
+            there are more than :data:`NIMBUS_MAX_BUILDER_ENTRIES` URLs, or a
+            URL exceeds :data:`NIMBUS_MAX_BUILDER_URL_SIZE` bytes (Nimbus
+            would drop those silently).
     """
     urls = _non_sidecar_urls(relays.urls)
     if not urls:
         raise EpbsError(
             "No non-sidecar relay URLs to write as --payload-builder-url"
         )
-    for url in urls:
-        builder_url_hostname(url, client=f"Nimbus v{NIMBUS_EPBS_MIN_VERSION}")
+    validate_nimbus_builder_urls(urls)
     unit = parse_unit(vc_content)
     args = normalize_cli_args(unit.exec_args)
     args = upsert_flag(args, "--payload-builder", "true")

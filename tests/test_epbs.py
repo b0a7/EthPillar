@@ -23,6 +23,8 @@ from manage.epbs import (
     MIGRATION_VERSION,
     EPBS_BUILD_FACTOR_ENV,
     NIMBUS_EPBS_MIN_VERSION,
+    NIMBUS_MAX_BUILDER_ENTRIES,
+    NIMBUS_MAX_BUILDER_URL_SIZE,
     NIMBUS_SUGGESTED_GAS_FLAG,
     PRYSM_BUILDER_CLI_MIN_VERSION,
     PRYSM_SUGGESTED_GAS_LIMIT_NOTE,
@@ -1297,6 +1299,99 @@ def test_nimbus_rejects_hostname_less_builder_url(tmp_path: Path) -> None:
     _nimbus_stack(fs, relays=bad)
     with pytest.raises(EpbsError, match="no hostname"):
         prepare(fs, apply=True)
+
+
+def _nimbus_synthetic_relays(count: int, *, url_byte_len: int = 0) -> list[dict]:
+    """Build *count* unique relay dicts for Nimbus limit tests.
+
+    Args:
+        count: Number of distinct builder URLs.
+        url_byte_len: If >0, pad each URL to exactly this many UTF-8 bytes
+            (ASCII). Host remains ``builderN.example``.
+
+    Returns:
+        Relay dicts with ``name`` / ``url`` keys.
+    """
+    relays: list[dict] = []
+    for i in range(count):
+        host = f"builder{i}.example"
+        base = f"https://{host}"
+        if url_byte_len:
+            if url_byte_len < len(base):
+                raise AssertionError(
+                    f"url_byte_len {url_byte_len} shorter than base {base!r}"
+                )
+            # Pad path so total UTF-8 length matches (ASCII = byte length).
+            pad = "x" * (url_byte_len - len(base) - 1)
+            url = f"{base}/{pad}"
+            assert len(url.encode("utf-8")) == url_byte_len
+        else:
+            url = base
+        relays.append({"name": f"b{i}", "url": url})
+    return relays
+
+
+def test_nimbus_prepare_accepts_max_builder_entries(
+    tmp_path: Path,
+) -> None:
+    """Exactly MAX_BUILDER_ENTRIES URLs are written (Nimbus limit is inclusive)."""
+    fs = _fs(tmp_path)
+    relays = _nimbus_synthetic_relays(NIMBUS_MAX_BUILDER_ENTRIES)
+    _nimbus_stack(fs, relays=relays)
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    urls = get_flag_values(vc_args, "--payload-builder-url")
+    assert len(urls) == NIMBUS_MAX_BUILDER_ENTRIES
+    assert urls == [r["url"] for r in relays]
+
+
+def test_nimbus_prepare_rejects_over_max_builder_entries(
+    tmp_path: Path,
+) -> None:
+    """More than MAX_BUILDER_ENTRIES would be silently truncated by Nimbus."""
+    fs = _fs(tmp_path)
+    relays = _nimbus_synthetic_relays(NIMBUS_MAX_BUILDER_ENTRIES + 1)
+    _nimbus_stack(fs, relays=relays)
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    with pytest.raises(
+        EpbsError,
+        match=rf"at most {NIMBUS_MAX_BUILDER_ENTRIES}.*MAX_BUILDER_ENTRIES",
+    ):
+        prepare(fs, apply=True)
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+
+
+def test_nimbus_prepare_accepts_max_builder_url_size(
+    tmp_path: Path,
+) -> None:
+    """A URL of exactly MAX_BUILDER_URL_SIZE bytes is kept (Nimbus uses ``>``)."""
+    fs = _fs(tmp_path)
+    relays = _nimbus_synthetic_relays(1, url_byte_len=NIMBUS_MAX_BUILDER_URL_SIZE)
+    _nimbus_stack(fs, relays=relays)
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_values(vc_args, "--payload-builder-url") == [relays[0]["url"]]
+    assert len(relays[0]["url"].encode("utf-8")) == NIMBUS_MAX_BUILDER_URL_SIZE
+
+
+def test_nimbus_prepare_rejects_over_max_builder_url_size(
+    tmp_path: Path,
+) -> None:
+    """URLs longer than MAX_BUILDER_URL_SIZE are skipped silently by Nimbus."""
+    fs = _fs(tmp_path)
+    relays = _nimbus_synthetic_relays(
+        1, url_byte_len=NIMBUS_MAX_BUILDER_URL_SIZE + 1
+    )
+    _nimbus_stack(fs, relays=relays)
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    with pytest.raises(
+        EpbsError,
+        match=rf"exceeds {NIMBUS_MAX_BUILDER_URL_SIZE} bytes.*MAX_BUILDER_URL_SIZE",
+    ):
+        prepare(fs, apply=True)
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
 
 
 def test_nimbus_invalid_build_factor_still_writes_url(
