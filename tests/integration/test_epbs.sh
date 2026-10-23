@@ -1,6 +1,6 @@
 #!/bin/bash
 # EthPillar ePBS migration integration test.
-# Prysm, Lodestar, Teku, or Lighthouse: VC + MEV-Boost, empty-wallet VC start.
+# Prysm, Lodestar, Teku, Lighthouse, or Nimbus: VC + MEV-Boost, empty-wallet VC start.
 # Erigon-Caplin v3.7.1: integrated execution.service, no separate VC.
 # Runs inside the Docker container after a MEV node is deployed.
 
@@ -45,9 +45,9 @@ assert_supported_vc() {
         exit 1
     fi
     case "$VC_CLIENT" in
-        Prysm|Lodestar|Teku|Lighthouse) ;;
+        Prysm|Lodestar|Teku|Lighthouse|Nimbus) ;;
         *)
-            echo "❌ ePBS integration test requires a Prysm, Lodestar, Teku, or Lighthouse validator client"
+            echo "❌ ePBS integration test requires a Prysm, Lodestar, Teku, Lighthouse, or Nimbus validator client"
             grep Description= "$VC_UNIT" || true
             exit 1
             ;;
@@ -217,6 +217,29 @@ assert_vc_process_has_epbs_flags() {
             fi
             echo "✅ running VC pid=${pid} kept --builder-proposals and did not set --gas-limit"
             ;;
+        Nimbus)
+            if [[ "$cmdline" != *"--payload-builder-url="* ]]; then
+                echo "❌ running VC is missing --payload-builder-url"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            if [[ "$cmdline" != *"--payload-builder=true"* ]]; then
+                echo "❌ running VC is missing --payload-builder=true"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            if [[ "$cmdline" == *"$SIDECAR"* ]]; then
+                echo "❌ running VC --payload-builder-url still points at the MEV-Boost sidecar"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            if [[ "$cmdline" != *"--builder-max-execution-payment=0"* ]]; then
+                echo "❌ running VC is missing --builder-max-execution-payment=0"
+                echo "  cmdline: $cmdline"
+                exit 1
+            fi
+            echo "✅ running VC pid=${pid} has --payload-builder-url (not sidecar)"
+            ;;
     esac
 }
 
@@ -262,6 +285,23 @@ assert_prepare_units() {
             assert_unit_lacks "$VC_UNIT" "--gas-limit"
             assert_lighthouse_builders
             ;;
+        Nimbus)
+            assert_unit_has "$VC_UNIT" "--payload-builder=true"
+            assert_unit_has "$VC_UNIT" "--payload-builder-url="
+            assert_unit_has "$VC_UNIT" "--builder-max-execution-payment=0"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            if ! grep -qE -- '--builder-min-bid=[0-9]+' "$VC_UNIT"; then
+                echo "❌ Nimbus VC --builder-min-bid must be integer Gwei (not ETH decimal)"
+                cat "$VC_UNIT"
+                exit 1
+            fi
+            # Sepolia: VC copies --suggested-gas-limit into proposer preferences (default 60M).
+            if grep -q 'SEPOLIA' "$VC_UNIT" && ! grep -qF -- '--suggested-gas-limit=200000000' "$VC_UNIT"; then
+                echo "❌ Nimbus Sepolia VC is missing --suggested-gas-limit=200000000"
+                cat "$VC_UNIT"
+                exit 1
+            fi
+            ;;
     esac
     assert_unit_has "$BN_UNIT" "$SIDECAR"
 }
@@ -292,6 +332,12 @@ assert_complete_units() {
             assert_unit_has "$VC_UNIT" "--builder-proposals"
             assert_unit_lacks "$VC_UNIT" "--gas-limit"
             assert_lighthouse_builders
+            ;;
+        Nimbus)
+            assert_unit_has "$VC_UNIT" "--payload-builder-url="
+            assert_unit_has "$VC_UNIT" "--payload-builder=true"
+            assert_unit_lacks "$VC_UNIT" "$SIDECAR"
+            assert_unit_lacks "$BN_UNIT" "--payload-builder"
             ;;
     esac
 }

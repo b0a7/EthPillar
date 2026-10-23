@@ -53,12 +53,13 @@ setup() {
   grep -q 'After Gloas Fork' docs/ePBS-migration.md
 }
 
-@test "integration matrix has Prysm, Lodestar, Caplin, Teku, and Lighthouse ePBS migration cases" {
+@test "integration matrix has Prysm, Lodestar, Caplin, Teku, Lighthouse, and Nimbus ePBS migration cases" {
     grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Caplin-Erigon-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Teku-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lighthouse-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
+    grep -q 'Nimbus-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_docker_tests.py
   grep -q -- '--test-epbs' tests/integration/run_inside_docker.py
   grep -q -- '--force-validator' tests/integration/run_inside_docker.py
