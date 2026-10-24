@@ -35,6 +35,9 @@ class KnownFailureEntry:
     cells: list[str] = field(default_factory=list)
     clients: list[str] = field(default_factory=list)
     networks: list[str] = field(default_factory=list)
+    # When True, a closed GitHub issue must not be reported as "fixed"
+    # (issue was closed without resolving the tracked failure).
+    issue_closed_unfixed: bool = False
 
     def applies_to_cell(self, cell: str) -> bool:
         """Return True when this entry is scoped to *cell* (name / client / network)."""
@@ -58,6 +61,20 @@ class KnownFailureEntry:
             )
             return client_ok and network_ok
         return False
+
+    def all_clear_message(self, cell: str = "") -> str:
+        """Human-readable did-not-reproduce notice for GHA / step summary."""
+        where = f" ({cell})" if cell else ""
+        if self.match_kind == "version_mismatch":
+            pair = f"installed {self.installed} vs expected {self.expected}"
+            return (
+                f"Known failure {self.id}{where}: tracked version pair ({pair}) "
+                f"was not observed — consider removing the entry"
+            )
+        return (
+            f"Known failure {self.id} did not reproduce{where} — "
+            f"upstream may be fixed, consider removing the entry"
+        )
 
 
 @dataclass
@@ -126,6 +143,7 @@ def load_registry(path: Path | str | None = None) -> list[KnownFailureEntry]:
                 cells=[str(c) for c in (item.get("cells") or [])],
                 clients=[str(c).lower() for c in (item.get("clients") or [])],
                 networks=[str(n).upper() for n in (item.get("networks") or [])],
+                issue_closed_unfixed=bool(item.get("issue_closed_unfixed")),
             )
         )
     return entries
@@ -231,14 +249,37 @@ def _emit_gha_annotation(payload: dict[str, Any]) -> None:
             msg += f" — {issue}"
         print(f"::warning::{msg}", flush=True)
     elif kind in ("all-clear", "known-failure") and status == "did-not-reproduce":
-        msg = (
-            f"Known failure {entry_id} did not reproduce{where} — "
-            f"upstream may be fixed, consider removing the entry"
-        )
-        if issue:
+        msg = str(payload.get("clear_message") or "").strip()
+        # notice_all_clear stores the full wording in reason when re-emitted
+        # from CiNotice.to_dict() (which drops clear_message / match_kind).
+        if not msg:
+            reason_msg = str(payload.get("reason") or "").strip()
+            if reason_msg.startswith("Known failure"):
+                msg = reason_msg
+        if not msg:
+            match_kind = str(payload.get("match_kind") or "")
+            if match_kind == "version_mismatch":
+                installed = str(payload.get("installed") or "")
+                expected = str(payload.get("expected") or "")
+                pair = (
+                    f"installed {installed} vs expected {expected}"
+                    if installed or expected
+                    else "installed/expected"
+                )
+                msg = (
+                    f"Known failure {entry_id}{where}: tracked version pair "
+                    f"({pair}) was not observed — consider removing the entry"
+                )
+            else:
+                msg = (
+                    f"Known failure {entry_id} did not reproduce{where} — "
+                    f"upstream may be fixed, consider removing the entry"
+                )
+        if issue and issue not in msg:
             msg += f" ({issue})"
         issue_state = str(payload.get("issue_state") or "")
-        if issue_state == "closed":
+        # Never append "issue is closed" when the entry opted out (closed unfixed).
+        if issue_state == "closed" and not payload.get("issue_closed_unfixed"):
             msg += " [linked GitHub issue is closed]"
         print(f"::notice::{msg}", flush=True)
     elif kind in ("soft-skip", "live-skip") and status == "skipped":
@@ -304,6 +345,49 @@ def maybe_github_issue_state(issue_url: str, timeout: float = 3.0) -> str:
         return ""
     state = str(payload.get("state") or "").lower()
     return state if state in ("open", "closed") else ""
+
+
+def issue_state_for_entry(
+    entry: KnownFailureEntry, timeout: float = 3.0
+) -> str:
+    """Return issue state for *entry*, or ``\"\"`` when state must be ignored.
+
+    Entries with ``issue_closed_unfixed`` skip the API check so a closed-without-
+    fix issue is never surfaced as evidence the failure is gone.
+    """
+    if entry.issue_closed_unfixed or not entry.issue:
+        return ""
+    return maybe_github_issue_state(entry.issue, timeout=timeout)
+
+
+def all_clear_notice_payload(
+    entry: KnownFailureEntry,
+    *,
+    cell: str = "",
+    client: str = "",
+    issue_state: str | None = None,
+) -> dict[str, Any]:
+    """Build the CI-notice payload for a did-not-reproduce / all-clear event."""
+    if issue_state is None:
+        issue_state = issue_state_for_entry(entry)
+    if entry.issue_closed_unfixed:
+        issue_state = ""
+    return {
+        "kind": "all-clear",
+        "status": "did-not-reproduce",
+        "id": entry.id,
+        "cell": cell,
+        "client": client or (entry.clients[0] if entry.clients else ""),
+        "issue": entry.issue,
+        "issue_state": issue_state or "",
+        "issue_closed_unfixed": entry.issue_closed_unfixed,
+        "match_kind": entry.match_kind,
+        "installed": entry.installed,
+        "expected": entry.expected,
+        "reason": entry.reason,
+        "clear_message": entry.all_clear_message(cell),
+        "link": entry.issue,
+    }
 
 
 def classify_failed_cell(
@@ -388,18 +472,24 @@ def notice_all_clear(
     *,
     cell: str = "",
     client: str = "",
-    issue_state: str = "",
+    issue_state: str | None = None,
 ) -> CiNotice:
     """Build a did-not-reproduce notice for a registry entry."""
+    payload = all_clear_notice_payload(
+        entry, cell=cell, client=client, issue_state=issue_state
+    )
     return CiNotice(
         kind="all-clear",
         status="did-not-reproduce",
         id=entry.id,
         cell=cell,
-        client=client or (entry.clients[0] if entry.clients else ""),
-        reason=entry.reason,
+        client=str(payload.get("client") or ""),
+        # Prefer the pair-not-observed / did-not-reproduce wording over the
+        # static registry reason so summaries do not imply an upstream fix
+        # for issue_closed_unfixed version mismatches.
+        reason=str(payload.get("clear_message") or entry.reason),
         issue=entry.issue,
-        issue_state=issue_state,
+        issue_state=str(payload.get("issue_state") or ""),
         link=entry.issue,
     )
 

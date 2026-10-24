@@ -33,6 +33,10 @@ entries:
       installed: "2.0.5"
       expected: "2.0.6"
     issue: https://github.com/grandinetech/grandine/issues/838
+    # grandine#838 was closed without a fix; the v2.0.6 binary still reports
+    # 2.0.5. Do not treat a closed issue as "upstream fixed". Clear this entry
+    # when expected Grandine is no longer 2.0.6 (pair not observed).
+    issue_closed_unfixed: true
     added: "2026-10-24"
     reason: >
       Grandine v2.0.6 release asset still prints "Grandine 2.0.5"

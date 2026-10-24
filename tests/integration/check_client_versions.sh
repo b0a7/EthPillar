@@ -99,22 +99,14 @@ _emit_version_mismatch_all_clear() {
   local installed="$2"
   local expected="$3"
   PYTHONPATH="/ethpillar/tests/integration:/ethpillar:${PYTHONPATH:-}" python3 -c '
-from known_failures import emit_ci_notice, version_entries_for_client, maybe_github_issue_state
+from known_failures import all_clear_notice_payload, emit_ci_notice, version_entries_for_client
 import sys
 client, installed, expected = sys.argv[1], sys.argv[2], sys.argv[3]
 for entry in version_entries_for_client(client):
     if installed == entry.installed and expected == entry.expected:
         continue
-    state = maybe_github_issue_state(entry.issue)
-    emit_ci_notice({
-        "kind": "all-clear",
-        "status": "did-not-reproduce",
-        "id": entry.id,
-        "client": client.lower(),
-        "issue": entry.issue,
-        "issue_state": state,
-        "reason": entry.reason,
-    })
+    # issue_closed_unfixed entries skip issue-state; wording is pair-not-observed.
+    emit_ci_notice(all_clear_notice_payload(entry, client=client.lower()))
 ' "$release_client" "${installed#v}" "${expected#v}" || true
 }
 

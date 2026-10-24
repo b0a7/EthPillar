@@ -41,7 +41,6 @@ from known_failures import (  # noqa: E402
     emit_ci_notice,
     load_registry,
     log_entries_for_cell,
-    maybe_github_issue_state,
     notice_all_clear,
     notice_from_known_hit,
     parse_notice_lines,
@@ -685,19 +684,15 @@ def collect_ci_notices(tasks: List[TestTask]) -> List[CiNotice]:
 
         if task.status == "PASS":
             for entry in log_entries_for_cell(task.log_name, entries=registry):
-                # Signature absent on a passing cell → upstream may be fixed.
+                # Signature absent on a passing cell → upstream may be fixed
+                # (unless issue_closed_unfixed; issue_state_for_entry skips those).
                 if entry.match_kind == "log_substring" and entry.pattern in log_text:
                     continue
                 if entry.match_kind == "log_regex" and entry.pattern and re.search(
                     entry.pattern, log_text
                 ):
                     continue
-                state = maybe_github_issue_state(entry.issue)
-                _add(
-                    notice_all_clear(
-                        entry, cell=task.log_name, issue_state=state
-                    )
-                )
+                _add(notice_all_clear(entry, cell=task.log_name))
 
     return notices
 
