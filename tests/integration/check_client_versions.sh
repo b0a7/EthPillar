@@ -16,6 +16,9 @@ cd /ethpillar
 source ./functions.sh
 # shellcheck source=known_version_mismatches.sh
 source "$(dirname "${BASH_SOURCE[0]}")/known_version_mismatches.sh"
+# ethpillar_test_python.sh is sourced via known_version_mismatches.sh
+# Prefer project venv (ensure_python_deps) for known_failures / PyYAML.
+_KF_PYTHON="$(ethpillar_test_python /ethpillar)"
 
 fail=0
 
@@ -98,7 +101,7 @@ _emit_version_mismatch_all_clear() {
   local release_client="$1"
   local installed="$2"
   local expected="$3"
-  PYTHONPATH="/ethpillar/tests/integration:/ethpillar:${PYTHONPATH:-}" python3 -c '
+  PYTHONPATH="/ethpillar/tests/integration:/ethpillar:${PYTHONPATH:-}" "$_KF_PYTHON" -c '
 from known_failures import all_clear_notice_payload, emit_ci_notice, version_entries_for_client
 import sys
 client, installed, expected = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -140,7 +143,7 @@ assert_matches_latest() {
   fi
   if known_upstream_version_mismatch "$release_client" "$installed" "$expected"; then
     echo "⚠️  ${label} mismatch accepted: installed ${installed#v} vs ${expected_label} ${expected#v} (known upstream version-report bug)"
-    PYTHONPATH="/ethpillar/tests/integration:/ethpillar:${PYTHONPATH:-}" python3 -c '
+    PYTHONPATH="/ethpillar/tests/integration:/ethpillar:${PYTHONPATH:-}" "$_KF_PYTHON" -c '
 from known_failures import emit_ci_notice, version_mismatch_is_known
 import sys
 entry = version_mismatch_is_known(sys.argv[1], sys.argv[2], sys.argv[3])

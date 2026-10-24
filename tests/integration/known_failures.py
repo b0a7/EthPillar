@@ -121,8 +121,19 @@ def _network_mentioned(cell: str, network: str) -> bool:
 
 
 def load_registry(path: Path | str | None = None) -> list[KnownFailureEntry]:
-    """Load and normalize known-failure entries from YAML."""
-    import yaml
+    """Load and normalize known-failure entries from YAML.
+
+    Raises:
+        ImportError: When PyYAML is missing. Callers must not treat this as an
+            empty registry — that would silently hide known failures.
+    """
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - exercised when system python lacks PyYAML
+        raise ImportError(
+            "PyYAML is required to load tests/integration/known_failures.yaml; "
+            "use the project .venv (ETHPILLAR_PYTHON) or install python3-yaml"
+        ) from exc
 
     registry = Path(path) if path else REGISTRY_PATH
     raw = yaml.safe_load(registry.read_text(encoding="utf-8")) or {}
