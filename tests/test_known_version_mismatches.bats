@@ -28,3 +28,10 @@ setup() {
   run known_upstream_version_mismatch Lighthouse 2.0.5 2.0.6
   [ "$status" -ne 0 ]
 }
+
+@test "known_failures registry lists grandine version_mismatch entry" {
+  run python3 "$BATS_TEST_DIRNAME/integration/known_failures.py" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"grandine-2.0.6-reports-2.0.5"* ]]
+  [[ "$output" == *"nimbus-hoodi-genesis-buffer-limit"* ]]
+}

@@ -271,6 +271,13 @@ exercise_upgrade_target() {
     else
         reason=$(seed_skip_reason "$client")
         echo "⚠️  ${client:-$target} has no upgrade seed${reason:+ (${reason})}. Soft-skipping real-upgrade assert; proving skip-when-already-latest only."
+        PYTHONPATH="/ethpillar/tests/integration:/ethpillar:${PYTHONPATH:-}" python3 -c '
+from known_failures import emit_soft_skip
+import sys
+client, reason = sys.argv[1], sys.argv[2]
+detail = f"no upgrade seed ({reason})" if reason else "no upgrade seed"
+emit_soft_skip(client, f"{detail}; soft-skipping real-upgrade assert")
+' "${client:-$target}" "${reason}" || true
         capture_pids "${services[@]}"
         run_upgrade "$target" "$log1"
         assert_skip_upgrade "$target" "$log1" "${services[@]}"

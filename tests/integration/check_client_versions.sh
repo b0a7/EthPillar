@@ -93,6 +93,31 @@ get_expected_release_tag() {
   get_latest_release_tag "$client"
 }
 
+# Emit did-not-reproduce when a version_mismatch registry entry's pair was not seen.
+_emit_version_mismatch_all_clear() {
+  local release_client="$1"
+  local installed="$2"
+  local expected="$3"
+  PYTHONPATH="/ethpillar/tests/integration:/ethpillar:${PYTHONPATH:-}" python3 -c '
+from known_failures import emit_ci_notice, version_entries_for_client, maybe_github_issue_state
+import sys
+client, installed, expected = sys.argv[1], sys.argv[2], sys.argv[3]
+for entry in version_entries_for_client(client):
+    if installed == entry.installed and expected == entry.expected:
+        continue
+    state = maybe_github_issue_state(entry.issue)
+    emit_ci_notice({
+        "kind": "all-clear",
+        "status": "did-not-reproduce",
+        "id": entry.id,
+        "client": client.lower(),
+        "issue": entry.issue,
+        "issue_state": state,
+        "reason": entry.reason,
+    })
+' "$release_client" "${installed#v}" "${expected#v}" || true
+}
+
 assert_matches_latest() {
   local label="$1"
   local release_client="$2"
@@ -117,12 +142,31 @@ assert_matches_latest() {
   fi
   if installed_matches_latest_tag "$installed" "$expected" "${TAG_COMMIT:-}"; then
     echo "✅ ${label} matches ${expected_label} (${installed#v}) — update menu would show already on latest"
+    # All-clear only against official / snapshotted LATEST (not forced seeds).
+    _emit_version_mismatch_all_clear "$release_client" "$installed" "$expected"
     return 0
   fi
   if known_upstream_version_mismatch "$release_client" "$installed" "$expected"; then
     echo "⚠️  ${label} mismatch accepted: installed ${installed#v} vs ${expected_label} ${expected#v} (known upstream version-report bug)"
+    PYTHONPATH="/ethpillar/tests/integration:/ethpillar:${PYTHONPATH:-}" python3 -c '
+from known_failures import emit_ci_notice, version_mismatch_is_known
+import sys
+entry = version_mismatch_is_known(sys.argv[1], sys.argv[2], sys.argv[3])
+if entry:
+    emit_ci_notice({
+        "kind": "known-failure",
+        "status": "hit",
+        "id": entry.id,
+        "client": sys.argv[1].lower(),
+        "issue": entry.issue,
+        "reason": entry.reason,
+        "installed": sys.argv[2],
+        "expected": sys.argv[3],
+    })
+' "$release_client" "${installed#v}" "${expected#v}" || true
     return 0
   fi
+  _emit_version_mismatch_all_clear "$release_client" "$installed" "$expected"
   echo "❌ ${label} mismatch: installed ${installed#v}${INSTALLED_COMMIT:+ (${INSTALLED_COMMIT:0:7})}, ${expected_label} ${expected#v}${TAG_COMMIT:+ (${TAG_COMMIT:0:7})}"
   fail=1
 }
