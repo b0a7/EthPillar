@@ -236,6 +236,23 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "epbsTuiSupported is true for Nimbus VC" {
+  cat > "$VALIDATOR_SERVICE_FILE" <<EOF
+[Unit]
+Description=Nimbus Validator Client service for MAINNET
+
+[Service]
+ExecStart=/usr/local/bin/nimbus_validator_client --data-dir=/var/lib/nimbus_validator
+EOF
+  rm -f "$CHARON_SERVICE_FILE"
+  export CHARON_SERVICE_FILE="/nonexistent/charon.service"
+  export MEVBOOST_SERVICE_FILE="/nonexistent/mevboost.service"
+  run epbsTuiSupported
+  [ "$status" -eq 0 ]
+  run epbsImportUnderValidator
+  [ "$status" -eq 0 ]
+}
+
 @test "epbsTuiSupported is true for integrated Erigon-Caplin without a separate VC" {
   rm -f "$VALIDATOR_SERVICE_FILE" "$CHARON_SERVICE_FILE" "$CONSENSUS_SERVICE_FILE"
   export VALIDATOR_SERVICE_FILE="/nonexistent/validator.service"

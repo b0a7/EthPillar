@@ -22,6 +22,10 @@ from manage.epbs import (
     MIGRATION_FORMAT,
     MIGRATION_VERSION,
     EPBS_BUILD_FACTOR_ENV,
+    NIMBUS_EPBS_MIN_VERSION,
+    NIMBUS_MAX_BUILDER_ENTRIES,
+    NIMBUS_MAX_BUILDER_URL_SIZE,
+    NIMBUS_SUGGESTED_GAS_FLAG,
     PRYSM_BUILDER_CLI_MIN_VERSION,
     PRYSM_SUGGESTED_GAS_LIMIT_NOTE,
     TEKU_BOOST_FACTOR_UINT64_MAX,
@@ -41,6 +45,8 @@ from manage.epbs import (
     export_migration,
     import_migration,
     load_migration_file,
+    nimbus_has_builder_url,
+    nimbus_supports_epbs,
     parse_mevboost_relays,
     prepare,
     prysm_has_builder_list,
@@ -51,7 +57,13 @@ from manage.epbs import (
     teku_supports_epbs,
     teku_xbuilder_boost_factor,
 )
-from manage.service_parse import get_flag_value, has_flag, normalize_cli_args, parse_unit
+from manage.service_parse import (
+    get_flag_value,
+    get_flag_values,
+    has_flag,
+    normalize_cli_args,
+    parse_unit,
+)
 
 RELAYS = [
     {
@@ -123,9 +135,10 @@ def test_tui_is_gated_to_full_support_only() -> None:
     assert support_level("Prysm") == "full"
     assert support_level("Lodestar") == "full"
     assert support_level("Teku") == "full"
+    assert support_level("Nimbus") == "full"
     assert support_level("Erigon-Caplin") == "full"
     assert support_level("Lighthouse") == "full"
-    for client in ("Nimbus", "Grandine", ""):
+    for client in ("Grandine", ""):
         assert support_level(client) != "full"
 
 
@@ -1105,10 +1118,321 @@ def test_lodestar_prepare_skips_tagged_release_without_builder_urls(
         complete(fs, apply=False)
 
 
-def test_nimbus_prepare_is_placeholder_complete_strips_sidecar(tmp_path: Path) -> None:
-    """Nimbus prepare is a no-op; complete is refused without ``--force``."""
+def _nimbus_version(fs: EpbsFilesystem, version: str = "26.10.2") -> None:
+    """Mark the Nimbus binary as *version* (v26.10.2 banner shape)."""
+    fs.run_version = (
+        lambda _argv: f"Nimbus validator client v{version}-0abc0dd0-stateofus\n"
+    )
+
+
+def _nimbus_stack(
+    fs: EpbsFilesystem,
+    *,
+    network: str = "mainnet",
+    relays: list | None = None,
+    version: str = "26.10.2",
+    vc_extra: str = "--payload-builder=true",
+) -> None:
+    """Write a Nimbus BN + VC + MEV-Boost stack.
+
+    Args:
+        fs: Test filesystem.
+        network: Network name stored on the MEV-Boost unit.
+        relays: Relay dicts. Defaults to one non-sidecar URL.
+        version: Version text returned by ``--version``.
+        vc_extra: Extra validator flags.
+    """
+    _nimbus_version(fs, version)
+    chosen = relays if relays is not None else [RELAYS[0]]
+    _write(fs, "mevboost", generate_mevboost_service(network, "0.006", chosen))
+    _write(
+        fs,
+        "consensus",
+        generate_nimbus_bn_service(
+            network, JWT, "5052", "9000", "9001", "100",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            mev_parameters="--payload-builder=true --payload-builder-url=http://127.0.0.1:18550",
+        ),
+    )
+    _write(
+        fs,
+        "validator",
+        generate_nimbus_vc_service(
+            network,
+            "ep",
+            "--beacon-node=http://127.0.0.1:5052",
+            fee_parameters=f"--suggested-fee-recipient={FEE}",
+            extra_parameters=vc_extra,
+        ),
+    )
+
+
+def test_nimbus_prepare_writes_builder_urls_and_complete_keeps_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nimbus v26.10.2 prepare installs relay URLs and the bid flags."""
+    monkeypatch.setenv(EPBS_BUILD_FACTOR_ENV, "maxprofit")
     fs = _fs(tmp_path)
-    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    _nimbus_stack(fs)
+    vc_before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    assert nimbus_supports_epbs(fs, vc_before)
+
+    dry = prepare(fs, apply=False)
+    assert dry.support == "full"
+    assert dry.client == "Nimbus"
+    assert "--payload-builder-url=https://" not in Path(
+        fs.unit_path("validator")
+    ).read_text(encoding="utf-8")
+
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    assert "validator" in plan.services_to_restart
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    urls = get_flag_values(vc_args, "--payload-builder-url")
+    assert urls == [RELAYS[0]["url"]]
+    assert "18550" not in urls[0]
+    assert get_flag_value(vc_args, "--payload-builder") == "true"
+    assert get_flag_value(vc_args, "--builder-min-bid") == "6000000"
+    assert get_flag_value(vc_args, "--builder-max-execution-payment") == "0"
+    assert get_flag_value(vc_args, "--builder-boost-factor") == "100"
+    bn_text = Path(fs.unit_path("consensus")).read_text(encoding="utf-8")
+    assert "--payload-builder-url=http://127.0.0.1:18550" in bn_text
+    assert nimbus_has_builder_url(
+        Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    )
+
+    again = prepare(fs, apply=True)
+    assert any("nothing to change" in w for w in again.warnings)
+
+    done = complete(fs, apply=True)
+    assert done.applied
+    assert done.disable_mevboost is True
+    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
+    assert not has_flag(bn_args, "--payload-builder-url")
+    assert not has_flag(bn_args, "--payload-builder")
+    kept = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_values(kept, "--payload-builder-url") == [RELAYS[0]["url"]]
+    assert get_flag_value(kept, "--builder-boost-factor") == "100"
+    after = status(fs)
+    assert "VC relays: yes" in after
+    assert "already removed" in after
+
+
+def test_nimbus_prepare_writes_repeated_urls_for_multiple_relays(
+    tmp_path: Path,
+) -> None:
+    """Two relays become two ``--payload-builder-url`` flags (v26.10.2)."""
+    fs = _fs(tmp_path)
+    _nimbus_stack(fs, relays=RELAYS)
+    plan = prepare(fs, apply=True)
+    assert plan.support == "full"
+    assert plan.applied
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    urls = get_flag_values(vc_args, "--payload-builder-url")
+    assert urls == [RELAYS[0]["url"], RELAYS[1]["url"]]
+    assert all("18550" not in url for url in urls)
+    assert nimbus_has_builder_url(
+        Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    )
+    done = complete(fs, apply=True)
+    assert done.applied
+    kept = get_flag_values(
+        _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8")),
+        "--payload-builder-url",
+    )
+    assert kept == [RELAYS[0]["url"], RELAYS[1]["url"]]
+
+
+def test_nimbus_prepare_skips_binary_older_than_v26_10_2(tmp_path: Path) -> None:
+    """Nimbus before 26.10.2 is a prepare no-op; complete stays refused."""
+    fs = _fs(tmp_path)
+    _nimbus_stack(fs, version="26.10.1")
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    assert not nimbus_supports_epbs(fs, before)
+    plan = prepare(fs, apply=True)
+    assert plan.support == "full"
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+    assert any(NIMBUS_EPBS_MIN_VERSION in a.detail for a in plan.actions)
+    st = status(fs)
+    assert "older than" in st
+    assert "Prepare is a no-op" in st
+    with pytest.raises(EpbsError, match="Complete refused"):
+        complete(fs, apply=False)
+
+    complete(fs, apply=True, force=True)
+    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
+    assert not has_flag(bn_args, "--payload-builder-url")
+    assert not has_flag(bn_args, "--payload-builder")
+    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    assert "--payload-builder=true" in vc
+    assert "--payload-builder-url=" not in vc
+
+
+def test_nimbus_sepolia_sets_explicit_200m_gas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sepolia proposer preferences need an explicit 200M gas limit."""
+    monkeypatch.delenv(EPBS_BUILD_FACTOR_ENV, raising=False)
+    fs = _fs(tmp_path)
+    _nimbus_stack(fs, network="sepolia")
+    prepare(fs, apply=True)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(vc_args, NIMBUS_SUGGESTED_GAS_FLAG) == "200000000"
+    assert not has_flag(vc_args, "--builder-boost-factor")
+    assert get_flag_value(vc_args, "--builder-min-bid") == "6000000"
+
+    preset = _fs(tmp_path / "preset")
+    _nimbus_stack(
+        preset,
+        network="sepolia",
+        vc_extra="--payload-builder=true --suggested-gas-limit=45000000",
+    )
+    prepare(preset, apply=True)
+    preset_args = _args(Path(preset.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(preset_args, "--suggested-gas-limit") == "45000000"
+
+
+def test_nimbus_rejects_hostname_less_builder_url(tmp_path: Path) -> None:
+    """get_default_auth_data drops a URL with an empty hostname."""
+    fs = _fs(tmp_path)
+    bad = [{"name": "bad", "url": "https://:8080"}]
+    _nimbus_stack(fs, relays=bad)
+    with pytest.raises(EpbsError, match="no hostname"):
+        prepare(fs, apply=True)
+
+
+def _nimbus_synthetic_relays(count: int, *, url_byte_len: int = 0) -> list[dict]:
+    """Build *count* unique relay dicts for Nimbus limit tests.
+
+    Args:
+        count: Number of distinct builder URLs.
+        url_byte_len: If >0, pad each URL to exactly this many UTF-8 bytes
+            (ASCII). Host remains ``builderN.example``.
+
+    Returns:
+        Relay dicts with ``name`` / ``url`` keys.
+    """
+    relays: list[dict] = []
+    for i in range(count):
+        host = f"builder{i}.example"
+        base = f"https://{host}"
+        if url_byte_len:
+            if url_byte_len < len(base):
+                raise AssertionError(
+                    f"url_byte_len {url_byte_len} shorter than base {base!r}"
+                )
+            # Pad path so total UTF-8 length matches (ASCII = byte length).
+            pad = "x" * (url_byte_len - len(base) - 1)
+            url = f"{base}/{pad}"
+            assert len(url.encode("utf-8")) == url_byte_len
+        else:
+            url = base
+        relays.append({"name": f"b{i}", "url": url})
+    return relays
+
+
+def test_nimbus_prepare_accepts_max_builder_entries(
+    tmp_path: Path,
+) -> None:
+    """Exactly MAX_BUILDER_ENTRIES URLs are written (Nimbus limit is inclusive)."""
+    fs = _fs(tmp_path)
+    relays = _nimbus_synthetic_relays(NIMBUS_MAX_BUILDER_ENTRIES)
+    _nimbus_stack(fs, relays=relays)
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    urls = get_flag_values(vc_args, "--payload-builder-url")
+    assert len(urls) == NIMBUS_MAX_BUILDER_ENTRIES
+    assert urls == [r["url"] for r in relays]
+
+
+def test_nimbus_prepare_rejects_over_max_builder_entries(
+    tmp_path: Path,
+) -> None:
+    """More than MAX_BUILDER_ENTRIES would be silently truncated by Nimbus."""
+    fs = _fs(tmp_path)
+    relays = _nimbus_synthetic_relays(NIMBUS_MAX_BUILDER_ENTRIES + 1)
+    _nimbus_stack(fs, relays=relays)
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    with pytest.raises(
+        EpbsError,
+        match=rf"at most {NIMBUS_MAX_BUILDER_ENTRIES}.*MAX_BUILDER_ENTRIES",
+    ):
+        prepare(fs, apply=True)
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+
+
+def test_nimbus_prepare_accepts_max_builder_url_size(
+    tmp_path: Path,
+) -> None:
+    """A URL of exactly MAX_BUILDER_URL_SIZE bytes is kept (Nimbus uses ``>``)."""
+    fs = _fs(tmp_path)
+    relays = _nimbus_synthetic_relays(1, url_byte_len=NIMBUS_MAX_BUILDER_URL_SIZE)
+    _nimbus_stack(fs, relays=relays)
+    plan = prepare(fs, apply=True)
+    assert plan.applied
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_values(vc_args, "--payload-builder-url") == [relays[0]["url"]]
+    assert len(relays[0]["url"].encode("utf-8")) == NIMBUS_MAX_BUILDER_URL_SIZE
+
+
+def test_nimbus_prepare_rejects_over_max_builder_url_size(
+    tmp_path: Path,
+) -> None:
+    """URLs longer than MAX_BUILDER_URL_SIZE are skipped silently by Nimbus."""
+    fs = _fs(tmp_path)
+    relays = _nimbus_synthetic_relays(
+        1, url_byte_len=NIMBUS_MAX_BUILDER_URL_SIZE + 1
+    )
+    _nimbus_stack(fs, relays=relays)
+    before = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
+    with pytest.raises(
+        EpbsError,
+        match=rf"exceeds {NIMBUS_MAX_BUILDER_URL_SIZE} bytes.*MAX_BUILDER_URL_SIZE",
+    ):
+        prepare(fs, apply=True)
+    assert Path(fs.unit_path("validator")).read_text(encoding="utf-8") == before
+
+
+def test_nimbus_invalid_build_factor_still_writes_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bad boost-factor token warns and does not block the builder URL."""
+    fs = _fs(tmp_path)
+    _nimbus_stack(fs)
+    monkeypatch.setenv(EPBS_BUILD_FACTOR_ENV, "nope")
+    plan = prepare(fs, apply=True)
+    assert any("invalid" in w for w in plan.warnings)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(vc_args, "--payload-builder-url") == RELAYS[0]["url"]
+    assert not has_flag(vc_args, "--builder-boost-factor")
+
+
+def test_nimbus_prepare_keeps_existing_boost_factor_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator-set boost factor stays when EPBS_BUILD_FACTOR is unset."""
+    monkeypatch.delenv(EPBS_BUILD_FACTOR_ENV, raising=False)
+    fs = _fs(tmp_path)
+    _nimbus_stack(fs, vc_extra="--payload-builder=true --builder-boost-factor=90")
+    prepare(fs, apply=True)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_value(vc_args, "--builder-boost-factor") == "90"
+    assert get_flag_value(vc_args, "--payload-builder-url") == RELAYS[0]["url"]
+
+    dropped = _fs(tmp_path / "drop-zero")
+    _nimbus_stack(dropped, vc_extra="--payload-builder=true --builder-boost-factor=0")
+    prepare(dropped, apply=True)
+    dropped_args = _args(Path(dropped.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(dropped_args, "--builder-boost-factor")
+    assert get_flag_value(dropped_args, "--payload-builder-url") == RELAYS[0]["url"]
+
+
+def test_nimbus_charon_prepare_skips_vc_builder_url(tmp_path: Path) -> None:
+    """Charon + Nimbus: prepare must not write a VC builder URL."""
+    fs = _fs(tmp_path)
+    _nimbus_version(fs)
+    _write(fs, "mevboost", generate_mevboost_service("mainnet", "0.006", [RELAYS[0]]))
     _write(
         fs,
         "consensus",
@@ -1119,25 +1443,58 @@ def test_nimbus_prepare_is_placeholder_complete_strips_sidecar(tmp_path: Path) -
     )
     _write(
         fs,
+        "charon",
+        generate_charon_service("mainnet", "http://127.0.0.1:5052", builder_api=True),
+    )
+    _write(
+        fs,
         "validator",
         generate_nimbus_vc_service(
             "mainnet",
             "ep",
-            "--beacon-node=http://127.0.0.1:5052",
+            "--beacon-node=http://127.0.0.1:3600",
+            extra_parameters="--payload-builder=true --distributed",
+        ),
+    )
+    prep = prepare(fs, apply=True)
+    assert any("Charon DVT owns builder path" in a.detail for a in prep.actions)
+    vc_args = _args(Path(fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert not has_flag(vc_args, "--payload-builder-url")
+    done = complete(fs, apply=True)
+    assert done.applied
+    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
+    assert not has_flag(bn_args, "--payload-builder-url")
+    assert not has_flag(bn_args, "--payload-builder")
+
+
+def test_nimbus_import_applies_builder_urls(tmp_path: Path) -> None:
+    """Import writes Nimbus builder URLs from a migration file."""
+    mev_fs = _fs(tmp_path / "mev")
+    _write(mev_fs, "mevboost", generate_mevboost_service("mainnet", "0.006", RELAYS))
+    out = tmp_path / "mig.ethpillar.epbs-migration"
+    export_migration(mev_fs, output=str(out), hostname="bn")
+
+    vc_fs = _fs(tmp_path / "vc")
+    _nimbus_version(vc_fs)
+    _write(
+        vc_fs,
+        "validator",
+        generate_nimbus_vc_service(
+            "mainnet",
+            "ep",
+            "--beacon-node=http://10.0.0.2:5052",
             extra_parameters="--payload-builder=true",
         ),
     )
-    plan = prepare(fs, apply=True)
-    assert plan.support == "placeholder"
+    plan = import_migration(str(out), vc_fs, apply=True)
+    assert plan.applied
     assert plan.client == "Nimbus"
-    with pytest.raises(EpbsError, match="Complete refused"):
-        complete(fs, apply=False)
-
-    complete(fs, apply=True, force=True)
-    bn_args = _args(Path(fs.unit_path("consensus")).read_text(encoding="utf-8"))
-    assert not has_flag(bn_args, "--payload-builder-url")
-    vc = Path(fs.unit_path("validator")).read_text(encoding="utf-8")
-    assert "payload-builder=true" in vc or "--payload-builder=true" in vc
+    vc_args = _args(Path(vc_fs.unit_path("validator")).read_text(encoding="utf-8"))
+    assert get_flag_values(vc_args, "--payload-builder-url") == [
+        RELAYS[0]["url"],
+        RELAYS[1]["url"],
+    ]
+    assert get_flag_value(vc_args, "--builder-max-execution-payment") == "0"
 
 
 def _teku_stack(fs: EpbsFilesystem, *, bn_extra: str = "", vc_extra: str = "") -> None:

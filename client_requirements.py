@@ -39,6 +39,9 @@ GLOAS_SEPOLIA_MIN_VERSIONS = {
     'lodestar': 'v1.49.0',
     'teku': '26.9.1',
     'prysm': 'v7.2.0',
+    # Multi-URL --payload-builder-url (status-im/nimbus-eth2#9336) + Gloas VC
+    # builder flags; install still resolves GitHub LATEST when it meets this.
+    'nimbus': 'v26.10.2',
 }
 
 # Install tag to use when GitHub LATEST fails the Sepolia Gloas floor.
