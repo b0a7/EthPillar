@@ -395,6 +395,7 @@ else:
 selected_relays = []
 if not args.switch_client:
     from deploy.builder_mode import (
+        CANCELLED_EXIT_CODE,
         BuilderModeCancelled,
         BuilderModeError,
         finalize_builder_install,
@@ -419,8 +420,8 @@ if not args.switch_client:
             prompt_index=_prompt_builder_index,
         )
     except BuilderModeCancelled as exc:
-        print(str(exc))
-        exit(0)
+        print(str(exc), file=sys.stderr)
+        exit(CANCELLED_EXIT_CODE)
     except BuilderModeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         exit(1)

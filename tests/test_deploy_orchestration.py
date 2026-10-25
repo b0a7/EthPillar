@@ -393,3 +393,42 @@ class TestStartUnitsNoBlock:
             for args in start_calls
         )
 
+    @patch("deploy.common.subprocess.run")
+    def test_finish_install_summary_names_epbs_and_relays(self, mock_run, capsys):
+        mock_run.return_value = MagicMock(returncode=0)
+        relay = {
+            "name": "Flashbots",
+            "url": "https://0xabc@boost-relay-sepolia.flashbots.net",
+        }
+        with pytest.raises(SystemExit) as raised:
+            finish_install(
+                install_config="Solo Staking Node",
+                eth_network="sepolia",
+                sync_url="https://example.invalid",
+                execution_client="reth",
+                execution_version="1.0",
+                execution_service_path="/etc/systemd/system/execution.service",
+                consensus_client="lighthouse",
+                consensus_version="v8.3.0",
+                consensus_service_path="/etc/systemd/system/consensus.service",
+                mevboost_enabled=False,
+                mevboost_version="",
+                mevboost_service_path="",
+                validator_enabled=True,
+                validator_service_path="/etc/systemd/system/validator.service",
+                validator_only=False,
+                bn_address=None,
+                node_only=False,
+                fee_recipient_address="0x" + "11" * 20,
+                skip_prompts=True,
+                cl_rest_port="5052",
+                builder_mode="epbs",
+                relays=[relay],
+            )
+        assert raised.value.code == 0
+        output = capsys.readouterr().out
+        assert "Builder mode: Native ePBS" in output
+        assert "Flashbots:" in output
+        assert "boost-relay-sepolia.flashbots.net" in output
+        assert "Mevboost Version" not in output
+

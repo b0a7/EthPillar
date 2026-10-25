@@ -3603,6 +3603,32 @@ def complete(
     return plan
 
 
+def bn_sidecar_status(unit_path: str, content: str, bn_name: str) -> str:
+    """Describe beacon-node sidecar flags for ``manage.epbs status``.
+
+    ``present`` when a local MEV-Boost URL is still on the unit.
+    ``already removed`` when a ``.bak.epbs.`` backup shows complete stripped
+    flags that used to be there. ``not configured`` on a fresh install that
+    never had the sidecar (native ePBS, or MEV was never enabled).
+
+    Args:
+        unit_path: Consensus or execution unit path.
+        content: Current unit text.
+        bn_name: Beacon-node client name for :func:`strip_bn_sidecar`.
+    """
+    if strip_bn_sidecar(content, bn_name) != content:
+        return "present"
+    directory = os.path.dirname(unit_path) or "."
+    prefix = os.path.basename(unit_path) + ".bak.epbs."
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        names = []
+    if any(name.startswith(prefix) for name in names):
+        return "already removed"
+    return "not configured"
+
+
 def status(fs: Optional[EpbsFilesystem] = None) -> str:
     """Human-readable snapshot of ePBS migration state.
 
@@ -3728,12 +3754,8 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
             )
     if bn_name:
         bn_key = _bn_service_key(bn_name)
-        _, bn_content = _read_required_unit(fs, bn_key)
-        stripped = strip_bn_sidecar(bn_content, bn_name)
-        lines.append(
-            "BN sidecar flags: "
-            + ("present" if stripped != bn_content else "already removed")
-        )
+        bn_path, bn_content = _read_required_unit(fs, bn_key)
+        lines.append("BN sidecar flags: " + bn_sidecar_status(bn_path, bn_content, bn_name))
     charon_path = fs.unit_path("charon")
     if fs.exists(charon_path):
         ch_content = fs.read_text(charon_path) or ""

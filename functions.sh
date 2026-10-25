@@ -2394,16 +2394,22 @@ configureAutoStart(){
     echo
 }
 
-# Print relay URLs, one per line.
+# Print relay URLs, one per line. Only https:// lines are relays.
 # mevboost.service when that unit exists; otherwise the validator client's
-# native ePBS list (python -m manage.epbs list-relays).
+# native ePBS list (python -m manage.epbs list-relays). Installer chatter
+# on stdout (pip, ohai) is not a relay.
 collectRelayUrls(){
     local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    local out=""
     if [[ -f "$mev_svc" ]]; then
-        tr -s ' ' '\n' < "$mev_svc" | grep -o 'https.*@.*' || true
-        return 0
+        out=$(tr -s ' ' '\n' < "$mev_svc" | grep -oE 'https://[^[:space:]]+' || true)
+    else
+        out=$(runEpbsCli list-relays) || return 1
+        out=$(printf '%s\n' "$out" | grep -E '^https://' || true)
     fi
-    runEpbsCli list-relays
+    if [[ -n "$out" ]]; then
+        printf '%s\n' "$out"
+    fi
 }
 
 # Fill RELAYS and RELAY_SOURCE from MEV-Boost or, when that unit is absent, the VC.
@@ -3595,7 +3601,9 @@ After you quit, you can apply saved left-pane changes
 # Relies on ETHPILLAR_PYTHON / PYTHONPATH from ensure_python_deps.
 runEpbsCli() {
     local py
-    ensure_python_deps
+    # Dependency bootstrap writes to stdout (ohai, pip). Relay discovery
+    # captures this command's stdout, so keep that chatter on stderr.
+    ensure_python_deps >&2 || return 1
     py="${ETHPILLAR_PYTHON:-python3}"
     PYTHONPATH="${BASE_DIR}" "$py" -m manage.epbs "$@"
 }

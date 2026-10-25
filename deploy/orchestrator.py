@@ -689,4 +689,6 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
         web3signer_enabled=web3signer_enabled,
         web3signer_version=web3signer_ver,
         web3signer_service_path=web3signer_path,
+        builder_mode=str(flags.get("builder_mode") or ""),
+        relays=list(params.get("relays") or []),
     )

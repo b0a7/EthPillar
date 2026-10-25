@@ -8,11 +8,16 @@ from typing import List, Optional
 
 import pytest
 
+import os
+import subprocess
+import sys
+
 from config import EPBS_ENABLED_BY_NETWORK, network_epbs_enabled, sepolia_relay_options
 from deploy.builder_mode import (
     BUILDER_EPBS,
     BUILDER_MEVBOOST,
     BUILDER_NONE,
+    CANCELLED_EXIT_CODE,
     CSM_EPBS_POLICY_NOTE,
     CSM_RELAY_ALLOWLIST_CONTRACT,
     BuilderModeError,
@@ -27,7 +32,7 @@ from deploy.builder_mode import (
     validate_relay_selection,
 )
 from deploy.erigon import generate_erigon_service
-from deploy.lighthouse import generate_lighthouse_vc_service
+from deploy.lighthouse import generate_lighthouse_bn_service, generate_lighthouse_vc_service
 from deploy.lodestar import generate_lodestar_vc_service
 from deploy.nimbus import generate_nimbus_vc_service
 from deploy.orchestrator import resolve_role_flags
@@ -41,6 +46,7 @@ from manage.epbs import (
     export_migration,
     load_relays_for_tooling,
     main as epbs_main,
+    status as epbs_status,
 )
 from manage.service_parse import get_flag_values, normalize_cli_args, parse_unit
 
@@ -294,8 +300,8 @@ def test_solo_sepolia_skip_prompts_defaults_to_epbs_relays() -> None:
     assert [item["name"] for item in relays] == ["Flashbots"]
 
 
-def test_interactive_custom_offers_three_ways_and_refuses_empty_relays() -> None:
-    seen = {"passes": 0}
+def test_interactive_custom_offers_three_ways_and_skips_the_only_sepolia_relay() -> None:
+    notices = []
 
     def prompt_index(labels, title, subtitle):
         assert title == "Custom Setup"
@@ -305,13 +311,8 @@ def test_interactive_custom_offers_three_ways_and_refuses_empty_relays() -> None
         assert "None (local blocks)" in labels
         return 0
 
-    def checklist(title, prompt, items):
-        seen["passes"] += 1
-        assert title == "Relays"
-        assert "empty" in prompt.lower()
-        if seen["passes"] == 1:
-            return []
-        return [items[0][0]]
+    def notice(title, message):
+        notices.append((title, message))
 
     flags, relays = finalize_builder_install(
         role="Custom Setup",
@@ -321,11 +322,169 @@ def test_interactive_custom_offers_three_ways_and_refuses_empty_relays() -> None
         flags=_flags(),
         skip_prompts=False,
         prompt_index=prompt_index,
-        checklist=checklist,
+        checklist=lambda *_args: pytest.fail("one relay does not open a checklist"),
+        notice=notice,
     )
-    assert seen["passes"] == 2
     assert flags["builder_mode"] == BUILDER_EPBS
     assert [item["name"] for item in relays] == ["Flashbots"]
+    assert notices
+    assert "native ePBS" in notices[0][0]
+    assert "only relay" in notices[0][1]
+    assert "Flashbots" in notices[0][1]
+
+
+def test_refused_checklist_shows_the_error_and_keeps_checks() -> None:
+    """An empty Hoodi selection is explained, then redrawn with those boxes off."""
+    passes = []
+    notices = []
+
+    def prompt_index(labels, title, subtitle):
+        assert "Native ePBS" not in labels
+        return labels.index("MEV-Boost")
+
+    def checklist(title, prompt, items):
+        assert title == "Relays (MEV-Boost)"
+        passes.append({item[0]: item[2] for item in items})
+        if len(passes) == 1:
+            return []
+        return ["Flashbots", "Aestus"]
+
+    def notice(title, message):
+        notices.append((title, message))
+
+    flags, relays = finalize_builder_install(
+        role="Custom Setup",
+        network="hoodi",
+        vc_name="Lighthouse",
+        cc_name="Lighthouse",
+        flags=_flags(),
+        skip_prompts=False,
+        prompt_index=prompt_index,
+        checklist=checklist,
+        notice=notice,
+    )
+    assert flags["builder_mode"] == BUILDER_MEVBOOST
+    assert [item["name"] for item in relays] == ["Flashbots", "Aestus"]
+    assert passes[0]["Flashbots"] is True
+    assert passes[1]["Flashbots"] is False
+    assert passes[1]["Titan Relay"] is False
+    assert notices[0][0] == "Relay selection"
+    assert "local blocks" in notices[0][1]
+    assert "empty" in notices[0][1].lower()
+
+
+def test_csm_empty_selection_does_not_offer_local_blocks() -> None:
+    notices = []
+
+    def checklist(title, prompt, items):
+        assert "Relays (MEV-Boost)" == title
+        assert CSM_EPBS_POLICY_NOTE not in prompt
+        if not notices:
+            return []
+        return [items[0][0]]
+
+    def notice(title, message):
+        notices.append(message)
+
+    finalize_builder_install(
+        role="Lido CSM Staking Node",
+        network="hoodi",
+        vc_name="Lighthouse",
+        cc_name="Lighthouse",
+        flags=_flags(),
+        skip_prompts=False,
+        checklist=checklist,
+        notice=notice,
+    )
+    assert "choose local blocks" not in notices[0].lower()
+    assert "not available" in notices[0].lower()
+    assert CSM_EPBS_POLICY_NOTE not in notices[0]
+
+
+def test_csm_must_use_refusal_keeps_the_may_use_check_and_skips_epbs_note() -> None:
+    passes = []
+    notices = []
+
+    def checklist(title, prompt, items):
+        assert title == "Relays (MEV-Boost)"
+        assert CSM_EPBS_POLICY_NOTE not in prompt
+        passes.append({item[0]: item[2] for item in items})
+        if len(passes) == 1:
+            return ["Titan Global"]
+        return ["Flashbots", "Titan Global"]
+
+    flags, relays = finalize_builder_install(
+        role="Lido CSM Staking Node",
+        network="mainnet",
+        vc_name="Lighthouse",
+        cc_name="Lighthouse",
+        flags=_flags(),
+        skip_prompts=False,
+        checklist=checklist,
+        notice=lambda _title, message: notices.append(message),
+    )
+    assert flags["builder_mode"] == BUILDER_MEVBOOST
+    assert passes[1]["Titan Global"] is True
+    assert passes[1]["Flashbots"] is False
+    assert "must-use-some" in notices[0]
+    assert "not available" in notices[0].lower()
+    assert CSM_EPBS_POLICY_NOTE not in notices[0]
+    assert "Flashbots" in [item["name"] for item in relays]
+
+
+def test_csm_vc_only_menu_is_titled_and_single_choice_is_announced() -> None:
+    def prompt_index(labels, title, subtitle):
+        assert title == "Lido CSM Validator Client Only"
+        assert "Native ePBS" in labels
+        assert all("local blocks" not in label.lower() for label in labels)
+        return 1
+
+    flags, relays = finalize_builder_install(
+        role="Lido CSM Validator Client Only",
+        network="sepolia",
+        vc_name="Lighthouse",
+        cc_name=None,
+        flags=_flags(validator_only=True),
+        skip_prompts=False,
+        prompt_index=prompt_index,
+        notice=lambda *_args: None,
+    )
+    assert flags["builder_mode"] == BUILDER_MEVBOOST
+    assert flags["mevboost"] is False
+    assert flags["builder_api"] is True
+    assert relays == []
+
+    notices = []
+    flags, relays = finalize_builder_install(
+        role="Lido CSM Validator Client Only",
+        network="hoodi",
+        vc_name="Lighthouse",
+        cc_name=None,
+        flags=_flags(validator_only=True),
+        skip_prompts=False,
+        prompt_index=lambda *_args: pytest.fail("the only choice is not a menu"),
+        checklist=lambda *_args: pytest.fail("remote MEV-Boost collects no relays"),
+        notice=lambda title, message: notices.append((title, message)),
+    )
+    assert flags["builder_mode"] == BUILDER_MEVBOOST
+    assert relays == []
+    assert notices[0][0] == "Lido CSM Validator Client Only"
+    assert "only builder mode" in notices[0][1]
+
+
+def test_epbs_without_a_validator_does_not_say_placeholder() -> None:
+    with pytest.raises(BuilderModeError, match="supported validator client") as raised:
+        finalize_builder_install(
+            role="Custom Setup",
+            network="sepolia",
+            vc_name=None,
+            cc_name="Lighthouse",
+            flags=_flags(validator=False),
+            builder_mode="epbs",
+            skip_prompts=True,
+        )
+    assert "placeholder" not in str(raised.value).lower()
+    assert "nowhere to write relays" in str(raised.value)
 
 
 def test_unforked_custom_menu_is_mevboost_or_none() -> None:
@@ -394,15 +553,8 @@ def test_csm_hoodi_drops_unvetted_relays() -> None:
     assert [item["name"] for item in offered] == ["Flashbots", "Aestus"]
 
 
-def test_csm_epbs_checklist_documents_the_missing_policy() -> None:
-    captured = {}
-
-    def checklist(title, prompt, items):
-        captured["prompt"] = prompt
-        captured["tags"] = [item[0] for item in items]
-        captured["checked"] = [item[2] for item in items]
-        return list(captured["tags"])
-
+def test_csm_epbs_single_relay_explains_the_policy_without_a_checklist() -> None:
+    notices = []
     flags, relays = finalize_builder_install(
         role="Lido CSM Staking Node",
         network="sepolia",
@@ -410,14 +562,14 @@ def test_csm_epbs_checklist_documents_the_missing_policy() -> None:
         cc_name="Nimbus",
         flags=_flags(),
         skip_prompts=False,
-        checklist=checklist,
+        checklist=lambda *_args: pytest.fail("one relay does not open a checklist"),
+        notice=lambda title, message: notices.append((title, message)),
     )
     assert flags["epbs"] is True
     assert flags["mevboost"] is False
-    assert captured["tags"] == ["Flashbots"]
-    assert captured["checked"] == [True]
-    assert "must-use-some" in captured["prompt"]
-    assert CSM_EPBS_POLICY_NOTE in captured["prompt"]
+    assert "native ePBS" in notices[0][0]
+    assert "Flashbots" in notices[0][1]
+    assert CSM_EPBS_POLICY_NOTE in notices[0][1]
     assert [item["url"] for item in relays] == [FLASHBOTS]
 
 
@@ -676,3 +828,67 @@ def test_list_relays_and_export_read_the_vc_when_mevboost_is_absent(tmp_path: Pa
     assert code == 0
     listed = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
     assert listed == [FLASHBOTS, AESTUS]
+
+
+def test_fresh_install_status_says_sidecar_was_not_configured(tmp_path: Path) -> None:
+    fs = _fs(tmp_path, "Lighthouse v8.3.0")
+    _write_unit(
+        fs,
+        "consensus",
+        generate_lighthouse_bn_service(
+            "sepolia",
+            "https://example.invalid",
+            "/secrets/jwtsecret",
+            "5052",
+            "9000",
+            "9001",
+            "100",
+        ),
+    )
+    text = epbs_status(fs)
+    assert "BN sidecar flags: not configured" in text
+    assert "already removed" not in text
+    Path(fs.unit_path("consensus") + ".bak.epbs.20260101").write_text("old\n", encoding="utf-8")
+    assert "BN sidecar flags: already removed" in epbs_status(fs)
+
+
+def test_relay_checklist_cancel_exits_nonzero(tmp_path: Path) -> None:
+    """Cancel must not look like a finished install."""
+    whiptail = tmp_path / "whiptail"
+    whiptail.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    whiptail.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{tmp_path}{os.pathsep}{env.get('PATH', '')}"
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "deploy/deploy-node.py",
+            "--network",
+            "hoodi",
+            "--install_config",
+            "Custom Setup",
+            "--ec",
+            "Reth",
+            "--cc",
+            "Lighthouse",
+            "--vc",
+            "Lighthouse",
+            "--builder_mode",
+            "mevboost",
+            "--fee_address",
+            "0x" + "11" * 20,
+            "--skip_prompts",
+            "false",
+        ],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == CANCELLED_EXIT_CODE
+    combined = proc.stdout + proc.stderr
+    assert "cancelled" in combined.lower()
+    assert "INSTALL COMPLETE" not in combined
+    assert "Install complete" not in combined

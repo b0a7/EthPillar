@@ -110,3 +110,55 @@ EOF
   [ -f "$ETHPILLAR_VENV/keep" ]
   ! grep -q "python3 -m venv" "$COMMAND_LOG"
 }
+
+@test "ensure_python_deps imports PyYAML and pyyaml as yaml" {
+  mkdir -p "$ETHPILLAR_VENV/bin"
+  cat > "$ETHPILLAR_VENV/bin/python3" <<EOF
+#!/bin/bash
+echo "py \$*" >> "$COMMAND_LOG"
+if [[ "\$*" == *"import pip"* ]]; then
+  exit 0
+fi
+# The distribution name is not an importable module. Only yaml is.
+if [[ "\$*" == *"import yaml"* ]]; then
+  exit 0
+fi
+if [[ "\$*" == *"-m pip"* ]]; then
+  echo "pip-install \$*" >> "$COMMAND_LOG"
+  exit 0
+fi
+exit 1
+EOF
+  cat > "$ETHPILLAR_VENV/bin/pip" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+  chmod +x "$ETHPILLAR_VENV/bin/python3" "$ETHPILLAR_VENV/bin/pip"
+
+  local pkg
+  for pkg in PyYAML pyyaml; do
+    : > "$COMMAND_LOG"
+    printf '%s\n' "$pkg" > "$BASE_DIR/requirements.txt"
+    run ensure_python_deps
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"Installing missing Python packages"* ]]
+    grep -q "import yaml" "$COMMAND_LOG"
+    ! grep -q "pip-install" "$COMMAND_LOG"
+  done
+}
+
+@test "collectRelayUrls ignores installer chatter and keeps https relays" {
+  export MEVBOOST_SERVICE_FILE="/no/such/mevboost.service"
+  runEpbsCli() {
+    echo "==> Installing missing Python packages: PyYAML"
+    echo "Requirement already satisfied: requests in /tmp/venv"
+    echo "https://0xabc@boost-relay-sepolia.flashbots.net"
+  }
+  export -f runEpbsCli
+
+  run collectRelayUrls
+
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 1 ]
+  [[ "${lines[0]}" == https://*boost-relay-sepolia.flashbots.net ]]
+}

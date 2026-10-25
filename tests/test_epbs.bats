@@ -4,6 +4,13 @@ setup() {
   cd "$BATS_TEST_DIRNAME/.."
 }
 
+@test "setup type names Sepolia ePBS for solo and CSM" {
+  grep -q 'ePBS on Sepolia, MEV-Boost elsewhere' ethpillar.sh
+  grep -A2 '"Solo Staking Node"' ethpillar.sh | grep -q 'ePBS on Sepolia, MEV-Boost elsewhere'
+  grep -A2 '"Lido CSM Staking Node"' ethpillar.sh | grep -q 'ePBS on Sepolia, MEV-Boost elsewhere'
+  grep -A2 '"Failover Staking Node"' ethpillar.sh | grep -q 'MEV-Boost'
+}
+
 @test "MEV menu lists ePBS migration only for a supported VC" {
   grep -q 'ePBS migration' ethpillar.sh
   grep -q 'submenuEPBS' ethpillar.sh

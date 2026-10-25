@@ -901,7 +901,9 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
                    charon_enabled: bool = False, charon_version: Optional[str] = None,
                    charon_service_path: Optional[str] = None,
                    web3signer_enabled: bool = False, web3signer_version: Optional[str] = None,
-                   web3signer_service_path: Optional[str] = None) -> None:
+                   web3signer_service_path: Optional[str] = None,
+                   builder_mode: str = '',
+                   relays: Optional[list] = None) -> None:
     """Display installation summary and optionally start/enable services.
 
     Args:
@@ -931,6 +933,8 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
         web3signer_enabled: Whether Web3Signer was installed.
         web3signer_version: Web3Signer version string.
         web3signer_service_path: Path to web3signer.service.
+        builder_mode: ``mevboost``, ``epbs``, or ``none``. Empty omits the line.
+        relays: Selected relay dicts (``name`` and ``url``) for the summary.
     """
     
     # Reload the systemd daemon
@@ -953,6 +957,24 @@ def finish_install(install_config: str, eth_network: str, sync_url: str,
 
     if mevboost_enabled and not validator_only:
         print(f'Mevboost Version: \n{mevboost_version}\n')
+
+    _builder_labels = {
+        'epbs': 'Native ePBS (relays configured on the validator client)',
+        'mevboost': 'MEV-Boost',
+        'none': 'None (local blocks)',
+    }
+    if builder_mode in _builder_labels:
+        print(f'Builder mode: {_builder_labels[builder_mode]}\n')
+    if relays:
+        print('Relays:')
+        for relay in relays:
+            if isinstance(relay, dict):
+                name = relay.get('name') or 'relay'
+                url = relay.get('url') or ''
+                print(f'  {name}: {url}')
+            else:
+                print(f'  {relay}')
+        print()
 
     if charon_enabled and charon_version:
         print(f'Charon Version: \n{charon_version}\n')

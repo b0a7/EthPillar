@@ -1909,14 +1909,14 @@ function installNode(){
   if [[ ! -f /etc/systemd/system/consensus.service && ! -f /etc/systemd/system/execution.service && ! -f /etc/systemd/system/validator.service && ! -d /opt/ethpillar/aztec ]]; then
           local _ROLE
           _ROLE=$(whiptail --title "Setup Type" --menu \
-          "What would you like to set up?" 18 85 8 \
-          "Solo Staking Node"              "Full stack: EC + CC + VC + MEV-Boost" \
-          "Lido CSM Staking Node"          "Lido CSM: EC + CC + VC + MEV-Boost" \
+          "What would you like to set up?" 20 104 8 \
+          "Solo Staking Node"              "EC + CC + VC; ePBS on Sepolia, MEV-Boost elsewhere" \
+          "Lido CSM Staking Node"          "Lido CSM; ePBS on Sepolia, MEV-Boost elsewhere" \
           "Full Node Only"                 "EC + CC only, no validator" \
-          "Failover Staking Node"          "EC + CC + MEV-Boost, ready for failover" \
+          "Failover Staking Node"          "EC + CC + MEV-Boost (no validator), ready for failover" \
           "Validator Client Only"          "VC only, connects to remote beacon node" \
           "Lido CSM Validator Client Only" "Lido CSM VC, connects to remote beacon node" \
-          "Custom Setup"                   "Pick each component individually" \
+          "Custom Setup"                   "Pick each component, including builder mode" \
           "Aztec L2 Sequencer"             "by Aztec Labs" \
           3>&1 1>&2 2>&3)
           if [ $? -gt 0 ]; then # user pressed <Cancel> button
