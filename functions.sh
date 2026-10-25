@@ -2394,17 +2394,54 @@ configureAutoStart(){
     echo
 }
 
-# Checks whether a validator pubkey is registered on all relays found in mevboost.service
+# Print relay URLs, one per line.
+# mevboost.service when that unit exists; otherwise the validator client's
+# native ePBS list (python -m manage.epbs list-relays).
+collectRelayUrls(){
+    local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    if [[ -f "$mev_svc" ]]; then
+        tr -s ' ' '\n' < "$mev_svc" | grep -o 'https.*@.*' || true
+        return 0
+    fi
+    runEpbsCli list-relays
+}
+
+# Fill RELAYS and RELAY_SOURCE from MEV-Boost or, when that unit is absent, the VC.
+# Returns non-zero when the VC relay read fails.
+loadRelayUrls(){
+    local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
+    local out=""
+    RELAYS=()
+    if [[ -f "$mev_svc" ]]; then
+        RELAY_SOURCE="mevboost.service"
+        out=$(collectRelayUrls)
+    else
+        RELAY_SOURCE="validator client"
+        out=$(collectRelayUrls) || return 1
+    fi
+    if [[ -n "$out" ]]; then
+        local line
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && RELAYS+=("$line")
+        done <<< "$out"
+    fi
+    return 0
+}
+
+# Checks whether a validator pubkey is registered on relays from MEV-Boost or the VC.
 checkRelayRegistration(){
     #Variables
     URL_PATH="relay/v1/data/validator_registration?pubkey="
 
-    # Check for mevboost installation
-    if [ ! -f /etc/systemd/system/mevboost.service ]; then echo "No relays to check. Mevboost service not installed."; exit 1; fi;
-
-    # Extract relay urls from mevboost.service, store in array
-    RELAYS=($(cat /etc/systemd/system/mevboost.service  | sed "s/ /\n/g" | sed -n "/https.*@/p"))
-    ohai "Found # of relays in mevboost.service:  ${#RELAYS[@]}"
+    if ! loadRelayUrls; then
+        echo "No relays to check. mevboost.service is not installed and the validator client relay list could not be read."
+        exit 1
+    fi
+    if [[ ${#RELAYS[@]} -eq 0 ]]; then
+        echo "No relays to check. No relay URLs in ${RELAY_SOURCE}."
+        exit 1
+    fi
+    ohai "Found # of relays in ${RELAY_SOURCE}:  ${#RELAYS[@]}"
 
     # Populate pubkeys into LIST
     getPubKeys
@@ -3026,7 +3063,7 @@ checkValidatorQueue(){
     read -r
 }
 
-# Checks local latency of relays found in mevboost.service file
+# Checks local latency of relays from MEV-Boost or, when that unit is absent, the VC.
 checkRelayLatency(){
     echo "###########################################################"
     ohai "Relay Latency Check: Tests response time to each relay"
@@ -3035,16 +3072,16 @@ checkRelayLatency(){
     # Initialize warning flag
     local _warn=0
 
-    # Check if mevboost service is installed
-    if [ ! -f "/etc/systemd/system/mevboost.service" ]; then
-      echo "No relays to check. Mevboost service not installed."
+    if ! loadRelayUrls; then
+      echo "No relays to check. mevboost.service is not installed and the validator client relay list could not be read."
+      exit 1
+    fi
+    if [[ ${#RELAYS[@]} -eq 0 ]]; then
+      echo "No relays to check. No relay URLs in ${RELAY_SOURCE}."
       exit 1
     fi
 
-    # Extract relay URLs from mevboost.service, store in array
-    RELAYS=( $(cat /etc/systemd/system/mevboost.service | tr -s ' ' '\n' | grep -o "https.*@.*") )
-
-    ohai "Found ${#RELAYS[@]} relays in mevboost.service"
+    ohai "Found ${#RELAYS[@]} relays in ${RELAY_SOURCE}"
 
     for (( i=0; i<${#RELAYS[@]}; i++ )); do
       # Get relay domain name

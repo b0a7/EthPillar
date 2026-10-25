@@ -48,6 +48,15 @@ parser.add_argument("--vc", type=str, default="")
 parser.add_argument("--with_validator", action="store_true", default=False)
 parser.add_argument("--with_mevboost", action="store_true", default=False)
 parser.add_argument(
+    "--builder_mode",
+    type=str,
+    choices=["mevboost", "epbs", "none"],
+    default="",
+    help="Block builder for --skip_prompts: mevboost (local MEV-Boost), "
+    "epbs (native validator-client relays), or none (local blocks). "
+    "--with_mevboost is an alias for mevboost.",
+)
+parser.add_argument(
     "--with_builder_api",
     action="store_true",
     default=False,
@@ -91,6 +100,22 @@ if args.fee_address:
     FEE_RECIPIENT_ADDRESS = args.fee_address
 
 skip_prompts = args.skip_prompts.lower() == 'true'
+
+if args.builder_mode and args.with_mevboost and args.builder_mode != "mevboost":
+    print(
+        "ERROR: --with_mevboost selects MEV-Boost, which conflicts with "
+        f"--builder_mode {args.builder_mode}.",
+        file=sys.stderr,
+    )
+    exit(1)
+if args.switch_client and args.builder_mode:
+    print(
+        "ERROR: --builder_mode applies to a fresh install. "
+        "Client switch keeps the existing MEV-Boost sidecar "
+        "(pass --with_mevboost to retain it).",
+        file=sys.stderr,
+    )
+    exit(1)
 
 # 1. Network selection
 if not args.network:
@@ -227,22 +252,6 @@ elif flags['validator_only']:
     else:
         vc_name = args.vc or args.cc # Fallback to --cc if --vc not passed
 
-    # Remote BN may already run MEV-Boost; enable VC/Charon builder flags without
-    # installing a local mevboost.service.
-    if args.with_builder_api or args.with_mevboost:
-        flags['builder_api'] = True
-    elif not skip_prompts:
-        builder_prompt = SelectionMenu.get_selection(
-            ["Yes", "No"],
-            title='Validator Client Only',
-            subtitle=(
-                'Does the remote beacon node use MEV-Boost / builder API?\n'
-                '(Enables VC builder flags; does not install local MEV-Boost)'
-            ),
-            show_exit_option=False,
-        )
-        flags['builder_api'] = builder_prompt == 0
-    # else: keep flags['builder_api'] from CLI / role defaults (False)
 elif role == "Custom Setup":
     # Custom Path
     # EC
@@ -327,17 +336,6 @@ elif role == "Custom Setup":
         flags['validator'] = True
         vc_name = args.vc if args.vc else cc_name
 
-    # MEV
-    if args.with_mevboost:
-        flags['mevboost'] = True
-    elif not skip_prompts:
-        mev_prompt = SelectionMenu.get_selection(["Yes", "No"], title='Custom Setup', subtitle='Step 4: Do you want MEV-Boost?', show_exit_option=False)
-        flags['mevboost'] = (mev_prompt == 0)
-    else:
-        flags['mevboost'] = False
-    flags['builder_api'] = bool(flags.get('mevboost') or args.with_builder_api)
-
-
 else:
     # Predefined role (Solo/Full/Failover/CSM) -> Combo Menu
     if not args.combo and not args.ec:
@@ -393,6 +391,39 @@ else:
                 vc_name = resolve_vc_name(cc_name, signer_opts[signer_idx])
             else:
                 vc_name = cc_name
+
+selected_relays = []
+if not args.switch_client:
+    from deploy.builder_mode import (
+        BuilderModeCancelled,
+        BuilderModeError,
+        finalize_builder_install,
+    )
+
+    def _prompt_builder_index(labels, title, subtitle):
+        return SelectionMenu.get_selection(
+            list(labels), title=title, subtitle=subtitle, show_exit_option=False
+        )
+
+    try:
+        flags, selected_relays = finalize_builder_install(
+            role=role,
+            network=eth_network,
+            vc_name=vc_name,
+            cc_name=cc_name,
+            flags=flags,
+            builder_mode=args.builder_mode,
+            with_mevboost=args.with_mevboost,
+            with_builder_api=args.with_builder_api,
+            skip_prompts=skip_prompts,
+            prompt_index=_prompt_builder_index,
+        )
+    except BuilderModeCancelled as exc:
+        print(str(exc))
+        exit(0)
+    except BuilderModeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        exit(1)
 
 # 4. Role-specific prompts
 beacon_node_address = args.vc_only_bn_address
@@ -462,7 +493,8 @@ params = {
     'cl_rest_port': args.cl_rest_port,
     'cl_max_peers': args.cl_max_peers,
     'mev_min_bid': MEV_MIN_BID,
-    'skip_prompts': args.skip_prompts
+    'skip_prompts': args.skip_prompts,
+    'relays': selected_relays,
 }
 
 env_vars = dict(os.environ)
@@ -484,13 +516,22 @@ if _bn_vc_warn and not skip_prompts:
         exit(0)
 
 # 5. Execute Install
-run_install(
-    role=role, 
-    network=eth_network, 
-    ec_name=ec_name if args.switch_client != "consensus" else None, 
-    cc_name=cc_name if args.switch_client != "execution" else None, 
-    vc_name=vc_name, 
-    flags=flags, 
-    params=params, 
-    env_vars=env_vars
-)
+try:
+    run_install(
+        role=role,
+        network=eth_network,
+        ec_name=ec_name if args.switch_client != "consensus" else None,
+        cc_name=cc_name if args.switch_client != "execution" else None,
+        vc_name=vc_name,
+        flags=flags,
+        params=params,
+        env_vars=env_vars
+    )
+except Exception as exc:
+    # Refused builder mode or ePBS apply is operator-facing.
+    from deploy.builder_mode import BuilderModeError
+    from manage.epbs import EpbsError
+    if isinstance(exc, (BuilderModeError, EpbsError)):
+        print(f"ERROR: {exc}", file=sys.stderr)
+        exit(1)
+    raise

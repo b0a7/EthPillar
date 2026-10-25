@@ -362,7 +362,10 @@ def run_install(args: Any, fee_address: str):
     if args.ec: cmd.extend(["--ec", args.ec])
     if args.cc: cmd.extend(["--cc", args.cc])
     if args.vc: cmd.extend(["--vc", args.vc])
-    if args.mev: cmd.append("--with_mevboost")
+    if getattr(args, "builder_mode", ""):
+        cmd.extend(["--builder_mode", args.builder_mode])
+    elif args.mev:
+        cmd.append("--with_mevboost")
     if getattr(args, "charon", False): cmd.append("--with_charon")
     if args.vc_only_bn_address: cmd.extend(["--vc_only_bn_address", args.vc_only_bn_address])
     checkpoint_url = checkpoint_sync_url_for_network(args.network)
@@ -1188,6 +1191,61 @@ def run_web3signer_smoke() -> int:
     return 0
 
 
+def verify_native_epbs_install(args: Any) -> bool:
+    """Assert a fresh native ePBS install has VC relays and no MEV-Boost sidecar.
+
+    Args:
+        args: Integration CLI namespace. No-op unless ``--builder-mode epbs``.
+
+    Returns:
+        True when the install matches native ePBS, or the case is not ePBS.
+    """
+    if getattr(args, "builder_mode", "") != "epbs":
+        return True
+    print("\n🔌 Verifying native ePBS install (no MEV-Boost sidecar)...", flush=True)
+    ok = True
+    sidecar = "127.0.0.1:18550"
+    mev_unit = "/etc/systemd/system/mevboost.service"
+    if os.path.isfile(mev_unit):
+        print("❌ native ePBS install created mevboost.service", flush=True)
+        ok = False
+    else:
+        print("✅ mevboost.service absent", flush=True)
+    for unit in ("consensus", "execution", "validator"):
+        path = f"/etc/systemd/system/{unit}.service"
+        if not os.path.isfile(path):
+            continue
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read()
+        if sidecar in text or "localhost:18550" in text:
+            print(f"❌ {unit}.service still points at the MEV-Boost sidecar", flush=True)
+            ok = False
+        else:
+            print(f"✅ {unit}.service has no MEV-Boost sidecar", flush=True)
+    env = integration_subprocess_env()
+    env["PYTHONPATH"] = "/ethpillar" + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    listed = subprocess.run(
+        [sys.executable, "-m", "manage.epbs", "list-relays"],
+        cwd="/ethpillar",
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    urls = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+    if listed.returncode != 0 or not urls:
+        print("❌ validator client has no ePBS relay URLs", flush=True)
+        if listed.stderr:
+            print(listed.stderr, flush=True)
+        ok = False
+    else:
+        print(f"✅ read {len(urls)} relay URL(s) from the validator client", flush=True)
+        for url in urls:
+            print(f"   {url}", flush=True)
+    return ok
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='Docker Test Runner')
@@ -1197,6 +1255,12 @@ if __name__ == "__main__":
     parser.add_argument('--cc', type=str, default="")
     parser.add_argument('--vc', type=str, default="")
     parser.add_argument('--mev', action='store_true', default=False)
+    parser.add_argument(
+        '--builder-mode',
+        choices=('mevboost', 'epbs', 'none'),
+        default='',
+        help='Forward --builder_mode to deploy-node.py (native ePBS fresh install)',
+    )
     parser.add_argument('--charon', action='store_true', default=False, help='Install Obol Charon DVT middleware')
     parser.add_argument('--config', type=str, default='Solo Staking Node')
     parser.add_argument('--network', type=str, default='SEPOLIA')
@@ -1264,6 +1328,8 @@ if __name__ == "__main__":
         if not run_install(args, "0x1234567890123456789012345678901234567890"):
             sys.exit(1)
         if not verify(args):
+            sys.exit(1)
+        if not verify_native_epbs_install(args):
             sys.exit(1)
         sys.stdout.flush()
         subprocess_env = integration_subprocess_env()

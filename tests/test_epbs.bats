@@ -53,6 +53,22 @@ setup() {
   grep -q 'After Gloas Fork' docs/ePBS-migration.md
 }
 
+@test "relay checks read the VC when mevboost.service is absent" {
+  grep -q '^collectRelayUrls()' functions.sh
+  grep -q '^loadRelayUrls()' functions.sh
+  grep -q 'list-relays' functions.sh
+  grep -q 'list-relays' manage/epbs.py
+  grep -A20 '^checkRelayRegistration()' functions.sh | grep -q 'loadRelayUrls'
+  grep -A25 '^checkRelayLatency()' functions.sh | grep -q 'loadRelayUrls'
+}
+
+@test "integration matrix has a Sepolia fresh-install ePBS case" {
+  grep -q 'Lighthouse-Reth-ePBS-Fresh-SEPOLIA' tests/integration/run_docker_tests.py
+  grep -q -- '--builder-mode epbs' tests/integration/run_docker_tests.py
+  grep -q 'verify_native_epbs_install' tests/integration/run_inside_docker.py
+  grep -q -- '--builder_mode' deploy/deploy-node.py
+}
+
 @test "integration matrix has Prysm, Lodestar, Caplin, Teku, Lighthouse, and Nimbus ePBS migration cases" {
     grep -q 'Prysm-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
     grep -q 'Lodestar-Reth-ePBS-Migration-SEPOLIA' tests/integration/run_docker_tests.py
