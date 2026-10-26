@@ -599,6 +599,7 @@ ensure_python_deps() {
         case "$pkg" in
             console-menu) import_name="consolemenu" ;;
             python-dotenv) import_name="dotenv" ;;
+            PyYAML|pyyaml) import_name="yaml" ;;
         esac
         if ! PYTHONPATH="${BASE_DIR}" "$venv_python" -c "import ${import_name}" 2>/dev/null; then
             missing+=("$pkg")
