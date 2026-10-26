@@ -9,6 +9,16 @@ from deploy.service_generators import form_exec_start, generate_systemd_template
 # First Erigon release that defines ``--caplin.discovery.quicport`` (v3.7.1).
 _CAPLIN_QUIC_MIN = (3, 7, 1)
 
+# Erigon v3.8.1 and current main default ``--metrics.port`` to 6061
+# (``diagnostics/metrics.DefaultConfig.Port``, registered as ``utils.MetricsPortFlag``).
+# ``--pprof`` stays on 127.0.0.1:6060. ``/debug/metrics/prometheus`` is registered
+# only on the metrics mux, and pprof handlers join that mux only when the two
+# listen addresses are identical. Pin metrics to the pprof address so
+# ``manage/client_monitoring.py`` (port 6060, path ``/debug/metrics/prometheus``)
+# scrapes a live endpoint. Leave ``--metrics.addr`` and ``--pprof.*`` unset so
+# both stay on the 127.0.0.1:6060 defaults.
+_METRICS_PORT_ARG = "--metrics.port=6060"
+
 
 def caplin_quic_flag_supported(version: str) -> bool:
     """Return True when the unit should pin ``--caplin.discovery.quicport``.
@@ -88,6 +98,7 @@ def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str
         f"--maxpeers={el_max_peer_count}",
         "--http.api=web3,eth,net,engine",
         "--metrics",
+        _METRICS_PORT_ARG,
         "--pprof",
         "--prune.mode=minimal",
         "--private.api.addr=127.0.0.1:9091",
@@ -165,6 +176,7 @@ def generate_erigon_standalone_service(eth_network: str, el_p2p_port: str, el_rp
         f"--maxpeers={el_max_peer_count}",
         "--http.api=web3,eth,net,engine",
         "--metrics",
+        _METRICS_PORT_ARG,
         "--pprof",
         "--prune.mode=minimal",
         "--private.api.addr=127.0.0.1:9091",

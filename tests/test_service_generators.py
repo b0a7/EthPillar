@@ -26,6 +26,7 @@ from deploy.erigon import (
     generate_erigon_service,
     generate_erigon_standalone_service,
 )
+from manage.client_monitoring import detect_clients, metrics_port_from_unit, scrape_job_yaml
 from deploy.teku import generate_teku_bn_service, generate_teku_vc_service
 from deploy.lodestar import generate_lodestar_bn_service, generate_lodestar_vc_service
 from deploy.nimbus import generate_nimbus_bn_service, generate_nimbus_vc_service
@@ -458,6 +459,35 @@ class TestRethService:
 # Erigon service tests
 # ═══════════════════════════════════════════════
 
+def assert_erigon_metrics_port_matches_scrape(unit: str) -> None:
+    """Fail unless the unit sets the metrics port ``client_monitoring`` scrapes.
+
+    ``metrics_port_from_unit`` falls back to the catalog default when the flag
+    is absent. That fallback is the bug: Erigon then listens on 6061 while the
+    scrape target stays 6060. A default of 0 makes a missing flag fail here.
+    ``--pprof`` is left on its 127.0.0.1:6060 default so both listeners share
+    one server and ``/debug/metrics/prometheus`` is actually served there.
+    """
+    explicit_port = metrics_port_from_unit(unit, 0)
+    found = detect_clients(unit, None, None)
+    assert len(found) == 1
+    client, scraped_port = found[0]
+    assert client.key == "erigon"
+    assert client.metrics_path == "/debug/metrics/prometheus"
+    assert explicit_port == client.default_port
+    assert scraped_port == explicit_port
+    job = scrape_job_yaml(client, scraped_port)
+    assert f"localhost:{explicit_port}" in job
+    assert f"metrics_path: {client.metrics_path}" in job
+    assert "--metrics.port=6060" in unit
+    assert "--metrics \\" in unit
+    assert "--pprof \\" in unit
+    assert "--pprof.port" not in unit
+    assert "--pprof.addr" not in unit
+    assert "--metrics.addr" not in unit
+    assert "--http.api=web3,eth,net,engine" in unit
+
+
 class TestErigonService:
     """Test Erigon+Caplin integrated service file generation."""
 
@@ -517,6 +547,14 @@ class TestErigonService:
         )
         assert "--caplin.mev-relay-url" not in result
         assert "Requires=mevboost.service" not in result
+
+    def test_metrics_port_matches_monitoring_scrape(self):
+        result = generate_erigon_service(
+            "mainnet", EL_P2P_PORT, EL_RPC_PORT, EL_MAX_PEER_COUNT,
+            JWTSECRET_PATH, CL_P2P_PORT, CL_REST_PORT, CL_MAX_PEER_COUNT,
+            SYNC_URL
+        )
+        assert_erigon_metrics_port_matches_scrape(result)
 
 
 # ═══════════════════════════════════════════════
@@ -599,6 +637,12 @@ class TestErigonStandaloneService:
         )
         assert "Erigon Execution Layer Client" in standalone
         assert "Erigon-Caplin Integrated" in integrated
+
+    def test_metrics_port_matches_monitoring_scrape(self):
+        result = generate_erigon_standalone_service(
+            "mainnet", EL_P2P_PORT, EL_RPC_PORT, EL_MAX_PEER_COUNT, JWTSECRET_PATH
+        )
+        assert_erigon_metrics_port_matches_scrape(result)
 
 
 # ═══════════════════════════════════════════════
