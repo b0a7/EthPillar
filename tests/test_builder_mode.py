@@ -20,6 +20,7 @@ from deploy.builder_mode import (
     CANCELLED_EXIT_CODE,
     CSM_EPBS_POLICY_NOTE,
     CSM_RELAY_ALLOWLIST_CONTRACT,
+    BuilderModeCancelled,
     BuilderModeError,
     builder_mode_choices,
     csm_offered_relays,
@@ -301,7 +302,7 @@ def test_solo_sepolia_skip_prompts_defaults_to_epbs_relays() -> None:
 
 
 def test_interactive_custom_offers_three_ways_and_skips_the_only_sepolia_relay() -> None:
-    notices = []
+    prompts = []
 
     def prompt_index(labels, title, subtitle):
         assert title == "Custom Setup"
@@ -311,8 +312,9 @@ def test_interactive_custom_offers_three_ways_and_skips_the_only_sepolia_relay()
         assert "None (local blocks)" in labels
         return 0
 
-    def notice(title, message):
-        notices.append((title, message))
+    def confirm(title, message):
+        prompts.append((title, message))
+        return True
 
     flags, relays = finalize_builder_install(
         role="Custom Setup",
@@ -323,14 +325,15 @@ def test_interactive_custom_offers_three_ways_and_skips_the_only_sepolia_relay()
         skip_prompts=False,
         prompt_index=prompt_index,
         checklist=lambda *_args: pytest.fail("one relay does not open a checklist"),
-        notice=notice,
+        confirm=confirm,
     )
     assert flags["builder_mode"] == BUILDER_EPBS
     assert [item["name"] for item in relays] == ["Flashbots"]
-    assert notices
-    assert "native ePBS" in notices[0][0]
-    assert "only relay" in notices[0][1]
-    assert "Flashbots" in notices[0][1]
+    assert prompts
+    assert "native ePBS" in prompts[0][0]
+    assert "only relay" in prompts[0][1]
+    assert "Flashbots" in prompts[0][1]
+    assert "Back returns" in prompts[0][1]
 
 
 def test_refused_checklist_shows_the_error_and_keeps_checks() -> None:
@@ -344,9 +347,12 @@ def test_refused_checklist_shows_the_error_and_keeps_checks() -> None:
 
     def checklist(title, prompt, items):
         assert title == "Relays (MEV-Boost)"
-        passes.append({item[0]: item[2] for item in items})
+        passes.append((prompt, {item[0]: item[2] for item in items}))
         if len(passes) == 1:
+            assert "All are checked" in prompt
             return []
+        assert "previous selection is kept" in prompt
+        assert "All are checked" not in prompt
         return ["Flashbots", "Aestus"]
 
     def notice(title, message):
@@ -365,10 +371,11 @@ def test_refused_checklist_shows_the_error_and_keeps_checks() -> None:
     )
     assert flags["builder_mode"] == BUILDER_MEVBOOST
     assert [item["name"] for item in relays] == ["Flashbots", "Aestus"]
-    assert passes[0]["Flashbots"] is True
-    assert passes[1]["Flashbots"] is False
-    assert passes[1]["Titan Relay"] is False
+    assert passes[0][1]["Flashbots"] is True
+    assert passes[1][1]["Flashbots"] is False
+    assert passes[1][1]["Titan Relay"] is False
     assert notices[0][0] == "Relay selection"
+    assert "go back" in notices[0][1]
     assert "local blocks" in notices[0][1]
     assert "empty" in notices[0][1].lower()
 
@@ -554,7 +561,12 @@ def test_csm_hoodi_drops_unvetted_relays() -> None:
 
 
 def test_csm_epbs_single_relay_explains_the_policy_without_a_checklist() -> None:
-    notices = []
+    prompts = []
+
+    def confirm(title, message):
+        prompts.append((title, message))
+        return True
+
     flags, relays = finalize_builder_install(
         role="Lido CSM Staking Node",
         network="sepolia",
@@ -563,14 +575,103 @@ def test_csm_epbs_single_relay_explains_the_policy_without_a_checklist() -> None
         flags=_flags(),
         skip_prompts=False,
         checklist=lambda *_args: pytest.fail("one relay does not open a checklist"),
-        notice=lambda title, message: notices.append((title, message)),
+        confirm=confirm,
     )
     assert flags["epbs"] is True
     assert flags["mevboost"] is False
-    assert "native ePBS" in notices[0][0]
-    assert "Flashbots" in notices[0][1]
-    assert CSM_EPBS_POLICY_NOTE in notices[0][1]
+    assert "native ePBS" in prompts[0][0]
+    assert "Flashbots" in prompts[0][1]
+    assert CSM_EPBS_POLICY_NOTE in prompts[0][1]
+    assert "Cancel aborts" in prompts[0][1]
     assert [item["url"] for item in relays] == [FLASHBOTS]
+
+
+def test_custom_relay_cancel_returns_to_step_4() -> None:
+    """Cancel on the checklist goes back to Step 4 instead of aborting."""
+    mode_calls = {"n": 0}
+
+    def prompt_index(labels, title, subtitle):
+        mode_calls["n"] += 1
+        assert "Step 4" in subtitle
+        if mode_calls["n"] == 1:
+            return labels.index("MEV-Boost")
+        return labels.index("None (local blocks)")
+
+    flags, relays = finalize_builder_install(
+        role="Custom Setup",
+        network="hoodi",
+        vc_name="Lighthouse",
+        cc_name="Lighthouse",
+        flags=_flags(),
+        skip_prompts=False,
+        prompt_index=prompt_index,
+        checklist=lambda *_args: None,
+        notice=lambda *_args: None,
+    )
+    assert mode_calls["n"] == 2
+    assert flags["builder_mode"] == BUILDER_NONE
+    assert relays == []
+
+
+def test_preset_relay_cancel_still_aborts() -> None:
+    with pytest.raises(BuilderModeCancelled, match="cancelled"):
+        finalize_builder_install(
+            role="Solo Staking Node",
+            network="hoodi",
+            vc_name="Lighthouse",
+            cc_name="Lighthouse",
+            flags=_flags(),
+            skip_prompts=False,
+            checklist=lambda *_args: None,
+            notice=lambda *_args: None,
+        )
+
+
+def test_single_relay_back_returns_to_step_4() -> None:
+    calls = {"menu": 0}
+
+    def prompt_index(labels, title, subtitle):
+        calls["menu"] += 1
+        if calls["menu"] == 1:
+            return 0
+        return labels.index("None (local blocks)")
+
+    def confirm(title, message):
+        assert "Back returns" in message
+        return False
+
+    flags, relays = finalize_builder_install(
+        role="Custom Setup",
+        network="sepolia",
+        vc_name="Lighthouse",
+        cc_name="Lighthouse",
+        flags=_flags(),
+        skip_prompts=False,
+        prompt_index=prompt_index,
+        confirm=confirm,
+        checklist=lambda *_args: pytest.fail("one relay does not open a checklist"),
+    )
+    assert calls["menu"] == 2
+    assert flags["builder_mode"] == BUILDER_NONE
+    assert relays == []
+
+
+def test_single_relay_cancel_aborts_a_preset() -> None:
+    def confirm(title, message):
+        assert "Cancel aborts" in message
+        return False
+
+    with pytest.raises(BuilderModeCancelled, match="cancelled"):
+        finalize_builder_install(
+            role="Lido CSM Staking Node",
+            network="sepolia",
+            vc_name="Nimbus",
+            cc_name="Nimbus",
+            flags=_flags(),
+            skip_prompts=False,
+            confirm=confirm,
+            checklist=lambda *_args: pytest.fail("one relay does not open a checklist"),
+        )
 
 
 def test_whiptail_checklist_uses_separate_output(monkeypatch) -> None:

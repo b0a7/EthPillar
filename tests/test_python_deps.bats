@@ -152,6 +152,7 @@ EOF
   runEpbsCli() {
     echo "==> Installing missing Python packages: PyYAML"
     echo "Requirement already satisfied: requests in /tmp/venv"
+    echo "https://docs.coincashew.com"
     echo "https://0xabc@boost-relay-sepolia.flashbots.net"
   }
   export -f runEpbsCli
@@ -160,5 +161,34 @@ EOF
 
   [ "$status" -eq 0 ]
   [ "${#lines[@]}" -eq 1 ]
-  [[ "${lines[0]}" == https://*boost-relay-sepolia.flashbots.net ]]
+  [[ "${lines[0]}" == https://*@*boost-relay-sepolia.flashbots.net ]]
+  [[ "$output" != *"docs.coincashew.com"* ]]
+  [[ "$output" != *"PyYAML"* ]]
+}
+
+@test "collectRelayUrls on mevboost.service ignores Documentation and keeps -relay URLs" {
+  local unit
+  unit=$(mktemp)
+  cat > "$unit" <<'EOF'
+[Unit]
+Documentation=https://docs.coincashew.com
+Description=MEV-Boost Service for HOODI
+[Service]
+ExecStart=/usr/local/bin/mev-boost \
+    -hoodi \
+    -min-bid 0.006 \
+    -relay-check \
+    -relay https://0xaaa@boost-relay-hoodi.flashbots.net \
+    -relay https://0xbbb@hoodi.aestus.live
+EOF
+  export MEVBOOST_SERVICE_FILE="$unit"
+
+  run collectRelayUrls
+  rm -f "$unit"
+
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -eq 2 ]
+  [[ "$output" != *"docs.coincashew.com"* ]]
+  [[ "$output" == *"boost-relay-hoodi.flashbots.net"* ]]
+  [[ "$output" == *"hoodi.aestus.live"* ]]
 }

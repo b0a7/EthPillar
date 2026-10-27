@@ -90,6 +90,14 @@ class BuilderModeCancelled(BuilderModeError):
     """Operator cancelled the relay checklist or builder-mode menu."""
 
 
+class BuilderModeBack(Exception):
+    """Operator left the relay step to return to the builder-mode menu.
+
+    This is not an aborted install. Presets and an explicit ``--builder_mode``
+    have no Step 4 to return to; those cancels stay :class:`BuilderModeCancelled`.
+    """
+
+
 def is_csm_role(role: str) -> bool:
     """Return True for Lido CSM staking and CSM validator-only roles."""
     return role in _CSM_ROLES
@@ -420,7 +428,7 @@ def empty_selection_message(*, csm: bool, allow_local_blocks: bool) -> str:
         )
     if allow_local_blocks:
         return (
-            "Select at least one relay, or cancel and choose local blocks (none). "
+            "Select at least one relay, or go back and choose local blocks (none). "
             "An empty relay list is refused."
         )
     return (
@@ -526,12 +534,25 @@ def relay_checklist_item(
     return name, text[:70], checked
 
 
-def relay_checklist_prompt(*, csm: bool, mode: str) -> str:
-    """Return the whiptail checklist body for this builder mode."""
-    base = (
-        "Select relays. All are checked. Uncheck any you want to opt out of. "
-        "An empty selection is refused."
-    )
+def relay_checklist_prompt(*, csm: bool, mode: str, redraw: bool = False) -> str:
+    """Return the whiptail checklist body for this builder mode.
+
+    Args:
+        csm: Lido CSM wording.
+        mode: ``mevboost`` or ``epbs``.
+        redraw: True after a refused selection. The boxes are no longer all
+            checked, so the first-pass sentence must not say that they are.
+    """
+    if redraw:
+        base = (
+            "Select relays. Your previous selection is kept. "
+            "An empty selection is refused."
+        )
+    else:
+        base = (
+            "Select relays. All are checked. Uncheck any you want to opt out of. "
+            "An empty selection is refused."
+        )
     if not csm:
         return base
     extra = (
@@ -542,6 +563,39 @@ def relay_checklist_prompt(*, csm: bool, mode: str) -> str:
     if mode == BUILDER_EPBS:
         extra += " " + CSM_EPBS_POLICY_NOTE
     return base + extra
+
+
+def show_install_confirm(
+    title: str, message: str, *, no_button: str = "Cancel"
+) -> bool:
+    """Ask whether to continue. False on No, Esc, or a missing whiptail.
+
+    Args:
+        title: Window title.
+        message: Operator-facing text.
+        no_button: ``Back`` when Step 4 can be shown again, otherwise ``Cancel``.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "whiptail",
+                "--title",
+                title,
+                "--yesno",
+                message,
+                "16",
+                "78",
+                "--yes-button",
+                "Continue",
+                "--no-button",
+                no_button,
+            ],
+            check=False,
+        )
+    except FileNotFoundError:
+        print(f"{title}: {message}", file=sys.stderr)
+        return False
+    return proc.returncode == 0
 
 
 def show_install_notice(title: str, message: str) -> None:
@@ -564,6 +618,8 @@ def run_whiptail_checklist(
     title: str,
     prompt: str,
     items: Sequence[Tuple[str, str, bool]],
+    *,
+    cancel_button: str = "Cancel",
 ) -> Optional[List[str]]:
     """Show a whiptail checklist and return the checked tags.
 
@@ -571,6 +627,7 @@ def run_whiptail_checklist(
         title: Window title.
         prompt: Checklist text.
         items: ``(tag, item_text, checked)`` rows.
+        cancel_button: ``Back`` when this step can return to the builder menu.
 
     Returns:
         Selected tags (one per line; names may contain spaces), or None when
@@ -591,6 +648,8 @@ def run_whiptail_checklist(
         "78",
         str(min(len(items), 12)),
         "--separate-output",
+        "--cancel-button",
+        cancel_button,
     ]
     for tag, text, checked in items:
         cmd.extend([tag, text, "ON" if checked else "OFF"])
@@ -618,6 +677,8 @@ def _select_relays(
         Optional[List[str]],
     ],
     notice: Callable[[str, str], None],
+    confirm: Callable[[str, str], bool],
+    allow_back: bool,
 ) -> List[dict]:
     """Resolve the relay list for a builder mode.
 
@@ -628,7 +689,9 @@ def _select_relays(
     Raises:
         BuilderModeError: No relays are configured, or a checklist selection
             violates the rules.
-        BuilderModeCancelled: The operator cancelled the checklist.
+        BuilderModeCancelled: The operator cancelled and there is no builder
+            menu to return to.
+        BuilderModeBack: The operator went back to the builder-mode menu.
     """
     configured = relay_options_for_network(network)
     offered = csm_offered_relays(configured) if csm else list(configured)
@@ -654,11 +717,19 @@ def _select_relays(
         )
         if mention_epbs_policy:
             message += " " + CSM_EPBS_POLICY_NOTE
-        notice(relay_checklist_title(mode), message)
+        if allow_back:
+            message += "\n\nContinue uses this relay. Back returns to the builder-mode choice."
+        else:
+            message += "\n\nContinue uses this relay. Cancel aborts the install."
+        if not confirm(relay_checklist_title(mode), message):
+            if allow_back:
+                raise BuilderModeBack()
+            raise BuilderModeCancelled("Relay selection cancelled.")
         return [dict(only)]
-    prompt = relay_checklist_prompt(csm=csm, mode=mode)
     checked = {str(relay.get("name", "")): True for relay in offered}
+    redraw = False
     while True:
+        prompt = relay_checklist_prompt(csm=csm, mode=mode, redraw=redraw)
         items = [
             relay_checklist_item(
                 relay,
@@ -669,6 +740,8 @@ def _select_relays(
         ]
         selected = checklist(relay_checklist_title(mode), prompt, items)
         if selected is None:
+            if allow_back:
+                raise BuilderModeBack()
             raise BuilderModeCancelled("Relay selection cancelled.")
         try:
             return validate_relay_selection(
@@ -684,6 +757,7 @@ def _select_relays(
                 str(relay.get("name", "")): str(relay.get("name", "")) in selected_names
                 for relay in offered
             }
+            redraw = True
             notice("Relay selection", str(exc))
 
 
@@ -703,6 +777,7 @@ def finalize_builder_install(
         Callable[[str, str, Sequence[Tuple[str, str, bool]]], Optional[List[str]]]
     ] = None,
     notice: Optional[Callable[[str, str], None]] = None,
+    confirm: Optional[Callable[[str, str], bool]] = None,
 ) -> Tuple[Dict[str, object], List[dict]]:
     """Resolve builder mode, flags, and the relay checklist.
 
@@ -725,8 +800,11 @@ def finalize_builder_install(
         prompt_index: ``(labels, title, subtitle) -> index`` for the mode menu.
         checklist: Whiptail checklist callback. Required when a checklist
             would be shown.
-        notice: ``(title, message)`` for msgboxes (single-choice, single
-            relay, and a refused selection). Defaults to a whiptail msgbox.
+        notice: ``(title, message)`` for msgboxes (single-choice and a
+            refused selection). Defaults to a whiptail msgbox.
+        confirm: ``(title, message) -> bool`` for the single-relay step.
+            False goes back to Step 4 when that menu was shown, otherwise
+            aborts. Defaults to a whiptail yes/no.
 
     Returns:
         ``(flags, relays)``. ``relays`` is empty when the mode is ``none``.
@@ -752,101 +830,140 @@ def finalize_builder_install(
             "--with_mevboost selects MEV-Boost, which conflicts with "
             f"--builder_mode {explicit}."
         )
+    # A forced mode has no Step 4 to return to. Interactive menus can.
+    forced: Optional[str] = None
     if explicit:
-        mode = explicit
+        forced = explicit
     elif with_mevboost:
-        mode = BUILDER_MEVBOOST
+        forced = BUILDER_MEVBOOST
     elif with_builder_api:
         # External builder flags (CDVN). Do not invent a local sidecar or
         # an ePBS relay list the source node did not ask for.
-        mode = BUILDER_NONE
+        forced = BUILDER_NONE
     elif role not in _PROMPT_ROLES or (skip_prompts and csm):
         # Presets (and non-interactive CSM) take the role default. CSM never
         # falls through to local blocks just because prompts were skipped.
-        mode = default_builder_mode(
+        forced = default_builder_mode(
             role, network, vc_name, cc_name, charon=charon
         )
     elif skip_prompts:
-        mode = BUILDER_NONE
-    else:
-        choices = builder_mode_choices(
-            network,
-            vc_name,
-            cc_name,
-            charon=charon,
-            csm=csm,
-            validator_only=validator_only,
-        )
-        if len(choices) == 1:
-            mode = choices[0][0]
-            tell(
-                role,
-                (
-                    f"{choices[0][1]} is the only builder mode available, "
-                    "so it was selected."
-                ),
-            )
-        else:
-            if prompt_index is None:
-                raise BuilderModeError(
-                    "Builder mode prompt is required but no menu callback was provided."
-                )
-            if csm and validator_only:
-                title = "Lido CSM Validator Client Only"
-            elif validator_only:
-                title = "Validator Client Only"
-            else:
-                title = "Custom Setup"
-            subtitle = "Step 4: How should this node get blocks?"
-            if validator_only:
-                subtitle = (
-                    "How should this validator client get blocks?\n"
-                    "(Does not install a local MEV-Boost service)"
-                )
-            index = prompt_index([label for _mode, label in choices], title, subtitle)
-            if index < 0 or index >= len(choices):
-                raise BuilderModeCancelled("Builder mode selection cancelled.")
-            mode = choices[index][0]
-
-    validate_builder_mode(
-        mode,
-        role=role,
-        network=network,
-        vc_name=vc_name,
-        cc_name=cc_name,
-        charon=charon,
-        has_validator=has_validator,
-    )
-
-    updated["builder_mode"] = mode
-    updated["epbs"] = mode == BUILDER_EPBS
-    if validator_only:
-        updated["mevboost"] = False
-        updated["builder_api"] = mode in (BUILDER_MEVBOOST, BUILDER_EPBS) or bool(
-            with_builder_api
-        )
-    else:
-        updated["mevboost"] = mode == BUILDER_MEVBOOST
-        if mode in (BUILDER_MEVBOOST, BUILDER_EPBS) or with_builder_api:
-            updated["builder_api"] = True
-        else:
-            updated["builder_api"] = False
+        forced = BUILDER_NONE
 
     relays: List[dict] = []
-    # Validator-only MEV-Boost means the remote beacon node already runs the
-    # sidecar. Relays are collected only for a local sidecar or native ePBS.
-    if mode == BUILDER_EPBS or (mode == BUILDER_MEVBOOST and not validator_only):
+    while True:
+        showed_step4 = False
+        if forced is not None:
+            mode = forced
+        else:
+            choices = builder_mode_choices(
+                network,
+                vc_name,
+                cc_name,
+                charon=charon,
+                csm=csm,
+                validator_only=validator_only,
+            )
+            if len(choices) == 1:
+                mode = choices[0][0]
+                tell(
+                    role,
+                    (
+                        f"{choices[0][1]} is the only builder mode available, "
+                        "so it was selected."
+                    ),
+                )
+            else:
+                if prompt_index is None:
+                    raise BuilderModeError(
+                        "Builder mode prompt is required but no menu callback was provided."
+                    )
+                if csm and validator_only:
+                    title = "Lido CSM Validator Client Only"
+                elif validator_only:
+                    title = "Validator Client Only"
+                else:
+                    title = "Custom Setup"
+                subtitle = "Step 4: How should this node get blocks?"
+                if validator_only:
+                    subtitle = (
+                        "How should this validator client get blocks?\n"
+                        "(Does not install a local MEV-Boost service)"
+                    )
+                index = prompt_index(
+                    [label for _mode, label in choices], title, subtitle
+                )
+                if index < 0 or index >= len(choices):
+                    raise BuilderModeCancelled("Builder mode selection cancelled.")
+                showed_step4 = True
+                mode = choices[index][0]
+
+        validate_builder_mode(
+            mode,
+            role=role,
+            network=network,
+            vc_name=vc_name,
+            cc_name=cc_name,
+            charon=charon,
+            has_validator=has_validator,
+        )
+
+        updated["builder_mode"] = mode
+        updated["epbs"] = mode == BUILDER_EPBS
+        if validator_only:
+            updated["mevboost"] = False
+            updated["builder_api"] = mode in (BUILDER_MEVBOOST, BUILDER_EPBS) or bool(
+                with_builder_api
+            )
+        else:
+            updated["mevboost"] = mode == BUILDER_MEVBOOST
+            if mode in (BUILDER_MEVBOOST, BUILDER_EPBS) or with_builder_api:
+                updated["builder_api"] = True
+            else:
+                updated["builder_api"] = False
+
+        # Validator-only MEV-Boost means the remote beacon node already runs the
+        # sidecar. Relays are collected only for a local sidecar or native ePBS.
+        if mode != BUILDER_EPBS and not (
+            mode == BUILDER_MEVBOOST and not validator_only
+        ):
+            relays = []
+            break
+
         allow_local_blocks = (not csm) and role in (
             "Custom Setup",
             "Validator Client Only",
         )
-        relays = _select_relays(
-            network=network,
-            csm=csm,
-            mode=mode,
-            skip_prompts=skip_prompts,
-            allow_local_blocks=allow_local_blocks,
-            checklist=checklist or run_whiptail_checklist,
-            notice=tell,
-        )
+
+        def _checklist(title, prompt, items, _back=showed_step4):
+            if checklist is not None:
+                return checklist(title, prompt, items)
+            return run_whiptail_checklist(
+                title,
+                prompt,
+                items,
+                cancel_button="Back" if _back else "Cancel",
+            )
+
+        def _confirm(title, message, _back=showed_step4):
+            if confirm is not None:
+                return confirm(title, message)
+            return show_install_confirm(
+                title, message, no_button="Back" if _back else "Cancel"
+            )
+
+        try:
+            relays = _select_relays(
+                network=network,
+                csm=csm,
+                mode=mode,
+                skip_prompts=skip_prompts,
+                allow_local_blocks=allow_local_blocks,
+                checklist=_checklist,
+                notice=tell,
+                confirm=_confirm,
+                allow_back=showed_step4,
+            )
+            break
+        except BuilderModeBack:
+            continue
     return updated, relays

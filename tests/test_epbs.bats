@@ -5,10 +5,18 @@ setup() {
 }
 
 @test "setup type names Sepolia ePBS for solo and CSM" {
-  grep -q 'ePBS on Sepolia, MEV-Boost elsewhere' ethpillar.sh
-  grep -A2 '"Solo Staking Node"' ethpillar.sh | grep -q 'ePBS on Sepolia, MEV-Boost elsewhere'
-  grep -A2 '"Lido CSM Staking Node"' ethpillar.sh | grep -q 'ePBS on Sepolia, MEV-Boost elsewhere'
+  grep -q 'Sepolia ePBS, else MEV' ethpillar.sh
+  grep -A2 '"Solo Staking Node"' ethpillar.sh | grep -q 'Sepolia ePBS, else MEV'
+  grep -A2 '"Lido CSM Staking Node"' ethpillar.sh | grep -q 'Sepolia ePBS, else MEV'
   grep -A2 '"Failover Staking Node"' ethpillar.sh | grep -q 'MEV-Boost'
+}
+
+@test "setup type menu fits an 80-column terminal" {
+  # Width is computed from the terminal and capped at 78, not a fixed 104.
+  grep -A40 '^function installNode()' ethpillar.sh | grep -q 'width > 78'
+  ! grep -A40 '^function installNode()' ethpillar.sh | grep -q ' 104 '
+  # Descriptions stay short enough to sit beside the longest role tag.
+  grep -q 'EC+CC+VC; Sepolia ePBS, else MEV' ethpillar.sh
 }
 
 @test "MEV menu lists ePBS migration only for a supported VC" {

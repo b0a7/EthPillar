@@ -2394,18 +2394,21 @@ configureAutoStart(){
     echo
 }
 
-# Print relay URLs, one per line. Only https:// lines are relays.
-# mevboost.service when that unit exists; otherwise the validator client's
-# native ePBS list (python -m manage.epbs list-relays). Installer chatter
-# on stdout (pip, ohai) is not a relay.
+# A relay URL is https://<pubkey>@<host>. Documentation=https://docs.coincashew.com
+# and pip/ohai lines are not relays.
+_RELAY_URL_RE='https://[^[:space:]]+@[^[:space:]]+'
+
+# Print relay URLs, one per line.
+# mevboost.service when that unit exists (only -relay values, which contain @);
+# otherwise the validator client's native ePBS list (python -m manage.epbs list-relays).
 collectRelayUrls(){
     local mev_svc="${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}"
     local out=""
     if [[ -f "$mev_svc" ]]; then
-        out=$(tr -s ' ' '\n' < "$mev_svc" | grep -oE 'https://[^[:space:]]+' || true)
+        out=$(tr -s ' ' '\n' < "$mev_svc" | grep -oE "${_RELAY_URL_RE}" || true)
     else
         out=$(runEpbsCli list-relays) || return 1
-        out=$(printf '%s\n' "$out" | grep -E '^https://' || true)
+        out=$(printf '%s\n' "$out" | grep -E "^${_RELAY_URL_RE}$" || true)
     fi
     if [[ -n "$out" ]]; then
         printf '%s\n' "$out"
