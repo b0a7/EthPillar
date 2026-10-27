@@ -95,7 +95,15 @@ class BuilderModeBack(Exception):
 
     This is not an aborted install. Presets and an explicit ``--builder_mode``
     have no Step 4 to return to; those cancels stay :class:`BuilderModeCancelled`.
+
+    ``checked`` is the checklist state to restore if the operator picks the
+    same builder mode again. ``None`` means this step had no checklist
+    (single-relay confirm).
     """
+
+    def __init__(self, checked: Optional[Dict[str, bool]] = None) -> None:
+        super().__init__("back to builder mode")
+        self.checked = None if checked is None else dict(checked)
 
 
 def is_csm_role(role: str) -> bool:
@@ -414,19 +422,21 @@ def default_relay_selection(relays: Sequence[dict], *, csm: bool) -> List[dict]:
     return chosen
 
 
-def empty_selection_message(*, csm: bool, allow_local_blocks: bool) -> str:
-    """Explain an empty checklist using only options this install can take.
+def empty_selection_message(*, csm: bool, can_go_back: bool) -> str:
+    """Explain an empty checklist using only the buttons this screen has.
 
     Args:
         csm: Lido CSM role (local blocks are forbidden).
-        allow_local_blocks: True when the builder menu includes ``none``.
+        can_go_back: True only when Step 4 was shown, so Back returns there
+            and local blocks can be chosen. A forced ``--builder_mode`` and
+            presets have no Step 4; their message must not say "go back".
     """
     if csm:
         return (
             "Select at least one relay. Lido CSM requires at least one "
             "must-use-some relay. Local blocks are not available."
         )
-    if allow_local_blocks:
+    if can_go_back:
         return (
             "Select at least one relay, or go back and choose local blocks (none). "
             "An empty relay list is refused."
@@ -451,7 +461,8 @@ def validate_relay_selection(
         offered: Relays that were shown (CSM callers pass vetted relays only).
         selected_names: Tags the operator left checked, in any order.
         csm: Enforce must-use-some and reject non-vetted names.
-        allow_local_blocks: Mention local blocks only when that menu choice exists.
+        allow_local_blocks: Mention going back to local blocks only when Step 4
+            was shown. A forced ``--builder_mode`` passes False.
         mention_epbs_policy: Append the ePBS CSM assumption. False for
             MEV-Boost-only networks.
 
@@ -471,7 +482,7 @@ def validate_relay_selection(
     chosen = [relay for relay in offered if str(relay.get("name", "")) in chosen_names]
     if not chosen:
         raise BuilderModeError(
-            empty_selection_message(csm=csm, allow_local_blocks=allow_local_blocks)
+            empty_selection_message(csm=csm, can_go_back=allow_local_blocks)
         )
     if csm:
         must, may, _excluded = partition_csm_relays(offered)
@@ -679,6 +690,7 @@ def _select_relays(
     notice: Callable[[str, str], None],
     confirm: Callable[[str, str], bool],
     allow_back: bool,
+    initial_checked: Optional[Dict[str, bool]] = None,
 ) -> List[dict]:
     """Resolve the relay list for a builder mode.
 
@@ -726,8 +738,14 @@ def _select_relays(
                 raise BuilderModeBack()
             raise BuilderModeCancelled("Relay selection cancelled.")
         return [dict(only)]
-    checked = {str(relay.get("name", "")): True for relay in offered}
-    redraw = False
+    names = [str(relay.get("name", "")) for relay in offered]
+    if initial_checked is not None:
+        checked = {name: bool(initial_checked.get(name, True)) for name in names}
+        # A restored opt-out is not "all checked", so don't claim that it is.
+        redraw = any(not checked[name] for name in names)
+    else:
+        checked = {name: True for name in names}
+        redraw = False
     while True:
         prompt = relay_checklist_prompt(csm=csm, mode=mode, redraw=redraw)
         items = [
@@ -741,7 +759,7 @@ def _select_relays(
         selected = checklist(relay_checklist_title(mode), prompt, items)
         if selected is None:
             if allow_back:
-                raise BuilderModeBack()
+                raise BuilderModeBack(checked)
             raise BuilderModeCancelled("Relay selection cancelled.")
         try:
             return validate_relay_selection(
@@ -850,6 +868,8 @@ def finalize_builder_install(
         forced = BUILDER_NONE
 
     relays: List[dict] = []
+    # Checklist boxes to restore after Back, keyed by builder mode.
+    saved_checks: Dict[str, Dict[str, bool]] = {}
     while True:
         showed_step4 = False
         if forced is not None:
@@ -929,7 +949,10 @@ def finalize_builder_install(
             relays = []
             break
 
-        allow_local_blocks = (not csm) and role in (
+        # "Go back and choose local blocks" only when Step 4 was shown.
+        # A forced --builder_mode on Custom still has a Cancel button that
+        # exits; promising a way back there is wrong.
+        allow_local_blocks = showed_step4 and (not csm) and role in (
             "Custom Setup",
             "Validator Client Only",
         )
@@ -962,8 +985,11 @@ def finalize_builder_install(
                 notice=tell,
                 confirm=_confirm,
                 allow_back=showed_step4,
+                initial_checked=saved_checks.get(mode),
             )
             break
-        except BuilderModeBack:
+        except BuilderModeBack as exc:
+            if exc.checked is not None:
+                saved_checks[mode] = exc.checked
             continue
     return updated, relays

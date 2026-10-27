@@ -4,19 +4,23 @@ setup() {
   cd "$BATS_TEST_DIRNAME/.."
 }
 
-@test "setup type names Sepolia ePBS for solo and CSM" {
-  grep -q 'Sepolia ePBS, else MEV' ethpillar.sh
-  grep -A2 '"Solo Staking Node"' ethpillar.sh | grep -q 'Sepolia ePBS, else MEV'
-  grep -A2 '"Lido CSM Staking Node"' ethpillar.sh | grep -q 'Sepolia ePBS, else MEV'
+@test "setup type names Sepolia ePBS and MEV-Boost" {
+  grep -A2 '"Solo Staking Node"' ethpillar.sh | grep -q 'ePBS else MEV-Boost'
+  grep -A2 '"Lido CSM Staking Node"' ethpillar.sh | grep -q 'ePBS else MEV-Boost'
   grep -A2 '"Failover Staking Node"' ethpillar.sh | grep -q 'MEV-Boost'
+  # "else MEV" without Boost is the clipped wording this replaced.
+  ! grep -q 'else MEV"' ethpillar.sh
 }
 
 @test "setup type menu fits an 80-column terminal" {
   # Width is computed from the terminal and capped at 78, not a fixed 104.
   grep -A40 '^function installNode()' ethpillar.sh | grep -q 'width > 78'
   ! grep -A40 '^function installNode()' ethpillar.sh | grep -q ' 104 '
-  # Descriptions stay short enough to sit beside the longest role tag.
-  grep -q 'EC+CC+VC; Sepolia ePBS, else MEV' ethpillar.sh
+  # Longest tag is "Lido CSM Validator Client Only" (31). At width 76 the
+  # description column has room for this 30-character line, including MEV-Boost.
+  grep -q 'EC+CC+VC; ePBS else MEV-Boost' ethpillar.sh
+  local desc="EC+CC+VC; ePBS else MEV-Boost"
+  [ "${#desc}" -le 32 ]
 }
 
 @test "MEV menu lists ePBS migration only for a supported VC" {

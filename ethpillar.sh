@@ -1924,8 +1924,8 @@ function installNode(){
           if (( height < 14 )); then height=14; fi
           _ROLE=$(whiptail --title "Setup Type" --menu \
           "What would you like to set up?" "$height" "$width" 8 \
-          "Solo Staking Node"              "EC+CC+VC; Sepolia ePBS, else MEV" \
-          "Lido CSM Staking Node"          "Lido; Sepolia ePBS, else MEV" \
+          "Solo Staking Node"              "EC+CC+VC; ePBS else MEV-Boost" \
+          "Lido CSM Staking Node"          "Lido; ePBS else MEV-Boost" \
           "Full Node Only"                 "EC + CC only, no validator" \
           "Failover Staking Node"          "EC+CC+MEV-Boost, no validator" \
           "Validator Client Only"          "VC only, remote beacon node" \

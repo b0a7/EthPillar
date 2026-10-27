@@ -613,6 +613,84 @@ def test_custom_relay_cancel_returns_to_step_4() -> None:
     assert relays == []
 
 
+def test_forced_builder_mode_empty_selection_does_not_say_go_back() -> None:
+    """--builder_mode has no Step 4, so Cancel must not be described as Back."""
+    notices = []
+
+    def checklist(title, prompt, items):
+        if not notices:
+            return []
+        return ["Flashbots"]
+
+    flags, relays = finalize_builder_install(
+        role="Custom Setup",
+        network="hoodi",
+        vc_name="Lighthouse",
+        cc_name="Lighthouse",
+        flags=_flags(),
+        builder_mode="mevboost",
+        skip_prompts=False,
+        checklist=checklist,
+        notice=lambda _title, message: notices.append(message),
+    )
+    assert "go back" not in notices[0].lower()
+    assert "does not offer local blocks" in notices[0]
+    assert flags["builder_mode"] == BUILDER_MEVBOOST
+    assert [item["name"] for item in relays] == ["Flashbots"]
+    with pytest.raises(BuilderModeCancelled, match="cancelled"):
+        finalize_builder_install(
+            role="Custom Setup",
+            network="hoodi",
+            vc_name="Lighthouse",
+            cc_name="Lighthouse",
+            flags=_flags(),
+            builder_mode="mevboost",
+            skip_prompts=False,
+            checklist=lambda *_args: None,
+            notice=lambda *_args: None,
+        )
+
+
+def test_back_to_step4_restores_the_relay_checks() -> None:
+    """Choosing the same builder mode again keeps the boxes from before Back."""
+    menus = {"n": 0}
+    seen = []
+
+    def prompt_index(labels, title, subtitle):
+        menus["n"] += 1
+        return labels.index("MEV-Boost")
+
+    def checklist(title, prompt, items):
+        state = {item[0]: item[2] for item in items}
+        seen.append((prompt, state))
+        if len(seen) == 1:
+            assert state["Titan Relay"] is True
+            return []
+        if len(seen) == 2:
+            assert all(checked is False for checked in state.values())
+            return None
+        assert all(checked is False for checked in state.values())
+        assert "previous selection is kept" in prompt
+        assert "All are checked" not in prompt
+        return ["Flashbots", "Aestus"]
+
+    flags, relays = finalize_builder_install(
+        role="Custom Setup",
+        network="hoodi",
+        vc_name="Lighthouse",
+        cc_name="Lighthouse",
+        flags=_flags(),
+        skip_prompts=False,
+        prompt_index=prompt_index,
+        checklist=checklist,
+        notice=lambda *_args: None,
+    )
+    assert menus["n"] == 2
+    assert len(seen) == 3
+    assert flags["builder_mode"] == BUILDER_MEVBOOST
+    assert [item["name"] for item in relays] == ["Flashbots", "Aestus"]
+
+
 def test_preset_relay_cancel_still_aborts() -> None:
     with pytest.raises(BuilderModeCancelled, match="cancelled"):
         finalize_builder_install(
