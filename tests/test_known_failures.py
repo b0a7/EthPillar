@@ -22,14 +22,14 @@ from tests.integration.known_failures import (
 )
 
 
-def test_registry_has_exactly_two_initial_entries():
+def test_registry_has_exactly_three_initial_entries():
     entries = load_registry()
     ids = sorted(e.id for e in entries)
     assert ids == [
+        "caplin-builder-503-panic",
         "grandine-2.0.6-reports-2.0.5",
         "nimbus-hoodi-genesis-buffer-limit",
     ]
-
 
 def test_nimbus_hoodi_log_signature_matches():
     # Harness now puts the journal ERR on the ❌ summary line itself.
