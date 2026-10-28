@@ -43,10 +43,15 @@ entries:
       (upstream packaging / version-report bug).
 
   - id: caplin-builder-503-panic
-    cell: Caplin-Erigon-ePBS-Migration-SEPOLIA
-    client: erigon
-    signature: 'panic: cannot connect to builder client'
+    cells:
+      - Caplin-Erigon-ePBS-Migration-SEPOLIA
+    clients:
+      - erigon
+    match:
+      kind: log_substring
+      pattern: "panic: cannot connect to builder client"
+    added: "2026-10-28"
     reason: >
-        Caplin panics when mev-boost returns 503 "all relays are unavailable"
+      Caplin panics when mev-boost returns 503 "all relays are unavailable"
       (cl/beacon/builder/client.go:107). Intermittent in CI when Sepolia relays
-      are empty.      
+      are empty.
