@@ -2612,7 +2612,9 @@ def export_migration(
         OSError: If the output directory or file cannot be written.
     """
     fs = fs or EpbsFilesystem()
-    relays = _load_relays(fs)
+    # Prefer mevboost.service. A native ePBS install has no sidecar unit;
+    # export the VC relay list instead of failing closed.
+    relays = load_relays_for_tooling(fs)
     payload = migration_payload(relays, hostname=hostname)
     path = output or os.path.join(os.getcwd(), default_migration_filename(hostname))
     directory = os.path.dirname(path)
@@ -2939,6 +2941,256 @@ def _apply_vc_relays(
             plan.warnings.append(
                 "Grandine is integrated; there is no separate validator.service."
             )
+
+
+def gwei_min_bid_to_eth(gwei: str) -> str:
+    """Convert an integer-Gwei min-bid back to a MEV-Boost ETH string.
+
+    Args:
+        gwei: Gwei amount written by prepare (``6000000`` for ``0.006`` ETH).
+
+    Returns:
+        ETH decimal string, or ``""`` when *gwei* is not a non-negative number.
+    """
+    try:
+        value = Decimal(str(gwei).strip())
+    except (InvalidOperation, AttributeError):
+        return ""
+    if value < 0:
+        return ""
+    eth = value / GWEI_PER_ETH
+    text = format(eth, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _urls_from_builder_entries(entries: object) -> List[str]:
+    """Return non-sidecar ``url`` strings from a builders list."""
+    urls: List[str] = []
+    if not isinstance(entries, list):
+        return urls
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("url")
+        if isinstance(url, str) and url.strip() and not is_sidecar_url(url):
+            urls.append(url.strip())
+    return urls
+
+
+def _split_csv_urls(raw: str) -> List[str]:
+    """Split a comma-separated URL flag, dropping sidecar URLs."""
+    return [
+        part.strip()
+        for part in (raw or "").split(",")
+        if part.strip() and not is_sidecar_url(part.strip())
+    ]
+
+
+def parse_vc_relays(fs: EpbsFilesystem) -> RelaysConfig:
+    """Read ePBS relay URLs (and min-bid, as ETH) from the validator client.
+
+    Used when ``mevboost.service`` is absent: a native ePBS install, or a
+    node that already completed migration. Min-bid flags stored as integer
+    Gwei are converted back to ETH so export matches :class:`RelaysConfig`.
+
+    Args:
+        fs: IO adapter.
+
+    Returns:
+        Relays configured on the VC.
+
+    Raises:
+        EpbsError: No VC unit exists, the client has no relay list, or the
+            list is empty.
+    """
+    vc_name, _bn_name, mode = detect_clients(fs)
+    if mode == "none" or not vc_name:
+        raise EpbsError(
+            "No relays to read: mevboost.service is absent and no validator "
+            "client unit was found."
+        )
+    if vc_name == "Grandine" or mode == "integrated_grandine":
+        raise EpbsError("Grandine has no ePBS relay list to read.")
+
+    if mode == "integrated_caplin" or vc_name == "Erigon-Caplin":
+        vc_key = "execution"
+    else:
+        vc_key = "validator"
+    _path, content = _read_required_unit(fs, vc_key)
+    unit = parse_unit(content)
+    args = normalize_cli_args(unit.exec_args)
+    urls: List[str] = []
+    min_bid = ""
+
+    if vc_name == "Prysm":
+        for raw in get_flag_values(args, "--builder-urls"):
+            urls.extend(_split_csv_urls(raw))
+        gwei = get_flag_value(args, "--builder-min-bid")
+        if gwei:
+            min_bid = gwei_min_bid_to_eth(gwei)
+        if not urls:
+            data = _load_prysm_settings(fs, content) or {}
+            default = data.get("default_config") if isinstance(data, dict) else None
+            builder = default.get("builder") if isinstance(default, dict) else None
+            if isinstance(builder, dict):
+                urls.extend(_urls_from_builder_entries(builder.get("builders")))
+                if not min_bid and builder.get("min_bid") not in (None, ""):
+                    min_bid = gwei_min_bid_to_eth(str(builder.get("min_bid")))
+    elif vc_name == "Lodestar":
+        urls.extend(_split_csv_urls(get_flag_value(args, "--builder.urls")))
+        gwei = get_flag_value(args, "--builder.minBid")
+        if gwei:
+            min_bid = gwei_min_bid_to_eth(gwei)
+    elif vc_name == "Teku":
+        urls.extend(_split_csv_urls(get_flag_value(args, "--Xbuilder-urls")))
+        gwei = get_flag_value(args, "--Xbuilder-min-bid")
+        if gwei:
+            min_bid = gwei_min_bid_to_eth(gwei)
+    elif vc_name == "Nimbus":
+        for raw in get_flag_values(args, "--payload-builder-url"):
+            if raw and not is_sidecar_url(raw):
+                urls.append(raw.strip())
+        gwei = get_flag_value(args, "--builder-min-bid")
+        if gwei:
+            min_bid = gwei_min_bid_to_eth(gwei)
+    elif vc_name == "Lighthouse":
+        path = lighthouse_builders_file(content, fs.lighthouse_builders_path)
+        raw = fs.read_text(path) or ""
+        loaded = _load_yaml_mapping(raw, "builder_definitions.yml") if raw.strip() else {}
+        if isinstance(loaded, dict):
+            urls.extend(_urls_from_builder_entries(loaded.get("builders")))
+            if loaded.get("min_bid") not in (None, ""):
+                min_bid = gwei_min_bid_to_eth(str(loaded.get("min_bid")))
+    elif vc_name == "Erigon-Caplin":
+        loaded = _load_caplin_builders(fs) or {}
+        urls.extend(_urls_from_builder_entries(loaded.get("builders")))
+        if loaded.get("min_bid") not in (None, ""):
+            min_bid = gwei_min_bid_to_eth(str(loaded.get("min_bid")))
+    else:
+        raise EpbsError(
+            f"{vc_name} does not support an ePBS relay list. "
+            "Refusing to pretend relays were found."
+        )
+
+    if not urls:
+        raise EpbsError(
+            f"No ePBS relay URLs found on the {vc_name} validator client."
+        )
+    return RelaysConfig(urls=urls, min_bid=min_bid, network=unit.network)
+
+
+def load_relays_for_tooling(fs: Optional[EpbsFilesystem] = None) -> RelaysConfig:
+    """Return relays from MEV-Boost, or from the VC when that unit is absent.
+
+    Registration, latency, and export checks use this. :func:`prepare` still
+    reads ``mevboost.service`` only, via :func:`_load_relays`.
+
+    Args:
+        fs: IO adapter; production defaults if omitted.
+
+    Returns:
+        Relay URLs and optional min-bid.
+
+    Raises:
+        EpbsError: Neither MEV-Boost nor the VC has a relay list.
+    """
+    fs = fs or EpbsFilesystem()
+    path = fs.unit_path("mevboost")
+    if fs.exists(path):
+        content = fs.read_text(path) or ""
+        cfg = parse_mevboost_relays(content)
+        if cfg.urls:
+            return cfg
+    return parse_vc_relays(fs)
+
+
+def _fresh_install_skip_reason(plan: MigrationPlan) -> str:
+    """Return why a fresh ePBS apply did not write relays, or ``""``.
+
+    Version-gate skips and placeholder clients are failures. An idempotent
+    "nothing to change" result is success.
+    """
+    if plan.support != "full":
+        return f"{plan.client} support is {plan.support or 'unknown'}"
+    client_actions = [
+        action
+        for action in plan.actions
+        if action.target not in ("mevboost min-bid", "relays")
+    ]
+    if not client_actions:
+        return "no validator relay changes were planned"
+    for action in client_actions:
+        detail = (action.detail or "").lower()
+        target = (action.target or "").lower()
+        if "skipped" in detail or "placeholder" in target or "no-op" in detail:
+            return f"{action.target}: {action.detail}"
+    return ""
+
+
+def apply_fresh_install_relays(
+    relays: RelaysConfig,
+    fs: Optional[EpbsFilesystem] = None,
+) -> MigrationPlan:
+    """Write *relays* onto a freshly installed validator client.
+
+    Does not install or require ``mevboost.service`` and does not add beacon
+    node sidecar flags. Reuses :func:`_apply_vc_relays` with ``apply=True``
+    and ``min_bid`` from the caller (install uses ``MEV_MIN_BID``). A client
+    or binary that would only skip prepare raises :class:`EpbsError`.
+
+    Args:
+        relays: Selected relay URLs, ETH min-bid, and network.
+        fs: IO adapter; production defaults if omitted.
+
+    Returns:
+        The applied plan.
+
+    Raises:
+        EpbsError: No VC, empty relay list, Charon is installed, the client
+            is not ``full`` support, or the version gate skipped the write.
+    """
+    fs = fs or EpbsFilesystem()
+    if charon_installed(fs):
+        raise EpbsError(
+            "Obol Charon has no ePBS support yet. Refusing to write validator "
+            "relays that would bypass Charon."
+        )
+    if not _non_sidecar_urls(relays.urls):
+        raise EpbsError(
+            "Native ePBS requires at least one non-sidecar relay URL. "
+            "Refusing to install with an empty builder list."
+        )
+    vc_name, _bn_name, mode = detect_clients(fs)
+    if mode == "none" or not vc_name:
+        raise EpbsError(
+            "Native ePBS requires a validator client unit, but none was found."
+        )
+    level = support_level(vc_name)
+    if level != "full":
+        raise EpbsError(
+            f"{vc_name} does not support native ePBS (support level: {level}). "
+            "Refusing to skip relay setup."
+        )
+    plan = MigrationPlan(
+        command="install",
+        client=vc_name,
+        support=level,
+        notes=SUPPORT_NOTES.get(vc_name, ""),
+    )
+    _apply_vc_relays(
+        fs, relays, True, plan, vc_name, mode, relays_source="install"
+    )
+    plan.applied = True
+    skipped = _fresh_install_skip_reason(plan)
+    if skipped:
+        warning = "; ".join(plan.warnings)
+        message = f"Native ePBS did not write relays ({skipped})."
+        if warning:
+            message = f"{message} {warning}"
+        raise EpbsError(message)
+    return plan
 
 
 def prepare(fs: Optional[EpbsFilesystem] = None, apply: bool = False) -> MigrationPlan:
@@ -3351,6 +3603,32 @@ def complete(
     return plan
 
 
+def bn_sidecar_status(unit_path: str, content: str, bn_name: str) -> str:
+    """Describe beacon-node sidecar flags for ``manage.epbs status``.
+
+    ``present`` when a local MEV-Boost URL is still on the unit.
+    ``already removed`` when a ``.bak.epbs.`` backup shows complete stripped
+    flags that used to be there. ``not configured`` on a fresh install that
+    never had the sidecar (native ePBS, or MEV was never enabled).
+
+    Args:
+        unit_path: Consensus or execution unit path.
+        content: Current unit text.
+        bn_name: Beacon-node client name for :func:`strip_bn_sidecar`.
+    """
+    if strip_bn_sidecar(content, bn_name) != content:
+        return "present"
+    directory = os.path.dirname(unit_path) or "."
+    prefix = os.path.basename(unit_path) + ".bak.epbs."
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        names = []
+    if any(name.startswith(prefix) for name in names):
+        return "already removed"
+    return "not configured"
+
+
 def status(fs: Optional[EpbsFilesystem] = None) -> str:
     """Human-readable snapshot of ePBS migration state.
 
@@ -3476,12 +3754,8 @@ def status(fs: Optional[EpbsFilesystem] = None) -> str:
             )
     if bn_name:
         bn_key = _bn_service_key(bn_name)
-        _, bn_content = _read_required_unit(fs, bn_key)
-        stripped = strip_bn_sidecar(bn_content, bn_name)
-        lines.append(
-            "BN sidecar flags: "
-            + ("present" if stripped != bn_content else "already removed")
-        )
+        bn_path, bn_content = _read_required_unit(fs, bn_key)
+        lines.append("BN sidecar flags: " + bn_sidecar_status(bn_path, bn_content, bn_name))
     charon_path = fs.unit_path("charon")
     if fs.exists(charon_path):
         ch_content = fs.read_text(charon_path) or ""
@@ -3537,10 +3811,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument(
         "command",
-        choices=("status", "prepare", "complete", "export", "import"),
+        choices=("status", "prepare", "complete", "export", "import", "list-relays"),
         help=(
             "status | prepare (before fork) | complete (after fork) | "
-            "export (MEV host) | import (VC/Charon host)"
+            "export (MEV host, or the VC when MEV-Boost is absent) | "
+            "import (VC/Charon host) | list-relays (one URL per line)"
         ),
     )
     parser.add_argument(
@@ -3618,6 +3893,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(json.dumps({"status": text}))
             else:
                 print(text, end="")
+            return 0
+        if args.command == "list-relays":
+            cfg = load_relays_for_tooling(fs)
+            if not cfg.urls:
+                raise EpbsError(
+                    "No relay URLs found on mevboost.service or the validator client."
+                )
+            for url in cfg.urls:
+                print(url)
             return 0
         if args.command == "export":
             out = args.output or args.path

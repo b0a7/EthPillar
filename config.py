@@ -28,6 +28,31 @@ hoodi_relay_options = [
     {'name': 'Aestus', 'url': 'https://0x98f0ef62f00780cf8eb06701a7d22725b9437d4768bb19b363e882ae87129945ec206ec2dc16933f31d983f8225772b6@hoodi.aestus.live'}
 ]
 
+# Native ePBS at install time. True only where Gloas is already live.
+# Mainnet and Hoodi stay false while Glamsterdam is postponed. Holesky is not
+# a Gloas target. Ephemery resets and is not treated as forked here.
+# The post-fork MEV-Boost → ePBS migration remains the path for networks
+# that are still false; install does not migrate them.
+EPBS_ENABLED_BY_NETWORK = {
+    "mainnet": False,
+    "hoodi": False,
+    "sepolia": True,
+    "holesky": False,
+    "ephemery": False,
+}
+
+
+def network_epbs_enabled(network: str) -> bool:
+    """Return True when fresh installs may offer native ePBS on *network*.
+
+    Args:
+        network: Network slug (case-insensitive). Unknown networks are false.
+
+    Returns:
+        The :data:`EPBS_ENABLED_BY_NETWORK` flag, or False when unset.
+    """
+    return bool(EPBS_ENABLED_BY_NETWORK.get((network or "").strip().lower(), False))
+
 # Checkpoint-Sync Data
 #
 # Public endpoints from the community-maintained list:

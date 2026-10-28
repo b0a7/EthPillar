@@ -13,6 +13,7 @@ from contextlib import ExitStack
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from deploy.builder_mode import BuilderModeError
 from deploy.orchestrator import (
     resolve_role_flags, apply_csm_overrides,
     get_combo_menu, get_vc_menu, get_ec_menu, get_cc_menu,
@@ -49,12 +50,12 @@ MOCK_ENV = {}
 
 class TestResolveRoleFlags:
     @pytest.mark.parametrize("role,expected", [
-        ("Solo Staking Node",              {"mevboost": True,  "builder_api": True,  "validator": True,  "validator_only": False, "node_only": False}),
-        ("Lido CSM Staking Node",          {"mevboost": True,  "builder_api": True,  "validator": True,  "validator_only": False, "node_only": False}),
-        ("Full Node Only",                 {"mevboost": False, "builder_api": False, "validator": False, "validator_only": False, "node_only": True}),
-        ("Validator Client Only",          {"mevboost": False, "builder_api": False, "validator": True,  "validator_only": True,  "node_only": False}),
-        ("Lido CSM Validator Client Only", {"mevboost": False, "builder_api": False, "validator": True,  "validator_only": True,  "node_only": False}),
-        ("Failover Staking Node",          {"mevboost": True,  "builder_api": True,  "validator": False, "validator_only": False, "node_only": False}),
+        ("Solo Staking Node",              {"mevboost": True,  "epbs": False, "builder_api": True,  "validator": True,  "validator_only": False, "node_only": False}),
+        ("Lido CSM Staking Node",          {"mevboost": True,  "epbs": False, "builder_api": True,  "validator": True,  "validator_only": False, "node_only": False}),
+        ("Full Node Only",                 {"mevboost": False, "epbs": False, "builder_api": False, "validator": False, "validator_only": False, "node_only": True}),
+        ("Validator Client Only",          {"mevboost": False, "epbs": False, "builder_api": False, "validator": True,  "validator_only": True,  "node_only": False}),
+        ("Lido CSM Validator Client Only", {"mevboost": False, "epbs": False, "builder_api": True,  "validator": True,  "validator_only": True,  "node_only": False}),
+        ("Failover Staking Node",          {"mevboost": True,  "epbs": False, "builder_api": True,  "validator": False, "validator_only": False, "node_only": False}),
     ])
     def test_role_flags(self, role, expected):
         """Verify that roles correctly map to internal installation flags."""
@@ -255,6 +256,7 @@ class TestRunInstallRouting:
             pr_vc = stack.enter_context(patch('deploy.prysm.install_prysm_vc', return_value="p"))
             
             mv_dl = stack.enter_context(patch('deploy.mevboost.install_mevboost', return_value=("v1", "p")))
+            epbs_apply = stack.enter_context(patch('deploy.orchestrator.apply_install_epbs'))
             ch_dl = stack.enter_context(patch('deploy.charon.install_charon', return_value=("v1", "p")))
             ch_json = stack.enter_context(patch('deploy.charon.patch_json_requests_feature', return_value=False))
             w3s = stack.enter_context(patch('deploy.web3signer.install_web3signer', return_value=("26.9.0", "p")))
@@ -274,7 +276,7 @@ class TestRunInstallRouting:
                 'ls_bn': ls_bn, 'ls_vc': ls_vc, 'ls_dl': ls_dl,
                 'gr_bn': gr_bn, 'gr_dl': gr_dl,
                 'pr_bn': pr_bn, 'pr_vc': pr_vc, 'pr_dl': pr_dl,
-                'mev': mv_dl, 'charon': ch_dl, 'web3signer': w3s,
+                'mev': mv_dl, 'epbs': epbs_apply, 'charon': ch_dl, 'web3signer': w3s,
                 '_charon_json': ch_json, '_w3s_defs': w3s_defs,
             }
     def _verify_only_called(self, mocks, expected_keys):
@@ -430,6 +432,53 @@ class TestRunInstallRouting:
         call_kwargs = mocks['gr_bn'].call_args
         assert mev_params_expected in call_kwargs.kwargs.get('mev_parameters', ''), \
             f"Expected MEV params '{mev_params_expected}' in grandine install, got: {call_kwargs}"
+
+    def test_sepolia_native_epbs_skips_mevboost_sidecar(self):
+        """Fresh ePBS writes VC relays and does not install the MEV-Boost sidecar."""
+        relays = [{
+            "name": "Flashbots",
+            "url": "https://0xabc@boost-relay-sepolia.flashbots.net",
+        }]
+        mocks = self._run(
+            "Custom Setup",
+            "Reth",
+            "Lighthouse",
+            "Lighthouse",
+            flags_override={
+                "validator": True,
+                "mevboost": False,
+                "epbs": True,
+                "builder_api": True,
+            },
+            params_override={"relays": relays},
+            network="sepolia",
+        )
+        self._verify_only_called(mocks, ["reth", "lh_dl", "lh_bn", "lh_vc", "epbs"])
+        assert mocks["lh_bn"].call_args.kwargs.get("mev_parameters", "") == ""
+        assert "--builder-proposals" in mocks["lh_vc"].call_args.args[6]
+        assert "18550" not in mocks["lh_vc"].call_args.args[6]
+        mocks["epbs"].assert_called_once()
+        assert mocks["epbs"].call_args.args[0] == "sepolia"
+        assert mocks["epbs"].call_args.args[1] == relays
+        # Min-bid is the resolved MEV_MIN_BID (empty in this mock environment).
+        assert mocks["epbs"].call_args.args[2] == ""
+
+    def test_native_epbs_refuses_charon(self):
+        with pytest.raises(BuilderModeError, match="Charon"):
+            self._run(
+                "Custom Setup",
+                "Reth",
+                "Lighthouse",
+                "Lighthouse",
+                flags_override={
+                    "validator": True,
+                    "mevboost": False,
+                    "epbs": True,
+                    "builder_api": True,
+                    "charon": True,
+                },
+                network="sepolia",
+            )
 
     def test_prysm_sepolia_installs_classic_mev(self):
         """Sepolia installs the same classic Prysm MEV flags as other networks."""

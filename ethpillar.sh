@@ -1907,17 +1907,31 @@ function checkV1StakingSetup(){
 # If no execution, consensus or validator service and no Aztec install exist, start install workflow
 function installNode(){
   if [[ ! -f /etc/systemd/system/consensus.service && ! -f /etc/systemd/system/execution.service && ! -f /etc/systemd/system/validator.service && ! -d /opt/ethpillar/aztec ]]; then
-          local _ROLE
+          local _ROLE cols lines width height
+          # Stay inside an 80x24 terminal. Width is capped at 78 so the frame
+          # fits; descriptions are short enough to sit beside the longest tag.
+          cols=$(tput cols 2>/dev/null || echo 80)
+          lines=$(tput lines 2>/dev/null || echo 24)
+          cols=${cols%%[!0-9]*}
+          lines=${lines%%[!0-9]*}
+          [[ -n "$cols" ]] || cols=80
+          [[ -n "$lines" ]] || lines=24
+          width=$(( cols - 4 ))
+          if (( width > 78 )); then width=78; fi
+          if (( width < 70 )); then width=70; fi
+          height=$(( lines - 6 ))
+          if (( height > 18 )); then height=18; fi
+          if (( height < 14 )); then height=14; fi
           _ROLE=$(whiptail --title "Setup Type" --menu \
-          "What would you like to set up?" 18 85 8 \
-          "Solo Staking Node"              "Full stack: EC + CC + VC + MEV-Boost" \
-          "Lido CSM Staking Node"          "Lido CSM: EC + CC + VC + MEV-Boost" \
+          "What would you like to set up?" "$height" "$width" 8 \
+          "Solo Staking Node"              "EC+CC+VC; ePBS else MEV-Boost" \
+          "Lido CSM Staking Node"          "Lido; ePBS else MEV-Boost" \
           "Full Node Only"                 "EC + CC only, no validator" \
-          "Failover Staking Node"          "EC + CC + MEV-Boost, ready for failover" \
-          "Validator Client Only"          "VC only, connects to remote beacon node" \
-          "Lido CSM Validator Client Only" "Lido CSM VC, connects to remote beacon node" \
-          "Custom Setup"                   "Pick each component individually" \
-          "Aztec L2 Sequencer"             "by Aztec Labs" \
+          "Failover Staking Node"          "EC+CC+MEV-Boost, no validator" \
+          "Validator Client Only"          "VC only, remote beacon node" \
+          "Lido CSM Validator Client Only" "CSM VC, remote beacon node" \
+          "Custom Setup"                   "Pick clients and builder mode" \
+          "Aztec L2 Sequencer"             "Aztec L2 sequencer" \
           3>&1 1>&2 2>&3)
           if [ $? -gt 0 ]; then # user pressed <Cancel> button
             return 1

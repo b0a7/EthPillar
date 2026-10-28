@@ -133,6 +133,11 @@ epbs_tests = [
         f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Nimbus --vc Nimbus --network SEPOLIA "
         "--mev --config 'Custom Setup' --test-epbs",
     ),
+    (
+        "Lighthouse-Reth-ePBS-Fresh-SEPOLIA",
+        f"{RUN_TEST} deploy/deploy-node.py --ec Reth --cc Lighthouse --vc Lighthouse "
+        "--network SEPOLIA --builder-mode epbs --config 'Custom Setup'",
+    ),
 ]
 
 def parse_clients_from_cmd(cmd: str) -> Tuple[Optional[str], Optional[str]]:

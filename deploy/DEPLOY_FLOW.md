@@ -46,10 +46,11 @@ graph TD
     *   If Custom: Pick EC, then CC, then VC.
     *   If Predefined: Pick from `PREDEFINED_COMBOS`.
     *   **Obol Charon DV**: listed as a VC choice. Selecting it sets `flags['charon']=True` and re-prompts for the signer VC (no Charon, no Grandine integrated). CLI: `--with_charon --vc Lodestar`.
-4.  **Parameter Collection**: JWT, Fee Recipient, Graffiti, Sync URLs.
-5.  **Execution**:
+4.  **Builder mode** (Custom Setup step 4, and preset defaults): `mevboost` (local MEV-Boost sidecar), `epbs` (native VC relays, no sidecar — Sepolia only, and only when the VC's `support_level` is `full`), or `none` (local blocks). Unforked networks keep MEV-Boost vs none. `--builder_mode mevboost|epbs|none` for `--skip_prompts`; `--with_mevboost` is an alias for `mevboost`. Both builder modes then show a whiptail relay checklist (`config.py` `*_relay_options`, all checked). Lido CSM locks MEV on and filters that list to the v26 allowlist. Preset Solo/CSM default to ePBS on a forked network when the VC supports it, otherwise MEV-Boost.
+5.  **Parameter Collection**: JWT, Fee Recipient, Graffiti, Sync URLs.
+6.  **Execution**:
     *   `common.setup_node()`: apt packages + JWT secret (users/groups are created per client by `common.setup_client_user_and_dir()`).
-    *   MEV-Boost installation.
+    *   MEV-Boost installation when the builder mode is `mevboost` (skipped for native ePBS; relays are applied with `manage.epbs.apply_fresh_install_relays`).
     *   Execution Client installation (download binary + systemd).
     *   Consensus Client installation.
     *   Charon installation (`deploy/charon.py`) when `flags['charon']`: upstream BN REST → Charon; VC beacon flag → `http://127.0.0.1:3600`. Nimbus BN → Charon `--feature-set-enable=json_requests`. Teku BN → `--validators-graffiti-client-append-format=DISABLED`.

@@ -9,3 +9,4 @@ def test_nimbus_nethermind_hoodi_and_sepolia_are_generated():
     assert "Lighthouse-Reth_HOODI" in names
     assert "Teku-Besu_HOODI" in names
     assert "Teku-VC-Only-HOODI" in names
+    assert "Lighthouse-Reth-ePBS-Fresh-SEPOLIA" in names

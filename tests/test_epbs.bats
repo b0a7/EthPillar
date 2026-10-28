@@ -4,6 +4,25 @@ setup() {
   cd "$BATS_TEST_DIRNAME/.."
 }
 
+@test "setup type names Sepolia ePBS and MEV-Boost" {
+  grep -A2 '"Solo Staking Node"' ethpillar.sh | grep -q 'ePBS else MEV-Boost'
+  grep -A2 '"Lido CSM Staking Node"' ethpillar.sh | grep -q 'ePBS else MEV-Boost'
+  grep -A2 '"Failover Staking Node"' ethpillar.sh | grep -q 'MEV-Boost'
+  # "else MEV" without Boost is the clipped wording this replaced.
+  ! grep -q 'else MEV"' ethpillar.sh
+}
+
+@test "setup type menu fits an 80-column terminal" {
+  # Width is computed from the terminal and capped at 78, not a fixed 104.
+  grep -A40 '^function installNode()' ethpillar.sh | grep -q 'width > 78'
+  ! grep -A40 '^function installNode()' ethpillar.sh | grep -q ' 104 '
+  # Longest tag is "Lido CSM Validator Client Only" (31). At width 76 the
+  # description column has room for this 30-character line, including MEV-Boost.
+  grep -q 'EC+CC+VC; ePBS else MEV-Boost' ethpillar.sh
+  local desc="EC+CC+VC; ePBS else MEV-Boost"
+  [ "${#desc}" -le 32 ]
+}
+
 @test "MEV menu lists ePBS migration only for a supported VC" {
   grep -q 'ePBS migration' ethpillar.sh
   grep -q 'submenuEPBS' ethpillar.sh
@@ -51,6 +70,22 @@ setup() {
   grep -q '200000000' docs/ePBS-migration.md
   grep -q 'staging window' docs/ePBS-migration.md
   grep -q 'After Gloas Fork' docs/ePBS-migration.md
+}
+
+@test "relay checks read the VC when mevboost.service is absent" {
+  grep -q '^collectRelayUrls()' functions.sh
+  grep -q '^loadRelayUrls()' functions.sh
+  grep -q 'list-relays' functions.sh
+  grep -q 'list-relays' manage/epbs.py
+  grep -A20 '^checkRelayRegistration()' functions.sh | grep -q 'loadRelayUrls'
+  grep -A25 '^checkRelayLatency()' functions.sh | grep -q 'loadRelayUrls'
+}
+
+@test "integration matrix has a Sepolia fresh-install ePBS case" {
+  grep -q 'Lighthouse-Reth-ePBS-Fresh-SEPOLIA' tests/integration/run_docker_tests.py
+  grep -q -- '--builder-mode epbs' tests/integration/run_docker_tests.py
+  grep -q 'verify_native_epbs_install' tests/integration/run_inside_docker.py
+  grep -q -- '--builder_mode' deploy/deploy-node.py
 }
 
 @test "integration matrix has Prysm, Lodestar, Caplin, Teku, Lighthouse, and Nimbus ePBS migration cases" {

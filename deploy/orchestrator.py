@@ -54,29 +54,70 @@ PREDEFINED_COMBOS = {
     'Caplin-Erigon':    ('Erigon', 'Caplin'),
 }
 
-def resolve_role_flags(role: str, network: str) -> Dict[str, bool]:
-    """Pure function: resolve role and network to capability flags."""
+def resolve_role_flags(
+    role: str,
+    network: str,
+    *,
+    vc_name: Optional[str] = None,
+    cc_name: Optional[str] = None,
+    charon: bool = False,
+) -> Dict[str, bool]:
+    """Resolve a preset role to capability flags, including builder mode.
+
+    Solo and Lido CSM staking nodes use MEV-Boost on networks that are not
+    ePBS-enabled yet. On an enabled network they use native ePBS when
+    *vc_name* (or integrated Caplin) supports it, and MEV-Boost when it does
+    not (Grandine, Charon). Failover has no validator client, so it stays on
+    MEV-Boost. CSM validator-only keeps MEV mandatory without a local
+    sidecar. Pass *vc_name* once the client is known; without it, a forked
+    network stays on MEV-Boost because support cannot be checked.
+
+    Args:
+        role: Install role label.
+        network: Network slug.
+        vc_name: Validator client, when already chosen.
+        cc_name: Consensus client, when already chosen.
+        charon: True when Obol Charon is part of the install.
+
+    Returns:
+        Flag dict. ``epbs`` and ``mevboost`` are mutually exclusive.
+        ``builder_api`` is true whenever either builder path is on.
+    """
+    from deploy.builder_mode import BUILDER_EPBS, BUILDER_MEVBOOST, default_builder_mode
+
     flags = {
         "mevboost": False,
+        "epbs": False,
         "builder_api": False,
         "validator": False,
         "validator_only": False,
-        "node_only": False
+        "node_only": False,
     }
 
     if role == "Solo Staking Node" or role == "Lido CSM Staking Node":
-        flags["mevboost"] = True
-        flags["builder_api"] = True
         flags["validator"] = True
     elif role == "Full Node Only":
         flags["node_only"] = True
     elif role == "Validator Client Only" or role == "Lido CSM Validator Client Only":
-        flags["mevboost"] = False
         flags["validator"] = True
         flags["validator_only"] = True
     elif role == "Failover Staking Node":
-        flags["mevboost"] = True
+        pass
+
+    mode = default_builder_mode(
+        role, network, vc_name, cc_name, charon=charon
+    )
+    if mode == BUILDER_EPBS:
+        flags["epbs"] = True
         flags["builder_api"] = True
+    elif mode == BUILDER_MEVBOOST:
+        if flags["validator_only"]:
+            # CSM validator-only: MEV is mandatory, but the sidecar stays on
+            # the remote beacon node.
+            flags["builder_api"] = True
+        else:
+            flags["mevboost"] = True
+            flags["builder_api"] = True
 
     return flags
 
@@ -259,6 +300,45 @@ def _with_signer_params(extra_params: str, vc_name: Optional[str], web3signer_en
     return f"{extra_params} {signer}".strip() if extra_params else signer
 
 
+def apply_install_epbs(network: str, relays: List[dict], min_bid: str, fs=None):
+    """Write native ePBS relays onto the VC that ``run_install`` just created.
+
+    No ``mevboost.service`` and no beacon-node sidecar. ``min_bid`` is the
+    install ``MEV_MIN_BID`` (ETH), forwarded as :class:`manage.epbs.RelaysConfig`.
+
+    Args:
+        network: Network slug stored on the relay config.
+        relays: Selected relay dicts (``url``) or raw URL strings.
+        min_bid: ETH min-bid from the install environment.
+        fs: Optional ePBS filesystem (tests). Production reads systemd units.
+
+    Returns:
+        The applied migration plan.
+
+    Raises:
+        manage.epbs.EpbsError: The client, binary, or relay list cannot be used.
+    """
+    from manage.epbs import EpbsError, RelaysConfig, apply_fresh_install_relays
+
+    urls: List[str] = []
+    for item in relays or []:
+        if isinstance(item, dict):
+            url = str(item.get("url") or "").strip()
+        else:
+            url = str(item).strip()
+        if url:
+            urls.append(url)
+    if not urls:
+        raise EpbsError(
+            f"Native ePBS on {network} needs at least one relay URL. "
+            "Refusing to install with an empty builder list."
+        )
+    return apply_fresh_install_relays(
+        RelaysConfig(urls=urls, min_bid=(min_bid or "").strip(), network=network),
+        fs=fs,
+    )
+
+
 def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Optional[str], vc_name: Optional[str], flags: Dict[str, bool], params: Dict[str, str], env_vars: Dict[str, str]):
     """Orchestrate the installation by calling the appropriate deploy modules."""
     import deploy.common as common
@@ -300,12 +380,27 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
     cl_override = ephemery_network_override(cc_name or "", "bn") if network == "ephemery" else None
     vc_override = ephemery_network_override(vc_name or "", "vc") if network == "ephemery" else None
 
+    if flags.get("epbs") and flags.get("mevboost"):
+        from deploy.builder_mode import BuilderModeError
+        raise BuilderModeError(
+            "Native ePBS does not install mevboost.service. "
+            "Choose one builder mode."
+        )
+    if flags.get("epbs") and flags.get("charon"):
+        from deploy.builder_mode import BuilderModeError
+        raise BuilderModeError(
+            "Obol Charon has no ePBS support yet. Refusing to install native ePBS."
+        )
+
     mev_ver, mev_path = "", ""
     if flags['mevboost'] and not flags['validator_only'] and not flags.get('switch_client'):
-        # Need to load config properly or pass it
         import config
-        relay_options = getattr(config, f"{network}_relay_options", [])
-        mev_ver, mev_path = mevboost.install_mevboost(network, mev_min_bid, relay_options)
+        from deploy.builder_mode import default_relay_selection, is_csm_role
+
+        relay_options = params.get("relays") or getattr(config, f"{network}_relay_options", [])
+        if not params.get("relays") and is_csm_role(role):
+            relay_options = default_relay_selection(relay_options, csm=True)
+        mev_ver, mev_path = mevboost.install_mevboost(network, mev_min_bid, list(relay_options))
 
     el_ver, el_path = "", ""
     if not flags['validator_only'] and ec_name:
@@ -550,6 +645,17 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                 network_override=vc_override,
             )
 
+    if flags.get("epbs") and not flags.get("switch_client"):
+        import config
+        from deploy.builder_mode import default_relay_selection, is_csm_role
+
+        relay_options = params.get("relays")
+        if not relay_options:
+            relay_options = list(getattr(config, f"{network}_relay_options", []) or [])
+            if is_csm_role(role):
+                relay_options = default_relay_selection(relay_options, csm=True)
+        apply_install_epbs(network, list(relay_options or []), mev_min_bid)
+
     combo_name = role
     if ec_name and cc_name:
         combo_name = f"{ec_name}-{cc_name}"
@@ -583,4 +689,6 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
         web3signer_enabled=web3signer_enabled,
         web3signer_version=web3signer_ver,
         web3signer_service_path=web3signer_path,
+        builder_mode=str(flags.get("builder_mode") or ""),
+        relays=list(params.get("relays") or []),
     )
