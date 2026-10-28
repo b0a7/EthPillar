@@ -41,3 +41,12 @@ entries:
     reason: >
       Grandine v2.0.6 release asset still prints "Grandine 2.0.5"
       (upstream packaging / version-report bug).
+
+  - id: caplin-builder-503-panic
+    cell: Caplin-Erigon-ePBS-Migration-SEPOLIA
+    client: erigon
+    signature: 'panic: cannot connect to builder client'
+    reason: >
+        Caplin panics when mev-boost returns 503 "all relays are unavailable"
+      (cl/beacon/builder/client.go:107). Intermittent in CI when Sepolia relays
+      are empty.      
