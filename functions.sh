@@ -548,16 +548,29 @@ getNetwork(){
 # Non-root user who should own project venvs under BASE_DIR when we are root.
 # Prefers SUDO_USER (e.g. Node Checker via `sudo bash -c`), else BASE_DIR owner.
 # Prints the username and returns 0 when root should drop privileges; else 1.
+#
+# Only returns an account that exists in passwd. GitHub Actions unit/live jobs
+# run Docker as root against a bind-mounted workspace owned by UID 1001 with no
+# matching /etc/passwd entry — stat then reports "UNKNOWN", and `sudo -u UNKNOWN`
+# aborts ensure_python_deps. In that case we stay root (CI disposable mount).
 ethpillar_nonroot_venv_owner() {
-    local uid owner=""
+    local uid owner="" uid_num
     uid="${ETHPILLAR_TEST_EUID:-${EUID:-$(id -u)}}"
     [[ "$uid" -eq 0 ]] || return 1
+
     if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-        printf '%s\n' "${SUDO_USER}"
-        return 0
+        # Bats sets ETHPILLAR_TEST_EUID and may use a fictional SUDO_USER.
+        if [[ -n "${ETHPILLAR_TEST_EUID:-}" ]] || getent passwd "${SUDO_USER}" >/dev/null 2>&1; then
+            printf '%s\n' "${SUDO_USER}"
+            return 0
+        fi
     fi
+
     if [[ -n "${BASE_DIR:-}" ]]; then
-        owner="$(stat -c '%U' "${BASE_DIR}" 2>/dev/null || true)"
+        uid_num="$(stat -c '%u' "${BASE_DIR}" 2>/dev/null || true)"
+        [[ -n "$uid_num" && "$uid_num" != "0" ]] || return 1
+        # Resolve UID → login name; skip when the mount UID has no passwd row.
+        owner="$(getent passwd "${uid_num}" 2>/dev/null | cut -d: -f1 || true)"
         if [[ -n "$owner" && "$owner" != "root" ]]; then
             printf '%s\n' "$owner"
             return 0

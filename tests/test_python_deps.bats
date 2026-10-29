@@ -126,6 +126,22 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "ethpillar_nonroot_venv_owner stays root when BASE_DIR UID has no passwd" {
+  # Mimic GHA docker: root process, checkout owned by a nameless UID.
+  export ETHPILLAR_TEST_EUID=0
+  unset SUDO_USER || true
+  getent() { return 1; }
+  stat() {
+    if [[ "$*" == *"%u"* ]]; then
+      echo 1001
+      return 0
+    fi
+    command stat "$@"
+  }
+  run ethpillar_nonroot_venv_owner
+  [ "$status" -ne 0 ]
+}
+
 @test "ensure_python_deps runs venv/pip via sudo -u when root" {
   write_broken_venv
 
