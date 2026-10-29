@@ -545,12 +545,47 @@ getNetwork(){
     export NETWORK
 }
 
+# Non-root user who should own project venvs under BASE_DIR when we are root.
+# Prefers SUDO_USER (e.g. Node Checker via `sudo bash -c`), else BASE_DIR owner.
+# Prints the username and returns 0 when root should drop privileges; else 1.
+ethpillar_nonroot_venv_owner() {
+    local uid owner=""
+    uid="${ETHPILLAR_TEST_EUID:-${EUID:-$(id -u)}}"
+    [[ "$uid" -eq 0 ]] || return 1
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        printf '%s\n' "${SUDO_USER}"
+        return 0
+    fi
+    if [[ -n "${BASE_DIR:-}" ]]; then
+        owner="$(stat -c '%U' "${BASE_DIR}" 2>/dev/null || true)"
+        if [[ -n "$owner" && "$owner" != "root" ]]; then
+            printf '%s\n' "$owner"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Run "$@" as ethpillar_nonroot_venv_owner when root would otherwise write a
+# user-owned checkout's .venv / .venv-quic. No-op wrapper when not root.
+run_as_ethpillar_venv_owner() {
+    local owner
+    if owner="$(ethpillar_nonroot_venv_owner)"; then
+        sudo -u "$owner" -- "$@"
+    else
+        "$@"
+    fi
+}
+
 # Ensure Python runtime dependencies are available in a project venv.
 # Ubuntu 24.04+ blocks system-wide/user pip installs (PEP 668).
+# Venv create/pip never run as root against a user-owned checkout (Node Checker
+# and similar sudo entrypoints source this file and would leave root-owned
+# site-packages that break later unprivileged ethpillar runs).
 ensure_python_deps() {
     local req_file="${BASE_DIR}/requirements.txt"
     local venv_dir="${ETHPILLAR_VENV:-${BASE_DIR}/.venv}"
-    local py_version venv_python
+    local py_version venv_python owner
     [[ -f "$req_file" ]] || error "requirements.txt not found in ${BASE_DIR}"
 
     # venv creation needs ensurepip (provided by python3-venv / python3.X-venv)
@@ -561,6 +596,10 @@ ensure_python_deps() {
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
             python3-venv "python${py_version}-venv" python3-pip
         python3 -c "import ensurepip" &>/dev/null || error "python3-venv is required but ensurepip is still unavailable"
+    fi
+
+    if owner="$(ethpillar_nonroot_venv_owner)"; then
+        ohai "Using ${owner} for Python venv changes (not root)"
     fi
 
     # Recreate when the venv is missing, incomplete, or left over from a distro
@@ -580,9 +619,11 @@ ensure_python_deps() {
         else
             ohai "Creating Python virtual environment"
         fi
-        python3 -m venv "$venv_dir" || error "Failed to create Python virtual environment"
+        run_as_ethpillar_venv_owner python3 -m venv "$venv_dir" \
+            || error "Failed to create Python virtual environment"
         if [[ ! -x "${venv_dir}/bin/pip" ]] || ! "${venv_dir}/bin/python3" -c "import pip" &>/dev/null; then
-            "${venv_dir}/bin/python3" -m ensurepip --upgrade || error "Failed to bootstrap pip in virtual environment"
+            run_as_ethpillar_venv_owner "${venv_dir}/bin/python3" -m ensurepip --upgrade \
+                || error "Failed to bootstrap pip in virtual environment"
         fi
         "${venv_dir}/bin/python3" -c "import pip" &>/dev/null || error "Failed to bootstrap pip in virtual environment"
     fi
@@ -608,7 +649,8 @@ ensure_python_deps() {
 
     if [[ ${#missing[@]} -gt 0 ]]; then
         ohai "Installing missing Python packages: ${missing[*]}"
-        "$venv_python" -m pip install -r "$req_file" || error "Failed to install Python dependencies"
+        run_as_ethpillar_venv_owner "$venv_python" -m pip install -r "$req_file" \
+            || error "Failed to install Python dependencies"
     fi
 
     export ETHPILLAR_VENV="$venv_dir"
