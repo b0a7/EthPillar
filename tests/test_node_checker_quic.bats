@@ -499,6 +499,37 @@ EOF
 	! grep -q "python3 -m venv" "$command_log"
 }
 
+@test "maybe_install_quic_probe_deps runs venv/pip via sudo -u when root" {
+	local mock_bin command_log venv
+	mock_bin="$TEST_DIR/mock-bin"
+	command_log="$TEST_DIR/commands.log"
+	venv="$TEST_DIR/.venv-quic"
+	install_quic_venv_python_mock "$mock_bin" "$command_log"
+	cat > "$mock_bin/sudo" <<EOF
+#!/bin/bash
+echo "sudo \$*" >> "$command_log"
+if [[ "\$1" == "-u" ]]; then
+  shift 2
+  [[ "\$1" == "--" ]] && shift
+  exec "\$@"
+fi
+exec "\$@"
+EOF
+	chmod +x "$mock_bin/sudo"
+	export PATH="$mock_bin:$PATH"
+	NODE_CHECKER_QUIC_AUTO_INSTALL=1
+	NODE_CHECKER_QUIC_VENV="$venv"
+	unset NODE_CHECKER_QUIC_PYTHON || true
+	export ETHPILLAR_TEST_EUID=0
+	export SUDO_USER=alice
+
+	run maybe_install_quic_probe_deps
+
+	[ "$status" -eq 0 ]
+	grep -q "sudo -u alice -- python3 -m venv $venv" "$command_log"
+	grep -q "sudo -u alice -- $venv/bin/python3 -m pip install -r " "$command_log"
+}
+
 @test "check_inbound_quic_probe WARNs when auto-install fails and does not FAIL" {
 	write_consensus Lighthouse
 	NODE_CHECKER_PUBLIC_IPV4="203.0.113.50"

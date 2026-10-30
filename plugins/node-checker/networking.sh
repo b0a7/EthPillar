@@ -755,10 +755,12 @@ maybe_install_quic_probe_deps() {
     [[ -f "$req" ]] || return 1
     NODE_CHECKER_QUIC_INSTALL_ERROR=""
 
+    # Node Checker runs under sudo; create/pip as the checkout owner so
+    # .venv-quic is not left root-owned (same class of bug as main .venv).
     if node_checker_quic_venv_unusable "$venv"; then
         [[ -d "$venv" ]] && rm -rf "$venv"
         log="$(mktemp)"
-        if ! python3 -m venv "$venv" >"$log" 2>&1; then
+        if ! run_as_ethpillar_venv_owner python3 -m venv "$venv" >"$log" 2>&1; then
             node_checker_quic_note_install_error "$(cat "$log")"
             rm -f "$log"
             return 1
@@ -767,7 +769,7 @@ maybe_install_quic_probe_deps() {
         py="${venv}/bin/python3"
         if ! "$py" -c "import pip" >/dev/null 2>&1; then
             log="$(mktemp)"
-            if ! "$py" -m ensurepip --upgrade >"$log" 2>&1; then
+            if ! run_as_ethpillar_venv_owner "$py" -m ensurepip --upgrade >"$log" 2>&1; then
                 node_checker_quic_note_install_error "$(cat "$log")"
                 rm -f "$log"
                 return 1
@@ -781,7 +783,7 @@ maybe_install_quic_probe_deps() {
         log="$(mktemp)"
         # Interpreter -m pip, not bin/pip: after a release upgrade the launcher
         # can still be executable while this Python cannot import pip.
-        if ! "$py" -m pip install -r "$req" >"$log" 2>&1; then
+        if ! run_as_ethpillar_venv_owner "$py" -m pip install -r "$req" >"$log" 2>&1; then
             node_checker_quic_note_install_error "$(cat "$log")"
             rm -f "$log"
             return 1

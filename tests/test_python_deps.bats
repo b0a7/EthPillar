@@ -111,6 +111,63 @@ EOF
   ! grep -q "python3 -m venv" "$COMMAND_LOG"
 }
 
+@test "ethpillar_nonroot_venv_owner prefers SUDO_USER when root" {
+  export ETHPILLAR_TEST_EUID=0
+  export SUDO_USER=alice
+  run ethpillar_nonroot_venv_owner
+  [ "$status" -eq 0 ]
+  [ "$output" = "alice" ]
+}
+
+@test "ethpillar_nonroot_venv_owner is inactive when not root" {
+  unset ETHPILLAR_TEST_EUID || true
+  export SUDO_USER=alice
+  run ethpillar_nonroot_venv_owner
+  [ "$status" -ne 0 ]
+}
+
+@test "ethpillar_nonroot_venv_owner stays root when BASE_DIR UID has no passwd" {
+  # Mimic GHA docker: root process, checkout owned by a nameless UID.
+  export ETHPILLAR_TEST_EUID=0
+  unset SUDO_USER || true
+  getent() { return 1; }
+  stat() {
+    if [[ "$*" == *"%u"* ]]; then
+      echo 1001
+      return 0
+    fi
+    command stat "$@"
+  }
+  run ethpillar_nonroot_venv_owner
+  [ "$status" -ne 0 ]
+}
+
+@test "ensure_python_deps runs venv/pip via sudo -u when root" {
+  write_broken_venv
+
+  cat > "$MOCK_BIN/sudo" <<EOF
+#!/bin/bash
+echo "sudo \$*" >> "$COMMAND_LOG"
+if [[ "\$1" == "-u" ]]; then
+  shift 2
+  [[ "\$1" == "--" ]] && shift
+  exec "\$@"
+fi
+exec "\$@"
+EOF
+  chmod +x "$MOCK_BIN/sudo"
+
+  export ETHPILLAR_TEST_EUID=0
+  export SUDO_USER=alice
+
+  run ensure_python_deps
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Using alice for Python venv changes"* ]]
+  grep -q "sudo -u alice -- python3 -m venv $ETHPILLAR_VENV" "$COMMAND_LOG"
+  grep -q "sudo -u alice -- $ETHPILLAR_VENV/bin/python3 -m pip install -r $BASE_DIR/requirements.txt" "$COMMAND_LOG"
+}
+
 @test "ensure_python_deps imports PyYAML and pyyaml as yaml" {
   mkdir -p "$ETHPILLAR_VENV/bin"
   cat > "$ETHPILLAR_VENV/bin/python3" <<EOF
