@@ -22,34 +22,44 @@ from tests.integration.known_failures import (
 )
 
 
-def test_registry_has_exactly_three_initial_entries():
+def test_registry_has_exactly_two_entries():
     entries = load_registry()
     ids = sorted(e.id for e in entries)
     assert ids == [
         "caplin-builder-503-panic",
         "grandine-2.0.6-reports-2.0.5",
-        "nimbus-hoodi-genesis-buffer-limit",
     ]
 
-def test_nimbus_hoodi_log_signature_matches():
-    # Harness now puts the journal ERR on the ❌ summary line itself.
+
+def test_nimbus_hoodi_genesis_buffer_is_not_known():
     log = (
-        "❌ systemctl start consensus failed: "
+        "systemctl start consensus failed: "
         "Job for consensus.service failed because the control process exited "
         "with error code. | "
         'ERR Failed to obtain genesis state err="Could not read response headers: '
         'Buffer limit reached"\n'
     )
     entry = match_log_known_failure("Nimbus-Nethermind_HOODI", log)
-    assert entry is not None
-    assert entry.id == "nimbus-hoodi-genesis-buffer-limit"
+    assert entry is None
     status, matched = classify_failed_cell("Nimbus-Nethermind_HOODI", log)
+    assert status == "FAIL"
+    assert matched is None
+
+
+def test_caplin_builder_log_signature_matches():
+    log = "panic: cannot connect to builder client\n"
+    entry = match_log_known_failure("Caplin-Erigon-ePBS-Migration-SEPOLIA", log)
+    assert entry is not None
+    assert entry.id == "caplin-builder-503-panic"
+    status, matched = classify_failed_cell(
+        "Caplin-Erigon-ePBS-Migration-SEPOLIA", log
+    )
     assert status == "KNOWN_FAIL"
     assert matched is not None and matched.id == entry.id
 
 
-def test_nimbus_hoodi_matches_from_failure_summary_alone(tmp_path: Path):
-    """Known-failure matching must work from the ❌ summary, not only raw journal."""
+def test_nimbus_hoodi_buffer_limit_summary_is_not_known(tmp_path: Path):
+    """Journal ERR still lands on the ❌ summary; the buffer-limit signature is not tracked."""
     from tests.integration.run_docker_tests import extract_failure_reason
     from tests.integration.service_start import format_systemctl_start_failure
 
@@ -69,8 +79,8 @@ def test_nimbus_hoodi_matches_from_failure_summary_alone(tmp_path: Path):
     status, matched = classify_failed_cell(
         "Nimbus-Nethermind_HOODI", log_path.read_text(encoding="utf-8")
     )
-    assert status == "KNOWN_FAIL"
-    assert matched is not None
+    assert status == "FAIL"
+    assert matched is None
 
 
 def test_nimbus_hoodi_other_failure_stays_red():
@@ -123,15 +133,15 @@ def test_grandine_ignores_closed_issue_state(capsys):
 
 
 def test_log_all_clear_can_still_mention_closed_issue():
-    entry = next(
-        e for e in load_registry() if e.id == "nimbus-hoodi-genesis-buffer-limit"
-    )
+    entry = next(e for e in load_registry() if e.id == "caplin-builder-503-panic")
     assert entry.issue_closed_unfixed is False
-    msg = entry.all_clear_message("Nimbus-Nethermind_HOODI")
+    msg = entry.all_clear_message("Caplin-Erigon-ePBS-Migration-SEPOLIA")
     assert "did not reproduce" in msg
     assert "upstream may be fixed" in msg
     payload = all_clear_notice_payload(
-        entry, cell="Nimbus-Nethermind_HOODI", issue_state="closed"
+        entry,
+        cell="Caplin-Erigon-ePBS-Migration-SEPOLIA",
+        issue_state="closed",
     )
     assert payload["issue_state"] == "closed"
 
