@@ -30,10 +30,16 @@ New users can skip this step — the installer below already points to this fork
 
 ---
 
-## v5.4.11
+## v5.5.0
 
-Adds Phase 1 [Keymanager API](https://ethereum.github.io/keymanager-APIs/) support so you can manage local validator keystores from the TUI without hand-editing client tools, plus a fix so Ctrl-C while viewing logs returns to the menu.
+Glamsterdam-ready. Adds ePBS migration and native ePBS installs on Sepolia, Obol Charon DV, Web3Signer, and per-client Grafana dashboards.
 
+- **ePBS / Gloas**: migration for Prysm, Lodestar, Teku v26.9.0+, Lighthouse v8.3.0+, Nimbus v26.10.2+, and Caplin. Native ePBS at install time on Sepolia (no MEV-Boost sidecar). Prepare stages relays; complete drops MEV-Boost after the fork. [Guide](docs/ePBS-migration.md)
+- **Obol Charon DV**: middleware + CDVN migration. [Guide](docs/charon.md)
+- **Web3Signer**: localhost remote signer for validator keys. [Guide](docs/web3signer.md)
+- **Monitoring**: per-client Prometheus scrape jobs and Grafana dashboards
+- **CLI**: `ethpillar status|start|stop|restart|check-updates|upgrade|logs`
+- **Reliability**: download verification, non-root Python venv writes, known-CI-failure tracking
 ---
 
 ## 🚀 What is EthPillar?
@@ -78,7 +84,7 @@ Already running a validator? EthPillar works with [Coincashew’s Staking Guide]
 - **Testnet Support**: Ephemery & Hoodi testnets for risk-free practice
 - **Lido CSM Integration**: Stake with as little as 2.4 ETH via Lido CSM ([Learn more](https://csm.testnet.fi/?ref=ethpillar))
 - **Plugins**: Aztec, Lido CSM, Node-checker, validator tools, monitoring, stats, and more
-- **Grafana Dashboards**: Built-in Ethereum node monitoring
+- **Grafana Dashboards**: Built-in Ethereum node monitoring, including per-client scrape jobs
 - **Troubleshooting Tools**: Built-in checks for common node issues with Node Checker
 - **Flexible Deployment Configurations**: Solo staking node, Full Node, CSM, Validator-only, Failover, or Obol Charon DV setups
 - **ePBS / Gloas migration**: Two-step MEV-Boost cutover under **MEV-Boost → ePBS migration** (Prysm, Lodestar, Teku v26.9.0+, Erigon-Caplin, and Lighthouse v8.3.0+ TUI; Charon DVT hidden until Obol ships support; [guide](docs/ePBS-migration.md))
