@@ -16,6 +16,8 @@ cli_service_path() {
         mevboost)  echo "${MEVBOOST_SERVICE_FILE:-/etc/systemd/system/mevboost.service}" ;;
         charon)    echo "${CHARON_SERVICE_FILE:-/etc/systemd/system/charon.service}" ;;
         web3signer) echo "${WEB3SIGNER_SERVICE_FILE:-/etc/systemd/system/web3signer.service}" ;;
+        ssv-node)  echo "${SSV_NODE_SERVICE_FILE:-/etc/systemd/system/ssv-node.service}" ;;
+        ssv-dkg)   echo "${SSV_DKG_SERVICE_FILE:-/etc/systemd/system/ssv-dkg.service}" ;;
         csm_nimbusvalidator)
             echo "${CSM_VALIDATOR_SERVICE_FILE:-/etc/systemd/system/csm_nimbusvalidator.service}"
             ;;
@@ -31,14 +33,14 @@ cli_is_client_installed() {
 
 # Canonical start/restart order. Charon must precede validator so the VC can
 # reach the intermediate (see startConsensusStackAfterUpdate / #57).
-CLI_CLIENT_START_ORDER=(execution consensus mevboost charon web3signer validator)
-# Stop order: reverse dependency (validator before web3signer and charon).
-CLI_CLIENT_STOP_ORDER=(validator web3signer charon mevboost consensus execution)
+CLI_CLIENT_START_ORDER=(execution consensus mevboost charon web3signer ssv-node ssv-dkg validator)
+# Stop order: reverse dependency (validator before web3signer/charon/ssv).
+CLI_CLIENT_STOP_ORDER=(validator ssv-dkg ssv-node web3signer charon mevboost consensus execution)
 # TUI-only extras after the CLI stack on start/restart; reversed on stop.
 TUI_EXTRA_SERVICES=(csm_nimbusvalidator dora)
 # Units accepted by `ethpillar logs [unit ...]`. Same set as the rolling
 # consolidated journalctl stream. Named units are followed in argv order.
-CLI_LOG_UNITS=(validator consensus execution mevboost charon web3signer csm_nimbusvalidator)
+CLI_LOG_UNITS=(validator consensus execution mevboost charon web3signer ssv-node ssv-dkg csm_nimbusvalidator)
 
 # Print systemd unit names in TUI start/stop/restart-all order (one per line).
 # Start/restart: CLI start order, then TUI extras. Stop: extras reversed, then
@@ -399,7 +401,10 @@ cli_upgrade_ethpillar() {
 # Path to update_<target>.sh (ETHPILLAR_UPDATE_SCRIPT_DIR overrides for tests).
 cli_auto_update_script() {
     local target="$1"
-    echo "${ETHPILLAR_UPDATE_SCRIPT_DIR:-$BASE_DIR}/update_${target}.sh"
+    case "$target" in
+        ssv-node|ssv-dkg|ssv) echo "${ETHPILLAR_UPDATE_SCRIPT_DIR:-$BASE_DIR}/update_ssv.sh" ;;
+        *) echo "${ETHPILLAR_UPDATE_SCRIPT_DIR:-$BASE_DIR}/update_${target}.sh" ;;
+    esac
 }
 
 # Upgrade one target. Clients already on LATEST are skipped so --auto does not
@@ -415,7 +420,7 @@ cli_upgrade_one() {
             cli_upgrade_ethpillar
             return
             ;;
-        execution|consensus|validator|mevboost|charon|web3signer)
+        execution|consensus|validator|mevboost|charon|web3signer|ssv-node|ssv-dkg|ssv)
             ;;
         *)
             echo "Unsupported upgrade target: $target" >&2

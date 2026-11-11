@@ -142,6 +142,13 @@ function printInstalledVersions() {
     _W3S="Web3Signer: ${VERSION:-unknown}"
   fi
 
+  local ssv_svc="${SSV_NODE_SERVICE_FILE:-/etc/systemd/system/ssv-node.service}"
+  local _SSV=""
+  if [[ -f "$ssv_svc" ]]; then
+    getSsvCurrentVersion || true
+    _SSV="SSV Operator: ${VERSION:-unknown}"
+  fi
+
   local _lines=()
   _lines+=("Consensus client: ${_CL}")
   _lines+=("Execution client: ${_EL}")
@@ -149,6 +156,7 @@ function printInstalledVersions() {
   _lines+=("${_MB}")
   [[ -n "$_CH" ]] && _lines+=("${_CH}")
   [[ -n "$_W3S" ]] && _lines+=("${_W3S}")
+  [[ -n "$_SSV" ]] && _lines+=("${_SSV}")
   _lines+=("EthPillar: ${EP_VERSION}")
   printf '%s\n' "${_lines[@]}"
 }
@@ -156,9 +164,9 @@ function printInstalledVersions() {
 menuMain(){
 
 # Define systemctl services
-_SERVICES=("execution" "consensus" "validator" "mevboost" "charon" "web3signer" "csm_nimbusvalidator" "dora")
-_SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "Obol Charon DV" "Web3Signer" "CSM Nimbus Validator Plugin" "Dora the Explorer")
-_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "${OBOL_INF}" "🔏" "💧" "🔎")
+_SERVICES=("execution" "consensus" "validator" "mevboost" "charon" "web3signer" "ssv-node" "csm_nimbusvalidator" "dora")
+_SERVICES_NAME=("Execution Client" "Consensus Client" "Validator Client" "MEV-Boost" "Obol Charon DV" "Web3Signer" "SSV Operator" "CSM Nimbus Validator Plugin" "Dora the Explorer")
+_SERVICES_ICON=("🔗" "🧠" "🚀" "⚡" "${OBOL_INF}" "🔏" "🟣" "💧" "🔎")
 
 function testAndServiceCommand() {
   local _cmd="$1"
@@ -257,6 +265,9 @@ while true; do
         ;;
       🔏)
         submenuWeb3Signer
+        ;;
+      🟣)
+        submenuSsv
         ;;
       💧)
         submenuPluginCSMValidator
@@ -760,6 +771,84 @@ while true; do
         runScript manage_validator_keys.sh
         ;;
       8)
+        break
+        ;;
+    esac
+done
+}
+
+submenuSsv(){
+while true; do
+    getBackTitle
+    SUBOPTIONS=(
+      1 "View ssv-node logs"
+      2 "Start ssv-node"
+      3 "Stop ssv-node"
+      4 "Restart ssv-node"
+      5 "Edit ssv-node config.yaml"
+      6 "Update SSV binaries"
+      7 "Import operator keystore"
+      8 "View ssv-dkg logs"
+      9 "Start ssv-dkg"
+      10 "Stop ssv-dkg"
+      11 "Edit DKG operator.yaml"
+      - ""
+      12 "Back to main menu"
+    )
+
+    SUBCHOICE=$(whiptail --clear --cancel-button "Back" \
+      --backtitle "$BACKTITLE" \
+      --title "SSV Operator" \
+      --menu "Node + DKG share /var/lib/ssv/ secrets. Metrics stay on localhost:15000." \
+      0 0 0 \
+      "${SUBOPTIONS[@]}" \
+      3>&1 1>&2 2>&3)
+
+    if [ $? -gt 0 ]; then
+        break
+    fi
+
+    case $SUBCHOICE in
+      1)
+        view_journal_logs -fu ssv-node
+        ;;
+      2)
+        sudo service ssv-node start
+        ;;
+      3)
+        sudo service ssv-node stop
+        ;;
+      4)
+        sudo service ssv-node restart
+        ;;
+      5)
+        sudo "${EDITOR:-nano}" /var/lib/ssv/config.yaml
+        if whiptail --title "SSV config" --yesno "Restart ssv-node to apply changes?" 8 60; then
+          sudo service ssv-node restart
+        fi
+        ;;
+      6)
+        runScript update_ssv.sh
+        ;;
+      7)
+        importSsvOperatorKeystore
+        ;;
+      8)
+        view_journal_logs -fu ssv-dkg
+        ;;
+      9)
+        sudo service ssv-dkg start
+        ;;
+      10)
+        sudo service ssv-dkg stop
+        ;;
+      11)
+        sudo "${EDITOR:-nano}" /var/lib/ssv/operator.yaml
+        if whiptail --title "SSV DKG" --yesno "Restart ssv-dkg to apply changes?" 8 60; then
+          sudo service ssv-dkg restart
+        fi
+        ;;
+      12)
         break
         ;;
     esac
@@ -1341,6 +1430,7 @@ while true; do
         fi
         ufwAllowExpectedP2pPorts
         ufwAllowCharonP2p
+        ufwAllowSsvPorts
         sudo ufw enable
         sudo ufw status numbered
         ohai "UFW firewall enabled."
@@ -1371,6 +1461,11 @@ while true; do
       charon)
         ufwAllowCharonP2p
         ohai "Charon P2P port $(getCharonP2pPort) allowed (TCP)."
+        sleep 2
+        ;;
+      ssv)
+        ufwAllowSsvPorts
+        ohai "SSV P2P (${SSV_P2P_TCP_PORT:-13001}/tcp, ${SSV_P2P_UDP_PORT:-12001}/udp) and DKG (${SSV_DKG_PORT:-3030}/tcp) allowed."
         sleep 2
         ;;
       disable)

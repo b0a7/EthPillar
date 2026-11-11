@@ -16,6 +16,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from deploy.common import BASE_DATA_DIR, INSTALL_DIR
 from deploy.mevboost import generate_mevboost_service
 from deploy.charon import generate_charon_service, CHARON_LOCK_FILE, CHARON_PRIVATE_KEY_FILE, CHARON_DATA_DIR
+from deploy.ssv import (
+    generate_ssv_config,
+    generate_ssv_dkg_service,
+    generate_ssv_node_service,
+    SSV_DATA_DIR,
+    SSV_PRIVATE_KEY_FILE,
+    SSV_PASSWORD_FILE,
+)
 from deploy.besu import generate_besu_service
 from deploy.geth import generate_geth_service
 from deploy.ethrex import generate_ethrex_service
@@ -120,6 +128,37 @@ class TestCharonService:
         assert "http://192.168.1.5:5052/eth/v1/node/version" in result
         assert "http://192.168.1.6:5052/eth/v1/node/version" in result
         assert " || " in result
+
+
+# ═══════════════════════════════════════════════
+# SSV operator node / DKG tests
+# ═══════════════════════════════════════════════
+
+class TestSsvService:
+    """Test SSV node config and systemd unit generation."""
+
+    def test_node_unit_and_config(self):
+        unit = generate_ssv_node_service("hoodi")
+        assert "Description=SSV Operator Node for HOODI" in unit
+        assert "User=ssv" in unit
+        assert f"WorkingDirectory={SSV_DATA_DIR}" in unit
+        assert "ssvnode start-node" in unit
+        assert f"--config={SSV_DATA_DIR}/config.yaml" in unit
+        check_constant_substitutions(unit)
+
+        cfg = generate_ssv_config("hoodi", "http://127.0.0.1:5052", "ws://127.0.0.1:8546")
+        assert "Network: hoodi" in cfg
+        assert "BeaconNodeAddr: http://127.0.0.1:5052" in cfg
+        assert "ETH1Addr: ws://127.0.0.1:8546" in cfg
+        assert f"PrivateKeyFile: {SSV_PRIVATE_KEY_FILE}" in cfg
+        assert f"PasswordFile: {SSV_PASSWORD_FILE}" in cfg
+
+    def test_dkg_unit(self):
+        unit = generate_ssv_dkg_service("mainnet")
+        assert "Description=SSV DKG Operator for MAINNET" in unit
+        assert "ssv-dkg start-operator" in unit
+        assert f"--configPath={SSV_DATA_DIR}/operator.yaml" in unit
+        check_constant_substitutions(unit)
 
 
 # ═══════════════════════════════════════════════

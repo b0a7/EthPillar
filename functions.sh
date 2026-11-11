@@ -232,6 +232,26 @@ getCharonCurrentVersion() {
   fi
 }
 
+# Sets VERSION from installed ``ssvnode version`` (best-effort).
+getSsvCurrentVersion() {
+  local ssv_svc="${SSV_NODE_SERVICE_FILE:-/etc/systemd/system/ssv-node.service}"
+  local bin output
+  VERSION=""
+  INSTALLED_COMMIT=""
+  bin=$(get_systemd_exec_path "$ssv_svc" "/usr/local/bin/ssvnode")
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    VERSION="Unable to query SSV version from binary."
+    return 1
+  fi
+  output=$("$bin" version 2>/dev/null || "$bin" --version 2>/dev/null || true)
+  VERSION=$(grep -oiE 'v?[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$output" | head -1 || true)
+  if [[ -z "$VERSION" ]]; then
+    VERSION="Unable to query SSV version from binary."
+    return 1
+  fi
+  [[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
+}
+
 # Sets VERSION from ``web3signer --version``.
 getWeb3SignerCurrentVersion() {
   local signer_svc="${WEB3SIGNER_SERVICE_FILE:-/etc/systemd/system/web3signer.service}"
@@ -983,6 +1003,14 @@ load_client_versions() {
                 return 1
             }
             ;;
+        ssv-node|ssv-dkg|ssv)
+            getSsvCurrentVersion || true
+            [[ -z "$VERSION" ]] && VERSION="unknown"
+            fetch_latest_release "ssv" --strip-v || {
+                echo "ssv: could not resolve LATEST"
+                return 1
+            }
+            ;;
         *)
             echo "Unsupported check target: $target" >&2
             return 1
@@ -1035,6 +1063,18 @@ isWeb3SignerEnabled(){
     [[ -f "$signer_svc" ]]
 }
 
+# Return whether SSV operator node is installed (ssv-node.service present).
+isSsvEnabled(){
+    local ssv_svc="${SSV_NODE_SERVICE_FILE:-/etc/systemd/system/ssv-node.service}"
+    [[ -f "$ssv_svc" ]]
+}
+
+# Return whether SSV DKG sidecar is installed.
+isSsvDkgEnabled(){
+    local dkg_svc="${SSV_DKG_SERVICE_FILE:-/etc/systemd/system/ssv-dkg.service}"
+    [[ -f "$dkg_svc" ]]
+}
+
 # EthPillar Charon cluster datadir (overridable in tests via CHARON_CLUSTER_DIR).
 getCharonClusterDir(){
     echo "${CHARON_CLUSTER_DIR:-/var/lib/charon/.charon}"
@@ -1062,17 +1102,19 @@ getCharonP2pPort(){
     fi
 }
 
-# Stop validator → charon → consensus before BN maintenance (update/resync).
+# Stop validator → charon → ssv → consensus before BN maintenance (update/resync).
 stopConsensusStackForUpdate(){
     test -f /etc/systemd/system/validator.service && sudo systemctl stop validator 2>/dev/null || true
     isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+    isSsvEnabled && sudo systemctl stop ssv-node 2>/dev/null || true
     test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus 2>/dev/null || true
 }
 
-# Start consensus → charon → validator after BN maintenance.
+# Start consensus → charon → ssv → validator after BN maintenance.
 startConsensusStackAfterUpdate(){
     test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus 2>/dev/null || true
     isCharonEnabled && sudo systemctl start charon 2>/dev/null || true
+    isSsvEnabled && sudo systemctl start ssv-node 2>/dev/null || true
     test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
 }
 
@@ -1109,6 +1151,7 @@ reloadEnvOverridesAndMaybeRestart(){
     test -f /etc/systemd/system/consensus.service && sudo systemctl try-restart consensus 2>/dev/null || true
     test -f /etc/systemd/system/mevboost.service && sudo systemctl try-restart mevboost 2>/dev/null || true
     isCharonEnabled && sudo systemctl try-restart charon 2>/dev/null || true
+    isSsvEnabled && sudo systemctl try-restart ssv-node 2>/dev/null || true
     test -f /etc/systemd/system/validator.service && sudo systemctl try-restart validator 2>/dev/null || true
 }
 
@@ -1118,6 +1161,21 @@ ufwAllowCharonP2p(){
     port=$(getCharonP2pPort)
     [[ -n "$port" ]] || return 0
     sudo ufw allow "${port}/tcp" comment 'Allow Charon P2P port'
+}
+
+# Allow SSV P2P (TCP+UDP) and DKG TCP in UFW (no-op when SSV not installed).
+# Metrics/API stay localhost-only and are not opened.
+ufwAllowSsvPorts(){
+    local tcp_port udp_port dkg_port
+    isSsvEnabled || return 0
+    tcp_port="${SSV_P2P_TCP_PORT:-13001}"
+    udp_port="${SSV_P2P_UDP_PORT:-12001}"
+    dkg_port="${SSV_DKG_PORT:-3030}"
+    sudo ufw allow "${tcp_port}/tcp" comment 'Allow SSV P2P TCP'
+    sudo ufw allow "${udp_port}/udp" comment 'Allow SSV P2P UDP'
+    if isSsvDkgEnabled; then
+        sudo ufw allow "${dkg_port}/tcp" comment 'Allow SSV DKG'
+    fi
 }
 
 # First word of Description= — same heuristic as getClient / node-checker.
@@ -1324,6 +1382,9 @@ ufwBuildFirewallMenu(){
     _ufw_menu_add_pair elcl_p2p "EL/CL P2P: Allow TCP/UDP (from execution & consensus, incl. QUIC)"
     if isCharonEnabled; then
         _ufw_menu_add_pair charon "${OBOL_CHARON}: Allow P2P port (from charon.service)"
+    fi
+    if isSsvEnabled; then
+        _ufw_menu_add_pair ssv "SSV: Allow P2P TCP/UDP and DKG (from env ports)"
     fi
     _ufw_menu_add_pair disable "Disable firewall"
     _ufw_menu_add_pair reset "Reset firewall rules: Delete all rules"
@@ -2022,6 +2083,37 @@ runImportCharonKeySharesYes(){
 }
 
 # Manual setup: copy a CDVN/DKG .charon tree into EthPillar's Charon datadir.
+# Import SSV operator encrypted key + password into /var/lib/ssv/.
+importSsvOperatorKeystore(){
+    local SRC
+    SRC=$(whiptail --title "Import SSV operator keystore" --inputbox \
+"Directory containing:
+  encrypted_private_key.json
+  password
+
+Files are copied into /var/lib/ssv/ and shared by
+ssv-node and ssv-dkg. Back them up separately." 16 70 --ok-button "Submit" 3>&1 1>&2 2>&3) || return
+
+    SRC="${SRC/#\~/$HOME}"
+    if [[ ! -d "$SRC" ]]; then
+        whiptail --title "Import SSV operator keystore" --msgbox \
+"Directory not found:
+${SRC}" 9 70
+        return 1
+    fi
+    if ! PYTHONPATH="${BASE_DIR}" python3 -m deploy.ssv import-keystore "$SRC"; then
+        whiptail --title "Import SSV operator keystore" --msgbox \
+"Import failed. Ensure both files exist in:
+${SRC}" 10 70
+        return 1
+    fi
+    whiptail --title "Import SSV operator keystore" --msgbox \
+"Operator keystore imported into /var/lib/ssv/.
+
+Back up encrypted_private_key.json and password
+on a separate device, then start ssv-node." 12 70
+}
+
 importCharonClusterFolder(){
     local SRC DEST
     DEST="$(getCharonClusterDir)"
