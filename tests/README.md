@@ -52,7 +52,7 @@ docker run --rm -v "${PWD}:/ethpillar" ethpillar-test bats tests/
 
 ## 4. Running Integration Tests (Docker)
 
-These tests perform end-to-end installations of various client combinations and roles in a sandbox container. The custom matrix includes `Geth-Lighthouse-Charon-Lodestar-SEPOLIA` (Charon + signer VC; health check is skipped without a cluster lock file) and `Web3Signer-Smoke` (Web3Signer only: `/upcheck` and an empty public-key list, no beacon node). SSV Operator is covered by unit tests (`test_ssv.py`, `test_ssv_monitoring.py`); a full Docker matrix entry is deferred because install builds `ssvnode` from source (Go + CGO), which is slow for the CI sandbox.
+These tests perform end-to-end installations of various client combinations and roles in a sandbox container. The custom matrix includes `Geth-Lighthouse-Charon-Lodestar-SEPOLIA` (Charon + signer VC; health check is skipped without a cluster lock file), `Geth-Lighthouse-SSV-SEPOLIA` (SSV Operator built from source; `ssv-node`/`ssv-dkg` health skipped without an operator keystore), and `Web3Signer-Smoke` (Web3Signer only: `/upcheck` and an empty public-key list, no beacon node).
 
 ### On Windows (PowerShell)
 ```powershell
