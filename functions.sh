@@ -253,7 +253,10 @@ getSsvCurrentVersion() {
     VERSION="Unable to query SSV version from binary."
     return 1
   fi
-  [[ "$VERSION" != v* ]] && VERSION="v${VERSION}"
+  # Prefer || so a version that already has a v-prefix does not make this
+  # function return 1 (bash exit status of a failed [[ ]]).
+  [[ "$VERSION" == v* ]] || VERSION="v${VERSION}"
+  return 0
 }
 
 # Sets VERSION from ``web3signer --version``.
