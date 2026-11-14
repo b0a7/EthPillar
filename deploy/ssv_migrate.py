@@ -319,9 +319,16 @@ def _config_from_script(script_path: str) -> str:
     """Extract --config / --configPath from a shell wrapper script."""
     if not script_path or not os.path.isfile(script_path):
         return ""
+    # Never decode ELF/Go binaries as UTF-8 (ExecStart is often ssvnode itself).
+    if _looks_like_binary(script_path):
+        return ""
     if not script_path.endswith((".sh", ".bash")):
-        # Still try reading small text wrappers.
-        pass
+        # Allow extensionless text wrappers; skip large non-scripts.
+        try:
+            if os.path.getsize(script_path) > 512_000:
+                return ""
+        except OSError:
+            return ""
     text = _read_text(script_path)
     if not text:
         return ""
@@ -426,20 +433,52 @@ def _resolve_path(path: str, *, workdir: str, unit_dir: str) -> str:
     return os.path.normpath(os.path.join(base, expanded))
 
 
+def _looks_like_binary(path: str) -> bool:
+    """Return True when *path* is an ELF/ Mach-O / PE binary (not a text wrapper)."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4)
+    except OSError:
+        result = subprocess.run(
+            ["sudo", "head", "-c", "4", path],
+            capture_output=True,
+            check=False,
+        )
+        head = result.stdout if result.returncode == 0 else b""
+    if head.startswith(b"\x7fELF") or head.startswith(b"\xcf\xfa\xed\xfe"):
+        return True
+    if head[:2] in (b"MZ", b"\xfe\xed"):
+        return True
+    return False
+
+
 def _read_text(path: str) -> str:
+    """Read a text file; return empty string on missing/binary/undecodable data."""
+    if not path:
+        return ""
+    if os.path.isfile(path) and _looks_like_binary(path):
+        return ""
     try:
         with open(path, encoding="utf-8") as handle:
             return handle.read()
+    except UnicodeDecodeError:
+        try:
+            with open(path, encoding="latin-1") as handle:
+                return handle.read()
+        except OSError:
+            return ""
     except OSError:
         result = subprocess.run(
             ["sudo", "cat", path],
             capture_output=True,
-            text=True,
             check=False,
         )
-        if result.returncode != 0:
+        if result.returncode != 0 or not result.stdout:
             return ""
-        return result.stdout
+        try:
+            return result.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            return result.stdout.decode("latin-1", errors="replace")
 
 
 def _yaml_scalar_or_list(content: str, key: str) -> str:

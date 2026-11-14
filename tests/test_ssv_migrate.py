@@ -131,6 +131,14 @@ def test_versions_match_normalizes_v_prefix():
     assert not versions_match("", "v2.5.1")
 
 
+def test_config_from_script_skips_elf_binary(tmp_path: Path):
+    from deploy.ssv_migrate import _config_from_script
+
+    elf = tmp_path / "ssvnode"
+    elf.write_bytes(b"\x7fELF" + b"\xb7" * 64)
+    assert _config_from_script(str(elf)) == ""
+
+
 def _write_legacy_stack(tmp_path: Path) -> Path:
     """Create a mini legacy ssvnode + ssvdkg layout under tmp_path."""
     root = tmp_path / "home"
