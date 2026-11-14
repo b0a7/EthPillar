@@ -781,14 +781,14 @@ submenuSsv(){
 while true; do
     getBackTitle
     SUBOPTIONS=(
-      1 "View ssv-node logs"
+      1 "View ssv-node (+ ssv-dkg) logs"
       2 "Start ssv-node"
       3 "Stop ssv-node"
       4 "Restart ssv-node"
       5 "Edit ssv-node config.yaml"
       6 "Update SSV binaries"
       7 "Import operator keystore"
-      8 "View ssv-dkg logs"
+      8 "View ssv-dkg logs only"
       9 "Start ssv-dkg"
       10 "Stop ssv-dkg"
       11 "Edit DKG operator.yaml"
@@ -810,7 +810,12 @@ while true; do
 
     case $SUBCHOICE in
       1)
-        view_journal_logs -fu ssv-node
+        # Include DKG when present so node+DKG share one follow stream.
+        if isSsvDkgEnabled; then
+          view_journal_logs -u ssv-node -u ssv-dkg --no-hostname -f
+        else
+          view_journal_logs -fu ssv-node
+        fi
         ;;
       2)
         sudo service ssv-node start

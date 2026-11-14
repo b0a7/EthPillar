@@ -145,13 +145,25 @@ view_journal_logs() {
 }
 
 # TUI Logging & Monitoring → 🔍 View Rolling Consolidated Logs, and `ethpillar logs`.
-# Aztec remote-rpc compose follow, then one journalctl stream for all client units.
+# Aztec remote-rpc compose follow (when applicable), then journalctl for installed
+# client units only — SSV-only hosts must not follow missing EL/CL/VC units.
 show_rolling_consolidated_logs() {
+    local units=()
+    local u
     # Aztec with remote rpc
     if [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.service ]]; then
           cd  /opt/ethpillar/aztec && docker compose logs -f --tail=233
     fi
-    view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u web3signer -u ssv-node -u ssv-dkg -u csm_nimbusvalidator --no-hostname -f
+    for u in validator consensus execution mevboost charon web3signer ssv-node ssv-dkg csm_nimbusvalidator; do
+        if [[ -f /etc/systemd/system/${u}.service ]]; then
+            units+=(-u "$u")
+        fi
+    done
+    if [[ ${#units[@]} -eq 0 ]]; then
+        echo "No client systemd units installed to follow." >&2
+        return 1
+    fi
+    view_journal_logs "${units[@]}" --no-hostname -f
 }
 
 # Function to display log dialog and return the selected option

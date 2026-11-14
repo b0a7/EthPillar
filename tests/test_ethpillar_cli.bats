@@ -366,7 +366,7 @@ cli_help_command_names() {
     ! grep -q "tmux" "$COMMAND_LOG"
 }
 
-@test "show_rolling_consolidated_logs: Aztec remote-rpc then the same journal units as TUI" {
+@test "show_rolling_consolidated_logs: Aztec remote-rpc then installed journal units only" {
     awk '
         /^show_rolling_consolidated_logs\(\)/ {flag=1}
         flag {print}
@@ -374,7 +374,10 @@ cli_help_command_names() {
     ' logging/journal.sh > "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q '/opt/ethpillar/aztec' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'docker compose logs -f --tail=233' "$MOCK_BIN_DIR/show_rolling_fn.txt"
-    grep -q 'view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u web3signer -u ssv-node -u ssv-dkg -u csm_nimbusvalidator --no-hostname -f' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q 'ssv-node' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q 'ssv-dkg' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q 'units+=(-u' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    grep -q 'view_journal_logs "${units[@]}" --no-hostname -f' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'show_rolling_consolidated_logs' ethpillar.sh
     grep -q 'show_rolling_consolidated_logs' cli.sh
 }
