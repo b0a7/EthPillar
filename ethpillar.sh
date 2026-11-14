@@ -143,10 +143,15 @@ function printInstalledVersions() {
   fi
 
   local ssv_svc="${SSV_NODE_SERVICE_FILE:-/etc/systemd/system/ssv-node.service}"
-  local _SSV=""
+  local dkg_svc="${SSV_DKG_SERVICE_FILE:-/etc/systemd/system/ssv-dkg.service}"
+  local _SSV="" _SSV_DKG=""
   if [[ -f "$ssv_svc" ]]; then
     getSsvCurrentVersion || true
     _SSV="SSV Operator: ${VERSION:-unknown}"
+  fi
+  if [[ -f "$dkg_svc" ]]; then
+    getSsvDkgCurrentVersion || true
+    _SSV_DKG="SSV DKG: ${VERSION:-unknown}"
   fi
 
   local _lines=()
@@ -157,6 +162,7 @@ function printInstalledVersions() {
   [[ -n "$_CH" ]] && _lines+=("${_CH}")
   [[ -n "$_W3S" ]] && _lines+=("${_W3S}")
   [[ -n "$_SSV" ]] && _lines+=("${_SSV}")
+  [[ -n "$_SSV_DKG" ]] && _lines+=("${_SSV_DKG}")
   _lines+=("EthPillar: ${EP_VERSION}")
   printf '%s\n' "${_lines[@]}"
 }
@@ -1053,7 +1059,7 @@ while true; do
         if whiptail --title "Shutdown" --defaultno --yesno "Are you sure you want to shutdown?" 8 78; then sudo shutdown now; fi
         ;;
       📦)
-        whiptail --title "Installed versions" --msgbox "$(printInstalledVersions)" 12 78
+        whiptail --title "Installed versions" --msgbox "$(printInstalledVersions)" 16 78
         ;;
       📊)
         # Install btop process monitoring

@@ -259,6 +259,27 @@ getSsvCurrentVersion() {
   return 0
 }
 
+# Sets VERSION from installed ``ssv-dkg version`` (best-effort).
+getSsvDkgCurrentVersion() {
+  local dkg_svc="${SSV_DKG_SERVICE_FILE:-/etc/systemd/system/ssv-dkg.service}"
+  local bin output
+  VERSION=""
+  INSTALLED_COMMIT=""
+  bin=$(get_systemd_exec_path "$dkg_svc" "/usr/local/bin/ssv-dkg")
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    VERSION="Unable to query SSV DKG version from binary."
+    return 1
+  fi
+  output=$("$bin" version 2>/dev/null || "$bin" --version 2>/dev/null || true)
+  VERSION=$(grep -oiE 'v?[0-9]+\.[0-9]+(\.[0-9]+)?' <<< "$output" | head -1 || true)
+  if [[ -z "$VERSION" ]]; then
+    VERSION="Unable to query SSV DKG version from binary."
+    return 1
+  fi
+  [[ "$VERSION" == v* ]] || VERSION="v${VERSION}"
+  return 0
+}
+
 # Sets VERSION from ``web3signer --version``.
 getWeb3SignerCurrentVersion() {
   local signer_svc="${WEB3SIGNER_SERVICE_FILE:-/etc/systemd/system/web3signer.service}"
