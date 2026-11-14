@@ -1291,9 +1291,13 @@ def quarantine_unit(
 
 
 def _copy_tree(src: str, dest: str) -> None:
+    """Copy directory contents into *dest* using ``cp -a`` (no rsync required)."""
     subprocess.run(["sudo", "mkdir", "-p", dest], check=True)
-    # Trailing slash copies contents into dest.
-    subprocess.run(["sudo", "rsync", "-a", f"{src.rstrip('/')}/", f"{dest.rstrip('/')}/"], check=True)
+    # cp -a src/. dest/ copies contents including hidden files.
+    subprocess.run(
+        ["sudo", "cp", "-a", f"{src.rstrip('/')}/.", f"{dest.rstrip('/')}/"],
+        check=True,
+    )
     subprocess.run(["sudo", "chown", "-R", f"{SSV_USER}:{SSV_USER}", dest], check=True)
 
 
@@ -1365,30 +1369,6 @@ def run_ssv_migration(
     print(plan.summary())
     print("")
 
-    if plan.node_unit:
-        bak = quarantine_unit(plan.node_unit.unit_path, dry_run=dry_run)
-        print(f"{'[dry-run] ' if dry_run else ''}Quarantined {plan.node_unit.unit_name} → {bak}")
-    if plan.dkg_unit:
-        bak = quarantine_unit(plan.dkg_unit.unit_path, dry_run=dry_run)
-        print(f"{'[dry-run] ' if dry_run else ''}Quarantined {plan.dkg_unit.unit_name} → {bak}")
-
-    if not dry_run:
-        ensure_ssv_datadir()
-
-    version = _install_node_binary(plan, dry_run=dry_run)
-    print(
-        f"{'[dry-run] ' if dry_run else ''}"
-        f"ssvnode action={plan.node_binary.action if plan.node_binary else '?'} "
-        f"→ {SSV_NODE_BIN} ({version})"
-    )
-    if plan.dkg_unit:
-        _install_dkg_binary(plan, dry_run=dry_run)
-        print(
-            f"{'[dry-run] ' if dry_run else ''}"
-            f"ssv-dkg action={plan.dkg_binary.action if plan.dkg_binary else '?'} "
-            f"→ {SSV_DKG_BIN}"
-        )
-
     # Configs with EthPillar paths + preserved multi-endpoint BN/EL strings.
     eth_network = plan.eth_network or "mainnet"
     config_body = generate_ssv_config(
@@ -1424,6 +1404,25 @@ def run_ssv_migration(
     )
 
     if dry_run:
+        if plan.node_unit:
+            print(
+                f"[dry-run] Would quarantine {plan.node_unit.unit_name} → "
+                f"{plan.node_unit.unit_path}.bak"
+            )
+        if plan.dkg_unit:
+            print(
+                f"[dry-run] Would quarantine {plan.dkg_unit.unit_name} → "
+                f"{plan.dkg_unit.unit_path}.bak"
+            )
+        print(
+            f"[dry-run] ssvnode action={plan.node_binary.action if plan.node_binary else '?'} "
+            f"→ {SSV_NODE_BIN}"
+        )
+        if plan.dkg_unit:
+            print(
+                f"[dry-run] ssv-dkg action={plan.dkg_binary.action if plan.dkg_binary else '?'} "
+                f"→ {SSV_DKG_BIN}"
+            )
         print(f"[dry-run] Would write {SSV_CONFIG_FILE}")
         print(f"[dry-run] Would write {SSV_DKG_CONFIG_FILE}" if plan.dkg_unit else "")
         print(f"[dry-run] Would import keystore from {plan.private_key_path}")
@@ -1441,10 +1440,29 @@ def run_ssv_migration(
             print(f"[dry-run] Would write {SSV_DKG_SERVICE_PATH}")
         return plan
 
+    # Prepare EthPillar layout while legacy units are still live. Quarantine
+    # only after data/config install succeeds so a mid-migrate failure (e.g.
+    # missing rsync) does not leave the operator down.
+    ensure_ssv_datadir()
+
+    version = _install_node_binary(plan, dry_run=False)
+    print(
+        f"ssvnode action={plan.node_binary.action if plan.node_binary else '?'} "
+        f"→ {SSV_NODE_BIN} ({version})"
+    )
+    if plan.dkg_unit:
+        _install_dkg_binary(plan, dry_run=False)
+        print(
+            f"ssv-dkg action={plan.dkg_binary.action if plan.dkg_binary else '?'} "
+            f"→ {SSV_DKG_BIN}"
+        )
+
     import_operator_keystore_files(plan.private_key_path, plan.password_path)
     if plan.db_path and os.path.isdir(plan.db_path):
+        print(f"Copying DB {plan.db_path} → {SSV_DB_DIR}")
         _copy_tree(plan.db_path, SSV_DB_DIR)
     if plan.dkg_output_path and os.path.isdir(plan.dkg_output_path):
+        print(f"Copying DKG output {plan.dkg_output_path} → {SSV_DKG_OUTPUT_DIR}")
         _copy_tree(plan.dkg_output_path, SSV_DKG_OUTPUT_DIR)
     if plan.tls_cert_path and plan.tls_key_path:
         subprocess.run(["sudo", "mkdir", "-p", SSV_DKG_SSL_DIR], check=True)
@@ -1471,6 +1489,14 @@ def run_ssv_migration(
         _sudo_write_text(SSV_DKG_CONFIG_FILE, dkg_body, "600")
         dkg_unit = generate_ssv_dkg_service(eth_network)
         write_service_file(dkg_unit, SSV_DKG_SERVICE_PATH, "ssv_dkg_migrate_temp.service")
+
+    # Cut over: stop legacy only after EthPillar units + data are in place.
+    if plan.node_unit:
+        bak = quarantine_unit(plan.node_unit.unit_path, dry_run=False)
+        print(f"Quarantined {plan.node_unit.unit_name} → {bak}")
+    if plan.dkg_unit:
+        bak = quarantine_unit(plan.dkg_unit.unit_path, dry_run=False)
+        print(f"Quarantined {plan.dkg_unit.unit_name} → {bak}")
 
     subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
     subprocess.run(["sudo", "systemctl", "enable", "ssv-node"], check=False)

@@ -473,3 +473,30 @@ def test_dry_run_does_not_quarantine(
     for call in mock_run.call_args_list:
         cmd = call.args[0] if call.args else []
         assert "stop" not in cmd
+
+
+def test_copy_tree_uses_cp_not_rsync(tmp_path: Path):
+    from deploy.ssv_migrate import _copy_tree
+
+    src = tmp_path / "src"
+    dest = tmp_path / "dest"
+    src.mkdir()
+    (src / "a").write_text("x", encoding="utf-8")
+    calls: list = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd))
+        # Emulate sudo mkdir/cp/chown for the test harness.
+        if cmd[:2] == ["sudo", "mkdir"]:
+            Path(cmd[-1]).mkdir(parents=True, exist_ok=True)
+        elif cmd[:2] == ["sudo", "cp"]:
+            # sudo cp -a src/. dest/
+            import shutil
+
+            shutil.copytree(src, dest, dirs_exist_ok=True)
+        return MagicMock(returncode=0)
+
+    with patch("deploy.ssv_migrate.subprocess.run", side_effect=_run):
+        _copy_tree(str(src), str(dest))
+    assert any(c[:2] == ["sudo", "cp"] for c in calls)
+    assert not any("rsync" in c for c in calls)
