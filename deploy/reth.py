@@ -43,6 +43,9 @@ def generate_reth_service(eth_network: str, el_p2p_port: str, el_p2p_port_2: str
         "--http",
         f"--http.port {el_rpc_port}",
         "--http.api=\"rpc,eth,web3,net,debug\"",
+        "--ws",
+        "--ws.addr 127.0.0.1",
+        "--ws.port 8546",
         f"--authrpc.jwtsecret {jwtsecret_path}"
     ]
     if sync_parameters:

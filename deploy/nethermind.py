@@ -34,6 +34,8 @@ def generate_nethermind_service(eth_network: str, el_p2p_port: str, el_rpc_port:
         f"--Network.P2PPort {el_p2p_port}",
         f"--Network.MaxActivePeers {el_max_peer_count}",
         f"--JsonRpc.Port {el_rpc_port}",
+        "--JsonRpc.Host 127.0.0.1",
+        "--JsonRpc.WebSocketsPort 8546",
         "--Metrics.Enabled true",
         "--Metrics.ExposePort 6060",
         f"--JsonRpc.JwtSecretFile {jwtsecret_path}",

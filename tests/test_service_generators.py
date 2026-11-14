@@ -248,6 +248,9 @@ class TestBesuService:
         assert "--data-storage-format=BONSAI" in result
         assert 'Environment="JAVA_OPTS=-Xmx5g"' in result
         assert "User=execution" in result
+        assert "--rpc-ws-enabled=true" in result
+        assert "--rpc-ws-host=127.0.0.1" in result
+        assert "--rpc-ws-port=8546" in result
 
     def test_ephemery_custom_network(self):
         """Ephemery uses custom genesis file and bootnodes."""
@@ -338,6 +341,7 @@ class TestGethService:
         assert "--http \\" in result
         assert "--authrpc.port 8551 \\" in result
         assert "--ws \\" in result
+        assert "--ws.addr 127.0.0.1 \\" in result
         assert "--ws.port 8546 \\" in result
         assert "--ws.api eth,net,web3" in result
         assert "--state.scheme=path \\" in result
@@ -433,6 +437,8 @@ class TestNethermindService:
         assert f"--Network.P2PPort {EL_P2P_PORT}" in result
         assert f"--Network.MaxActivePeers {EL_MAX_PEER_COUNT}" in result
         assert f"--JsonRpc.Port {EL_RPC_PORT}" in result
+        assert "--JsonRpc.Host 127.0.0.1" in result
+        assert "--JsonRpc.WebSocketsPort 8546" in result
         assert f"--JsonRpc.JwtSecretFile {JWTSECRET_PATH}" in result
         assert f"WorkingDirectory={BASE_DATA_DIR}/nethermind" in result
         assert f"Environment=\"DOTNET_BUNDLE_EXTRACT_BASE_DIR={BASE_DATA_DIR}/nethermind/bundle-extract\"" in result
@@ -482,6 +488,9 @@ class TestRethService:
         assert "--enable-discv5-discovery" not in result
         assert f"--max-outbound-peers {reth_max_peers}" in result
         assert f"--max-inbound-peers {reth_max_peers}" in result
+        assert "--ws \\" in result or "--ws\n" in result or "--ws " in result
+        assert "--ws.addr 127.0.0.1" in result
+        assert "--ws.port 8546" in result
         assert "Environment=RUST_LOG=info" in result
         assert "--prune.bodies.pre-merge" in result
 
@@ -525,6 +534,8 @@ def assert_erigon_metrics_port_matches_scrape(unit: str) -> None:
     assert "--pprof.addr" not in unit
     assert "--metrics.addr" not in unit
     assert "--http.api=web3,eth,net,engine" in unit
+    assert "--ws" in unit
+    assert "--ws.port=8546" in unit
 
 
 class TestErigonService:
