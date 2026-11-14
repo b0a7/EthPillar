@@ -17,7 +17,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from deploy.common import (
     BASE_DATA_DIR,
@@ -239,6 +239,7 @@ def generate_ssv_node_service(
     config_path: str = SSV_CONFIG_FILE,
     *,
     binary: str = SSV_NODE_BIN,
+    unit_after: Optional[List[str]] = None,
 ) -> str:
     """Generate ``ssv-node.service`` unit content.
 
@@ -246,6 +247,9 @@ def generate_ssv_node_service(
         eth_network: Network name for the unit description.
         config_path: Path to ``config.yaml``.
         binary: Path to ``ssvnode``.
+        unit_after: Extra ``After=``/``Wants=`` units. Defaults to local
+            ``consensus.service`` + ``execution.service``. Pass an empty list
+            to omit them (remote BN/EL / SSV-only hosts).
 
     Returns:
         Systemd unit file body.
@@ -256,6 +260,10 @@ def generate_ssv_node_service(
             f"--config={config_path}",
         ]
     )
+    if unit_after is None:
+        after = ["consensus.service", "execution.service"]
+    else:
+        after = unit_after or None
     return generate_systemd_template(
         description=f"SSV Operator Node for {eth_network.upper()}",
         user=SSV_USER,
@@ -263,7 +271,7 @@ def generate_ssv_node_service(
         working_dir=SSV_DATA_DIR,
         timeout_stop_sec=120,
         limit_nofile=65536,
-        unit_after=["consensus.service", "execution.service"],
+        unit_after=after,
     )
 
 
@@ -272,6 +280,7 @@ def generate_ssv_dkg_service(
     config_path: str = SSV_DKG_CONFIG_FILE,
     *,
     binary: str = SSV_DKG_BIN,
+    unit_after: Optional[List[str]] = None,
 ) -> str:
     """Generate ``ssv-dkg.service`` unit content.
 
@@ -279,6 +288,8 @@ def generate_ssv_dkg_service(
         eth_network: Network name for the unit description.
         config_path: Path to ``operator.yaml``.
         binary: Path to ``ssv-dkg``.
+        unit_after: Extra ``After=``/``Wants=`` units. Defaults to local
+            ``execution.service``. Pass an empty list to omit (remote EL).
 
     Returns:
         Systemd unit file body.
@@ -294,6 +305,10 @@ def generate_ssv_dkg_service(
             f"--configPath={config_flag}",
         ]
     )
+    if unit_after is None:
+        after = ["execution.service"]
+    else:
+        after = unit_after or None
     return generate_systemd_template(
         description=f"SSV DKG Operator for {eth_network.upper()}",
         user=SSV_USER,
@@ -301,7 +316,7 @@ def generate_ssv_dkg_service(
         working_dir=SSV_DATA_DIR,
         timeout_stop_sec=120,
         limit_nofile=65536,
-        unit_after=["execution.service"],
+        unit_after=after,
     )
 
 
@@ -539,6 +554,22 @@ def write_dkg_operator_config(
     return SSV_DKG_CONFIG_FILE
 
 
+def _endpoints_look_local(*urls: str) -> bool:
+    """True when every non-empty URL targets localhost / 127.0.0.1 / ::1."""
+    local_hosts = ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+    found_any = False
+    for raw in urls:
+        for part in (raw or "").replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            found_any = True
+            lower = part.lower()
+            if not any(h in lower for h in local_hosts):
+                return False
+    return found_any
+
+
 def install_ssv(
     eth_network: str,
     beacon_node_addr: str,
@@ -592,7 +623,16 @@ def install_ssv(
     )
     _sudo_write_text(SSV_CONFIG_FILE, config, "600")
 
-    node_unit = generate_ssv_node_service(eth_network)
+    # Omit local consensus/execution Wants when BN/EL endpoints are remote.
+    local_stack = _endpoints_look_local(beacon_node_addr, eth1_ws_addr)
+    node_after: Optional[List[str]] = (
+        ["consensus.service", "execution.service"] if local_stack else []
+    )
+    dkg_after: Optional[List[str]] = (
+        ["execution.service"] if _endpoints_look_local(eth1_http_addr) else []
+    )
+
+    node_unit = generate_ssv_node_service(eth_network, unit_after=node_after)
     write_service_file(node_unit, SSV_NODE_SERVICE_PATH, "ssv_node_temp.service")
 
     dkg_path = ""
@@ -613,11 +653,89 @@ def install_ssv(
             operator_id=operator_id,
             dkg_port=dkg_port,
         )
-        dkg_unit = generate_ssv_dkg_service(eth_network)
+        dkg_unit = generate_ssv_dkg_service(eth_network, unit_after=dkg_after)
         write_service_file(dkg_unit, SSV_DKG_SERVICE_PATH, "ssv_dkg_temp.service")
         dkg_path = SSV_DKG_SERVICE_PATH
 
     return ssv_version, SSV_NODE_SERVICE_PATH, dkg_path
+
+
+def _read_config_text(path: str) -> str:
+    """Best-effort read of a config file (plain open, then ``sudo cat``)."""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        result = subprocess.run(
+            ["sudo", "cat", path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout if result.returncode == 0 else ""
+
+
+def _yaml_port(content: str, key: str, default: int) -> int:
+    """Parse ``key: <int>`` from a YAML body; return *default* on failure."""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}:"):
+            raw = stripped.split(":", 1)[1].strip().split()[0] if stripped.split(":", 1)[1].strip() else ""
+            try:
+                port = int(raw)
+            except ValueError:
+                return default
+            return port if 1 <= port <= 65535 else default
+    return default
+
+
+def read_ssv_ports(
+    *,
+    config_path: str = SSV_CONFIG_FILE,
+    dkg_config_path: str = SSV_DKG_CONFIG_FILE,
+    env: Optional[dict] = None,
+) -> dict:
+    """Return P2P/metrics/API/DKG ports from config files with env fallbacks.
+
+    Args:
+        config_path: Node ``config.yaml``.
+        dkg_config_path: DKG ``operator.yaml``.
+        env: Optional env mapping (defaults to ``os.environ``).
+
+    Returns:
+        Dict with keys ``tcp``, ``udp``, ``metrics``, ``api``, ``dkg``.
+    """
+    environ = env if env is not None else os.environ
+
+    def _env_int(key: str, default: int) -> int:
+        raw = (environ.get(key) or "").strip()
+        if not raw:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            return default
+        return value if 1 <= value <= 65535 else default
+
+    cfg = _read_config_text(config_path)
+    dkg = _read_config_text(dkg_config_path)
+    return {
+        "tcp": _yaml_port(cfg, "TcpPort", _env_int("SSV_P2P_TCP_PORT", DEFAULT_P2P_TCP_PORT))
+        if cfg
+        else _env_int("SSV_P2P_TCP_PORT", DEFAULT_P2P_TCP_PORT),
+        "udp": _yaml_port(cfg, "UdpPort", _env_int("SSV_P2P_UDP_PORT", DEFAULT_P2P_UDP_PORT))
+        if cfg
+        else _env_int("SSV_P2P_UDP_PORT", DEFAULT_P2P_UDP_PORT),
+        "metrics": parse_metrics_port(cfg)
+        if cfg
+        else _env_int("SSV_METRICS_PORT", DEFAULT_METRICS_PORT),
+        "api": _yaml_port(cfg, "SSVAPIPort", _env_int("SSV_API_PORT", DEFAULT_API_PORT))
+        if cfg
+        else _env_int("SSV_API_PORT", DEFAULT_API_PORT),
+        "dkg": _yaml_port(dkg, "port", _env_int("SSV_DKG_PORT", DEFAULT_DKG_PORT))
+        if dkg
+        else _env_int("SSV_DKG_PORT", DEFAULT_DKG_PORT),
+    }
 
 
 def parse_metrics_port(

@@ -29,9 +29,21 @@ def test_classify_unit_name_variants():
     assert classify_unit_name("SSV.service") == "node"
     assert classify_unit_name("ssvdkg.service") == "dkg"
     assert classify_unit_name("ssv_dkg.service") == "dkg"
-    assert classify_unit_name("ssv-dkg.service") is None  # EthPillar target
-    assert classify_unit_name("ssv-node.service") is None  # EthPillar target
+    # Bare EthPillar names without body → treat as already-managed.
+    assert classify_unit_name("ssv-dkg.service") is None
+    assert classify_unit_name("ssv-node.service") is None
     assert classify_unit_name("something.service") is None
+    # Legacy unit that reuses EthPillar *names* but different paths → migrate.
+    legacy_node = (
+        "[Service]\nWorkingDirectory=/home/u/ssv\n"
+        "ExecStart=/home/u/ssv/bin/ssvnode start-node --config=/home/u/ssv/config.yaml\n"
+    )
+    assert classify_unit_name("ssv-node.service", unit_text=legacy_node) == "node"
+    ethpillar_node = (
+        "[Service]\nWorkingDirectory=/var/lib/ssv\n"
+        "ExecStart=/usr/local/bin/ssvnode start-node --config=/var/lib/ssv/config.yaml\n"
+    )
+    assert classify_unit_name("ssv-node.service", unit_text=ethpillar_node) is None
 
 
 def test_parse_unit_and_exec_helpers():
@@ -131,11 +143,12 @@ def test_versions_match_normalizes_v_prefix():
     assert not versions_match("", "v2.5.1")
 
 
-def test_eth1_ws_to_http_preserves_semicolon_list():
+def test_eth1_ws_to_http_preserves_ports_and_semicolon_list():
     from deploy.ssv_migrate import _eth1_ws_to_http
 
-    ws = "ws://a:8546;ws://b:8546;ws://c:8546"
-    assert _eth1_ws_to_http(ws) == "http://a:8545;http://b:8545;http://c:8545"
+    # Scheme only — do not remap :8546→:8545 (non-standard layouts).
+    ws = "ws://a:8546;ws://b:8556;wss://c:443"
+    assert _eth1_ws_to_http(ws) == "http://a:8546;http://b:8556;https://c:443"
 
 
 def test_parse_cli_flags_from_run_ssv_dkg_wrapper(tmp_path: Path):
@@ -436,25 +449,27 @@ def test_plan_rebuild_when_older(mock_probe, mock_rel, mock_dkg, tmp_path: Path)
     assert plan2.node_binary.action == "copy"
 
 
-@patch("deploy.ssv_migrate.subprocess.run")
-def test_quarantine_renames_to_bak(mock_run, tmp_path: Path):
+@patch("deploy.systemd_units.subprocess.run")
+@patch("deploy.systemd_units.verify_unit_absent")
+def test_quarantine_renames_to_bak(mock_verify, mock_run, tmp_path: Path):
     unit_dir = tmp_path / "systemd"
     unit_dir.mkdir()
     unit = unit_dir / "ssvnode.service"
     unit.write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
 
     def _run(cmd, **kwargs):
-        # Emulate sudo mv for quarantine.
+        # Emulate sudo mv for quarantine (shared helper).
         if len(cmd) >= 4 and cmd[1] == "mv":
             Path(cmd[3]).write_text(Path(cmd[2]).read_text(encoding="utf-8"), encoding="utf-8")
             Path(cmd[2]).unlink()
         return MagicMock(returncode=0)
 
     mock_run.side_effect = _run
-    bak = quarantine_unit(str(unit), dry_run=False)
+    bak = quarantine_unit(str(unit), dry_run=False, verify=True)
     assert bak.endswith(".service.bak")
     assert not unit.exists()
     assert Path(bak).exists()
+    mock_verify.assert_called()
 
 
 @patch("deploy.ssv_migrate.subprocess.run", return_value=MagicMock(returncode=0))
@@ -500,3 +515,76 @@ def test_copy_tree_uses_cp_not_rsync(tmp_path: Path):
         _copy_tree(str(src), str(dest))
     assert any(c[:2] == ["sudo", "cp"] for c in calls)
     assert not any("rsync" in c for c in calls)
+
+
+def test_copy_tree_skips_same_realpath(tmp_path: Path):
+    from deploy.ssv_migrate import _copy_tree
+
+    dest = tmp_path / "db"
+    dest.mkdir()
+    (dest / "a").write_text("x", encoding="utf-8")
+    calls: list = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    with patch("deploy.ssv_migrate.subprocess.run", side_effect=_run):
+        _copy_tree(str(dest), str(dest))
+    assert not any(c[:2] == ["sudo", "cp"] for c in calls)
+    assert any("chown" in c for c in calls)
+
+
+@patch("deploy.ssv_migrate.operator_keystore_present", return_value=True)
+def test_already_migrated_short_circuit(mock_ks, tmp_path: Path):
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    (unit_dir / "ssv-node.service").write_text(
+        "[Service]\nWorkingDirectory=/var/lib/ssv\n"
+        "ExecStart=/usr/local/bin/ssvnode start-node "
+        "--config=/var/lib/ssv/config.yaml\n",
+        encoding="utf-8",
+    )
+    plan = plan_ssv_migration(unit_dir=str(unit_dir))
+    assert not plan.errors
+    assert any("Already migrated" in w for w in plan.warnings)
+    run_ssv_migration(unit_dir=str(unit_dir))  # no-op success
+
+
+def test_rewrite_legacy_node_config_preserves_extra_keys():
+    from deploy.ssv_migrate import rewrite_legacy_node_config_for_ethpillar
+
+    legacy = """
+global:
+  LogLevel: debug
+  LogFilePath: /old/debug.log
+db:
+  Path: /old/db
+ssv:
+  Network: hoodi
+  CustomFlag: keep-me
+KeyStore:
+  PrivateKeyFile: /old/key.json
+  PasswordFile: /old/password
+"""
+    out = rewrite_legacy_node_config_for_ethpillar(legacy)
+    assert "CustomFlag: keep-me" in out
+    assert "LogLevel: debug" in out
+    assert "PrivateKeyFile: /var/lib/ssv/encrypted_private_key.json" in out
+    assert "Path: /var/lib/ssv/db" in out
+
+
+def test_config_from_environment_file(tmp_path: Path):
+    from deploy.ssv_migrate import _config_from_environment
+
+    env_file = tmp_path / "ssv.env"
+    env_file.write_text("SSV_CONFIG=/data/config.yaml\n", encoding="utf-8")
+    fields = {"EnvironmentFile": str(env_file)}
+    assert _config_from_environment(fields, unit_dir=str(tmp_path)) == "/data/config.yaml"
+
+
+def test_endpoints_look_local():
+    from deploy.ssv_migrate import endpoints_look_local
+
+    assert endpoints_look_local("http://127.0.0.1:5052", "ws://127.0.0.1:8546")
+    assert not endpoints_look_local("http://10.0.0.1:5052", "ws://127.0.0.1:8546")

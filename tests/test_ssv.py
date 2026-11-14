@@ -96,6 +96,31 @@ def test_generate_ssv_services():
     assert "--configPath=./operator.yaml" in dkg
     assert "WorkingDirectory=/var/lib/ssv" in dkg
 
+    remote = generate_ssv_node_service("mainnet", unit_after=[])
+    assert "consensus.service" not in remote
+    assert "After=network-online.target\n" in remote or "After=network-online.target\r" in remote
+
+
+def test_read_ssv_ports_from_config(tmp_path):
+    from deploy.ssv import read_ssv_ports
+
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text(
+        "p2p:\n  TcpPort: 13011\n  UdpPort: 12011\n"
+        "MetricsAPIPort: 15011\nSSVAPIPort: 16011\n",
+        encoding="utf-8",
+    )
+    dkg = tmp_path / "operator.yaml"
+    dkg.write_text("port: 3033\n", encoding="utf-8")
+    ports = read_ssv_ports(config_path=str(cfg), dkg_config_path=str(dkg), env={})
+    assert ports == {
+        "tcp": 13011,
+        "udp": 12011,
+        "metrics": 15011,
+        "api": 16011,
+        "dkg": 3033,
+    }
+
 
 def test_ssv_excluded_from_charon_signer_menu():
     menu = get_vc_options_for_cc(
@@ -141,10 +166,11 @@ def test_run_install_ssv_skips_validator_and_calls_install(monkeypatch):
 
     monkeypatch.setattr("deploy.ssv.install_ssv", _fake_install)
     monkeypatch.setattr("deploy.common.setup_node", lambda *a, **k: None)
-    monkeypatch.setattr(
-        "deploy.common.finish_install",
-        lambda *a, **k: calls.setdefault("finish", k),
-    )
+    def _finish(*a, **k):
+        calls["finish_args"] = a
+        calls["finish"] = k
+
+    monkeypatch.setattr("deploy.common.finish_install", _finish)
     monkeypatch.setattr("deploy.lighthouse.download_lighthouse", lambda *a, **k: "v0")
     monkeypatch.setattr(
         "deploy.lighthouse.install_lighthouse_bn",
@@ -194,4 +220,5 @@ def test_run_install_ssv_skips_validator_and_calls_install(monkeypatch):
     assert "install" in calls
     assert flags["validator"] is False
     assert calls["finish"].get("ssv_enabled") is True
-    assert calls["finish"].get("validator_enabled") is False
+    # validator_enabled is a positional arg to finish_install (index 12).
+    assert calls["finish_args"][12] is False

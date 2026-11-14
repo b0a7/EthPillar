@@ -799,7 +799,7 @@ while true; do
     SUBCHOICE=$(whiptail --clear --cancel-button "Back" \
       --backtitle "$BACKTITLE" \
       --title "SSV Operator" \
-      --menu "Node + DKG share /var/lib/ssv/ secrets. Metrics stay on localhost:15000." \
+      --menu "Node + DKG share /var/lib/ssv/ secrets. Metrics/API: UFW-deny (scrape via localhost)." \
       0 0 0 \
       "${SUBOPTIONS[@]}" \
       3>&1 1>&2 2>&3)

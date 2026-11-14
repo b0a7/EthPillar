@@ -68,15 +68,19 @@ def test_ensure_ssv_scrape_missing_file(tmp_path: Path):
 
 
 def test_provision_ssv_monitoring_noop_without_prometheus(tmp_path: Path):
+    # Use paths whose parents do not exist so Grafana provisioning is skipped.
+    missing = tmp_path / "absent" / "missing.yml"
     results = provision_ssv_monitoring(
-        prometheus_yml=tmp_path / "missing.yml",
-        grafana_dashboards=tmp_path / "dash",
-        datasources_yml=tmp_path / "ds.yml",
+        prometheus_yml=missing,
+        grafana_dashboards=tmp_path / "absent" / "dash",
+        datasources_yml=tmp_path / "absent" / "ds.yml",
     )
     assert results == {"scrape": False, "dashboard": False, "datasource": False}
 
 
 def test_provision_dashboard_writes_file(tmp_path: Path):
+    import json
+
     dash_dir = tmp_path / "dashboards"
     payload = (
         b'{"uid":"ssv","title":"SSV Operational","templating":{"list":['
@@ -89,9 +93,14 @@ def test_provision_dashboard_writes_file(tmp_path: Path):
 
     with patch("manage.ssv_monitoring.download_grafana_dashboard", side_effect=_fake_download):
         assert provision_ssv_dashboard(dash_dir) is True
-        text = (dash_dir / "ssv_operational.json").read_text(encoding="utf-8")
-        assert 'label_values(up{job="ssv"}, pod)' in text
-        assert "otel_scope_info" not in text
+        data = json.loads((dash_dir / "ssv_operational.json").read_text(encoding="utf-8"))
+        query = data["templating"]["list"][0]["query"]
+        if isinstance(query, dict):
+            query = query["query"]
+        assert query == 'label_values(up{job="ssv"}, pod)'
+        assert "otel_scope_info" not in (dash_dir / "ssv_operational.json").read_text(
+            encoding="utf-8"
+        )
 
 
 def test_rewrite_ssv_dashboard_pod_variable_dict_query():

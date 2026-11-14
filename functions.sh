@@ -1109,20 +1109,29 @@ getCharonP2pPort(){
     fi
 }
 
-# Stop validator → charon → ssv → consensus before BN maintenance (update/resync).
+# Stop validator → charon → ssv(+dkg) → consensus before BN maintenance (update/resync).
 stopConsensusStackForUpdate(){
     test -f /etc/systemd/system/validator.service && sudo systemctl stop validator 2>/dev/null || true
     isCharonEnabled && sudo systemctl stop charon 2>/dev/null || true
+    isSsvDkgEnabled && sudo systemctl stop ssv-dkg 2>/dev/null || true
     isSsvEnabled && sudo systemctl stop ssv-node 2>/dev/null || true
     test -f /etc/systemd/system/consensus.service && sudo systemctl stop consensus 2>/dev/null || true
 }
 
-# Start consensus → charon → ssv → validator after BN maintenance.
+# Start consensus → ssv(+dkg) → charon → validator after BN maintenance.
 startConsensusStackAfterUpdate(){
     test -f /etc/systemd/system/consensus.service && sudo systemctl start consensus 2>/dev/null || true
-    isCharonEnabled && sudo systemctl start charon 2>/dev/null || true
     isSsvEnabled && sudo systemctl start ssv-node 2>/dev/null || true
+    isSsvDkgEnabled && sudo systemctl start ssv-dkg 2>/dev/null || true
+    isCharonEnabled && sudo systemctl start charon 2>/dev/null || true
     test -f /etc/systemd/system/validator.service && sudo systemctl start validator 2>/dev/null || true
+}
+
+# Retire a systemd unit via shared Python helper (stop+disable+*.bak+reload+verify).
+# Prefer this whenever a unit is taken out of service permanently.
+retireSystemdUnit(){
+    local unit="${1:?unit name or path required}"
+    PYTHONPATH="${BASE_DIR}" python3 -m deploy.systemd_units retire "$unit"
 }
 
 # Stop validator (and Charon when DVT) before VC binary update.
@@ -1170,19 +1179,35 @@ ufwAllowCharonP2p(){
     sudo ufw allow "${port}/tcp" comment 'Allow Charon P2P port'
 }
 
+# Read SSV ports from config.yaml / operator.yaml (fallback to env defaults).
+# Prints: tcp udp metrics api dkg
+ssvPortsFromConfig(){
+    PYTHONPATH="${BASE_DIR}" python3 -c \
+        'from deploy.ssv import read_ssv_ports; p=read_ssv_ports(); print(p["tcp"], p["udp"], p["metrics"], p["api"], p["dkg"])'
+}
+
 # Allow SSV P2P (TCP+UDP) and DKG TCP in UFW (no-op when SSV not installed).
-# Metrics/API stay localhost-only and are not opened.
+# Deny metrics/API from the WAN — SSV binds :port on all interfaces by default.
 ufwAllowSsvPorts(){
-    local tcp_port udp_port dkg_port
+    local tcp_port udp_port metrics_port api_port dkg_port ports
     isSsvEnabled || return 0
-    tcp_port="${SSV_P2P_TCP_PORT:-13001}"
-    udp_port="${SSV_P2P_UDP_PORT:-12001}"
-    dkg_port="${SSV_DKG_PORT:-3030}"
+    ports="$(ssvPortsFromConfig 2>/dev/null || true)"
+    # shellcheck disable=SC2086
+    set -- ${ports}
+    tcp_port="${1:-${SSV_P2P_TCP_PORT:-13001}}"
+    udp_port="${2:-${SSV_P2P_UDP_PORT:-12001}}"
+    metrics_port="${3:-${SSV_METRICS_PORT:-15000}}"
+    api_port="${4:-${SSV_API_PORT:-16000}}"
+    dkg_port="${5:-${SSV_DKG_PORT:-3030}}"
     sudo ufw allow "${tcp_port}/tcp" comment 'Allow SSV P2P TCP'
     sudo ufw allow "${udp_port}/udp" comment 'Allow SSV P2P UDP'
     if isSsvDkgEnabled; then
         sudo ufw allow "${dkg_port}/tcp" comment 'Allow SSV DKG'
     fi
+    # Prefer deny over allow so metrics/API are not reachable remotely even
+    # when UFW default incoming is allow (docs claim localhost-only).
+    sudo ufw deny "${metrics_port}/tcp" comment 'Deny SSV metrics (localhost scrape)' 2>/dev/null || true
+    sudo ufw deny "${api_port}/tcp" comment 'Deny SSV API (localhost only)' 2>/dev/null || true
 }
 
 # First word of Description= — same heuristic as getClient / node-checker.
@@ -2192,8 +2217,10 @@ ${_migrate_log}" 12 70
 
 Log: ${_migrate_log}
 
-Rollback: stop EthPillar ssv-*; rename *.service.bak → *.service;
-daemon-reload; start legacy units." 14 72
+Rollback:
+  PYTHONPATH=${BASE_DIR} python3 -m deploy.ssv_migrate rollback [--start]
+
+(Retires EthPillar ssv-* to *.bak first, then restores legacy *.service.bak.)" 16 72
     return 0
 }
 
@@ -2216,17 +2243,24 @@ ssv-node and ssv-dkg. Back them up separately." 16 70 --ok-button "Submit" 3>&1 
 ${SRC}" 9 70
         return 1
     fi
+    # Stop before overwrite so a running node cannot race the keystore files.
+    isSsvDkgEnabled && sudo systemctl stop ssv-dkg 2>/dev/null || true
+    isSsvEnabled && sudo systemctl stop ssv-node 2>/dev/null || true
     if ! PYTHONPATH="${BASE_DIR}" python3 -m deploy.ssv import-keystore "$SRC"; then
         whiptail --title "Import SSV operator keystore" --msgbox \
 "Import failed. Ensure both files exist in:
 ${SRC}" 10 70
         return 1
     fi
-    whiptail --title "Import SSV operator keystore" --msgbox \
+    if whiptail --title "Import SSV operator keystore" --yesno \
 "Operator keystore imported into /var/lib/ssv/.
 
 Back up encrypted_private_key.json and password
-on a separate device, then start ssv-node." 12 70
+on a separate device.
+
+Start ssv-node now?" 14 70; then
+        sudo systemctl start ssv-node
+    fi
 }
 
 importCharonClusterFolder(){

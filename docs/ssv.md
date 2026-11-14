@@ -26,17 +26,19 @@ Docker. DKG still uses the published zip assets.
 
 ## Install
 
-1. Install EL + CL as usual (EL must expose WebSocket, typically `:8546`).
+1. Install EL + CL as usual (EL must expose WebSocket on localhost `:8546` —
+   EthPillar enables localhost WS for Geth, Besu, Nethermind, Reth, Erigon, ethrex).
 2. On the validator-mode prompt, choose **SSV Operator** (or pass `--with_ssv`).
 3. Not available as the Charon/Web3Signer *second* signer prompt.
 4. Mutually exclusive with Charon and Web3Signer.
-5. **SSV-only host** (remote BN/EL): use **Validator Client Only** → **SSV Operator**, or migrate an existing systemd operator (below).
+5. **SSV-only host** (remote BN/EL): use **Validator Client Only** → **SSV Operator**, or migrate an existing systemd operator (below). Remote endpoints omit local `Wants=consensus/execution`.
 
 ## Migrate from existing systemd SSV
 
 For a VM that already runs `ssvnode.service` / `ssvdkg.service` (or name variants
-like `ssv-node`, `ssv_node`, `ssv-dkg`), EthPillar can take over management without
-reinstalling EL/CL:
+like `ssv_node`, `ssv.service`, or a *legacy* unit that happens to be named
+`ssv-node` / `ssv-dkg` but is **not** already EthPillar-managed), EthPillar can
+take over without reinstalling EL/CL:
 
 ```bash
 ethpillar --migrate_ssv
@@ -48,23 +50,32 @@ PYTHONPATH=. python3 -m deploy.ssv_migrate run --start  # enable + start
 
 What it does:
 
-1. Discovers legacy node/DKG units under `/etc/systemd/system/`
-2. Reads `ExecStart` / `WorkingDirectory` to find config + binaries (also parses
-   `run_ssv-dkg.sh` CLI flags when there is no YAML `operator-config`)
-3. Preserves **full** `BeaconNodeAddr` / `ETH1Addr` (including multiple EL/CL pairs) and ports in `/var/lib/ssv/config.yaml` — not `.env.overrides`
-4. Stops, disables, and renames legacy units to `*.service.bak` (systemd will not load them)
-5. Copies keystore + `db/` (+ DKG output; TLS cert/key → `/var/lib/ssv/ssl/` when the wrapper uses `--serverTLSCertPath` / `--serverTLSKeyPath`)
-6. Reuses legacy binaries when they match GitHub LATEST; otherwise rebuilds `ssvnode` / downloads `ssv-dkg` (`--rebuild-ssvnode`, `--allow-older-binary`)
+1. Discovers legacy node/DKG units under `/etc/systemd/system/` (skips units that
+   already look like EthPillar `/var/lib/ssv` + `/usr/local/bin/ssvnode`)
+2. Reads `ExecStart` / `WorkingDirectory` / `Environment` / `EnvironmentFile` to
+   find config + binaries (also parses `run_ssv-dkg.sh` CLI flags)
+3. Preserves legacy `config.yaml` knobs (rewrites only KeyStore/db/log paths) and
+   full multi-endpoint `BeaconNodeAddr` / `ETH1Addr`
+4. Installs EthPillar binaries, **stops** legacy for a consistent DB copy, writes
+   EthPillar units, then **retires** legacy via the shared helper:
+   stop → disable → rename to `*.service.bak` → `daemon-reload` → **verify absent**
+5. Only after verification succeeds: enable (and optionally start) EthPillar units
+6. Reuses legacy binaries when they match GitHub LATEST; otherwise rebuilds
 
-DKG and the node **share** keystore/password/db under `/var/lib/ssv/`. DKG still gets its own `operator.yaml` (operator ID, ETH1 HTTP, TLS paths).
+If EthPillar SSV is already installed and no legacy unit remains, migrate
+short-circuits with “Already migrated” (no changes).
 
-**Rollback:** stop EthPillar `ssv-node` / `ssv-dkg`, rename `*.service.bak` → `*.service`, `daemon-reload`, start the legacy units.
+**Rollback** (safe — EthPillar units are retired *before* legacy bak restore):
+
+```bash
+PYTHONPATH=. python3 -m deploy.ssv_migrate rollback [--start]
+```
 
 ## Secrets
 
 On first start without existing files, the node can generate
 `encrypted_private_key.json` + `password`. Import existing keys via
-**EthPillar → SSV Operator → Import operator keystore**.
+**EthPillar → SSV Operator → Import operator keystore** (stops services first).
 
 **Back up both files on a separate device.** Losing either file means losing
 the operator with no recovery path. The same files are required by `ssv-dkg`.
@@ -73,14 +84,16 @@ the operator with no recovery path. The same files are required by `ssv-dkg`.
 
 | Port | Proto | Purpose | UFW |
 |------|-------|---------|-----|
-| 13001 | TCP | P2P | Open |
+| 13001 | TCP | P2P | Open (from config.yaml when present) |
 | 12001 | UDP | Discovery | Open |
 | 3030 | TCP | DKG | Open when DKG enabled |
-| 15000 | TCP | Prometheus metrics | Localhost only |
-| 16000 | TCP | Health/API | Localhost only |
+| 15000 | TCP | Prometheus metrics | **Denied** (scrape via localhost) |
+| 16000 | TCP | Health/API | **Denied** (localhost only) |
 
-EthPillar → Security → UFW → **SSV: Allow P2P…** (or enable-defaults) opens
-P2P + DKG. Override ports with `SSV_*` in `env` / `.env.overrides`.
+EthPillar → Security → UFW → **SSV: Allow P2P…** reads ports from
+`/var/lib/ssv/config.yaml` (and DKG yaml) with `SSV_*` env as fallback, opens
+P2P + DKG, and **denies** metrics/API. Override ports with `SSV_*` in `env` /
+`.env.overrides` before install.
 
 ## Monitoring
 

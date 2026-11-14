@@ -358,9 +358,18 @@ cli_help_command_names() {
 }
 
 @test "logs: dispatches to view_journal_logs, not view_logs.sh" {
-    run ./ethpillar.sh logs
+    # Bare `logs` uses show_rolling (hard-coded /etc paths); named units honor
+    # *_SERVICE_FILE test overrides via cli.sh.
+    write_service "$VALIDATOR_SERVICE_FILE"
+    write_service "$CONSENSUS_SERVICE_FILE"
+    write_service "$EXEC_SERVICE_FILE"
+    write_service "$MEVBOOST_SERVICE_FILE"
+    write_service "$CHARON_SERVICE_FILE"
+    write_service "$CSM_VALIDATOR_SERVICE_FILE"
+
+    run ./ethpillar.sh logs validator consensus execution mevboost charon csm_nimbusvalidator
     [ "$status" -eq 0 ]
-    grep -q "journalctl -o json -u validator -u consensus -u execution -u mevboost -u charon -u web3signer -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
+    grep -q "journalctl -o json -u validator -u consensus -u execution -u mevboost -u charon -u csm_nimbusvalidator --no-hostname -f" "$COMMAND_LOG"
     grep -q "journal_format.py" "$COMMAND_LOG"
     ! grep -q "view_logs.sh" "$COMMAND_LOG"
     ! grep -q "tmux" "$COMMAND_LOG"
@@ -377,7 +386,8 @@ cli_help_command_names() {
     grep -q 'ssv-node' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'ssv-dkg' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'units+=(-u' "$MOCK_BIN_DIR/show_rolling_fn.txt"
-    grep -q 'view_journal_logs "${units[@]}" --no-hostname -f' "$MOCK_BIN_DIR/show_rolling_fn.txt"
+    # -F: [@] is otherwise a BRE character class and misses the literal line.
+    grep -Fq 'view_journal_logs "${units[@]}" --no-hostname -f' "$MOCK_BIN_DIR/show_rolling_fn.txt"
     grep -q 'show_rolling_consolidated_logs' ethpillar.sh
     grep -q 'show_rolling_consolidated_logs' cli.sh
 }
@@ -541,22 +551,27 @@ cli_help_command_names() {
     source ./cli.sh
     mapfile -t start_order < <(tui_all_service_order start)
     mapfile -t stop_order < <(tui_all_service_order stop)
+    # CLI_CLIENT_START_ORDER includes ssv-node/ssv-dkg before validator.
     [ "${start_order[0]}" = "execution" ]
     [ "${start_order[1]}" = "consensus" ]
     [ "${start_order[2]}" = "mevboost" ]
     [ "${start_order[3]}" = "charon" ]
     [ "${start_order[4]}" = "web3signer" ]
-    [ "${start_order[5]}" = "validator" ]
-    [ "${start_order[6]}" = "csm_nimbusvalidator" ]
-    [ "${start_order[7]}" = "dora" ]
+    [ "${start_order[5]}" = "ssv-node" ]
+    [ "${start_order[6]}" = "ssv-dkg" ]
+    [ "${start_order[7]}" = "validator" ]
+    [ "${start_order[8]}" = "csm_nimbusvalidator" ]
+    [ "${start_order[9]}" = "dora" ]
     [ "${stop_order[0]}" = "dora" ]
     [ "${stop_order[1]}" = "csm_nimbusvalidator" ]
     [ "${stop_order[2]}" = "validator" ]
-    [ "${stop_order[3]}" = "web3signer" ]
-    [ "${stop_order[4]}" = "charon" ]
-    [ "${stop_order[5]}" = "mevboost" ]
-    [ "${stop_order[6]}" = "consensus" ]
-    [ "${stop_order[7]}" = "execution" ]
+    [ "${stop_order[3]}" = "ssv-dkg" ]
+    [ "${stop_order[4]}" = "ssv-node" ]
+    [ "${stop_order[5]}" = "web3signer" ]
+    [ "${stop_order[6]}" = "charon" ]
+    [ "${stop_order[7]}" = "mevboost" ]
+    [ "${stop_order[8]}" = "consensus" ]
+    [ "${stop_order[9]}" = "execution" ]
 }
 
 @test "start: rejects unknown or not-installed target" {
