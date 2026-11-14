@@ -214,6 +214,42 @@ def test_discover_units(tmp_path: Path):
     assert dkg.config_path.endswith("operator.yaml")
 
 
+def test_discover_without_config_flags_uses_heuristics(tmp_path: Path):
+    """Match home-dir layouts where ExecStart omits --config / uses a wrapper."""
+    root = tmp_path / "home"
+    ssv = root / "ssv"
+    dkg = root / "ssv-dkg"
+    (ssv / "bin").mkdir(parents=True)
+    (ssv / "config").mkdir()
+    (dkg / "bin").mkdir(parents=True)
+    (dkg / "operator-config").mkdir(parents=True)
+    (ssv / "bin" / "ssvnode").write_text("x", encoding="utf-8")
+    (dkg / "bin" / "ssv-dkg").write_text("x", encoding="utf-8")
+    (ssv / "config" / "config.yaml").write_text("ssv:\n  Network: mainnet\n", encoding="utf-8")
+    (dkg / "operator-config" / "op.yaml").write_text("operatorID: 1\n", encoding="utf-8")
+    wrapper = dkg / "run_ssv-dkg.sh"
+    wrapper.write_text(
+        "#!/bin/bash\nexec ./bin/ssv-dkg start-operator --configPath=./operator-config/op.yaml\n",
+        encoding="utf-8",
+    )
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    (unit_dir / "ssvnode.service").write_text(
+        f"[Service]\nWorkingDirectory={ssv}\nExecStart={ssv / 'bin' / 'ssvnode'} start-node\n",
+        encoding="utf-8",
+    )
+    (unit_dir / "ssvdkg.service").write_text(
+        f"[Service]\nWorkingDirectory={dkg}\nExecStart={wrapper}\n",
+        encoding="utf-8",
+    )
+    node, dkg_u = discover_units(str(unit_dir))
+    assert node is not None
+    assert node.config_path.endswith("config/config.yaml")
+    assert dkg_u is not None
+    assert dkg_u.config_path.endswith("op.yaml")
+    assert dkg_u.binary_path.endswith("ssv-dkg")
+
+
 @patch("deploy.ssv_migrate.get_dkg_release_info", return_value={"version": "v2.0.0"})
 @patch("deploy.ssv_migrate.get_release_info", return_value={"version": "v2.5.1"})
 @patch("deploy.ssv_migrate.probe_binary_version", return_value="v2.5.1")

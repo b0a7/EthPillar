@@ -217,10 +217,27 @@ def classify_unit_name(filename: str) -> Optional[str]:
     return None
 
 
+def _join_unit_continuations(text: str) -> str:
+    """Join systemd line continuations ending with ``\\``."""
+    lines: List[str] = []
+    buf = ""
+    for raw in text.splitlines():
+        stripped_right = raw.rstrip()
+        if stripped_right.endswith("\\"):
+            buf += stripped_right[:-1] + " "
+            continue
+        buf += stripped_right
+        lines.append(buf)
+        buf = ""
+    if buf:
+        lines.append(buf)
+    return "\n".join(lines)
+
+
 def _parse_unit_file(text: str) -> Dict[str, str]:
     """Parse simple key=value pairs from a systemd unit body."""
     values: Dict[str, str] = {}
-    for raw in text.splitlines():
+    for raw in _join_unit_continuations(text).splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or line.startswith("["):
             continue
@@ -258,7 +275,144 @@ def _config_from_exec(exec_start: str, *, flags: Sequence[str]) -> str:
                 return tokens[i + 1].strip("'\"")
             if tok.startswith(f"{flag}="):
                 return tok.split("=", 1)[1].strip("'\"")
+            # Short -c /path used by some wrappers.
+            if flag in ("--config", "--configPath") and tok in ("-c", "-config"):
+                if i + 1 < len(tokens):
+                    return tokens[i + 1].strip("'\"")
     return ""
+
+
+def _config_from_environment(fields: Dict[str, str]) -> str:
+    """Pick a config path from Environment= / EnvironmentFile-style keys."""
+    for key in (
+        "CONFIG",
+        "CONFIG_PATH",
+        "CONFIGPATH",
+        "SSV_CONFIG",
+        "SSV_CONFIG_PATH",
+        "OPERATOR_CONFIG",
+    ):
+        # Environment=KEY=value may appear as Environment=KEY=value in the map
+        # under key "Environment" with value "KEY=value".
+        pass
+    env_val = fields.get("Environment", "")
+    # Support multiple Environment= by scanning original isn't available; parse
+    # a single Environment=FOO=bar or Environment="FOO=bar BAR=baz".
+    for part in env_val.replace("\t", " ").split():
+        if "=" not in part:
+            continue
+        key, val = part.split("=", 1)
+        if key.upper() in {
+            "CONFIG",
+            "CONFIG_PATH",
+            "CONFIGPATH",
+            "SSV_CONFIG",
+            "SSV_CONFIG_PATH",
+            "OPERATOR_CONFIG",
+            "OPERATOR_CONFIG_PATH",
+        }:
+            return val.strip("'\"")
+    return ""
+
+
+def _config_from_script(script_path: str) -> str:
+    """Extract --config / --configPath from a shell wrapper script."""
+    if not script_path or not os.path.isfile(script_path):
+        return ""
+    if not script_path.endswith((".sh", ".bash")):
+        # Still try reading small text wrappers.
+        pass
+    text = _read_text(script_path)
+    if not text:
+        return ""
+    found = _config_from_exec(
+        text.replace("\\\n", " "),
+        flags=("--configPath", "--config", "-config"),
+    )
+    if found:
+        return found
+    # Bare path assignment: CONFIG=/... or configPath: /...
+    for match in re.finditer(
+        r"""(?im)(?:CONFIG(?:_PATH)?|configPath|config)\s*=\s*['\"]?([^\s'\"]+)""",
+        text,
+    ):
+        return match.group(1)
+    for match in re.finditer(
+        r"""(?im)(?:configPath|config)\s*[:=]\s*['\"]?([^\s'\"]+\.ya?ml)""",
+        text,
+    ):
+        return match.group(1)
+    return ""
+
+
+def _search_roots_for_unit(unit: DiscoveredUnit) -> List[str]:
+    """Candidate directories near a unit's workdir / ExecStart path."""
+    roots: List[str] = []
+    if unit.working_directory:
+        roots.append(unit.working_directory)
+    if unit.binary_path:
+        bin_dir = os.path.dirname(unit.binary_path)
+        roots.append(bin_dir)
+        parent = os.path.dirname(bin_dir)
+        if parent:
+            roots.append(parent)
+            # bin/ → repo root already; also grandparent for nested layouts
+            roots.append(os.path.dirname(parent))
+    # Dedupe preserving order.
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for root in roots:
+        if not root or root in seen:
+            continue
+        seen.add(root)
+        ordered.append(root)
+    return ordered
+
+
+def _resolve_real_binary(path: str, *, role: str) -> str:
+    """If ExecStart is a wrapper script, prefer a nearby real binary."""
+    if not path:
+        return ""
+    if os.path.isfile(path) and not path.endswith((".sh", ".bash")):
+        base = os.path.basename(path)
+        if role == "node" and "ssvnode" in base.lower():
+            return path
+        if role == "dkg" and "dkg" in base.lower() and not base.endswith(".sh"):
+            return path
+        # Non-script executable — trust ExecStart.
+        return path
+    roots = [os.path.dirname(path)]
+    parent = os.path.dirname(os.path.dirname(path))
+    if parent:
+        roots.append(parent)
+        roots.append(os.path.join(parent, "bin"))
+    names = ("ssvnode",) if role == "node" else ("ssv-dkg", "ssvdkg")
+    for root in roots:
+        for name in names:
+            candidate = os.path.join(root, name)
+            if os.path.isfile(candidate):
+                return candidate
+            candidate = os.path.join(root, "bin", name)
+            if os.path.isfile(candidate):
+                return candidate
+    return path
+
+
+def _find_node_config(unit: DiscoveredUnit) -> str:
+    """Resolve node config.yaml from ExecStart or checkout heuristics."""
+    if unit.config_path and os.path.isfile(unit.config_path):
+        return unit.config_path
+    for root in _search_roots_for_unit(unit):
+        for rel in (
+            "config/config.yaml",
+            "config.yaml",
+            "config/config.yml",
+            "config.yml",
+        ):
+            path = os.path.join(root, rel)
+            if os.path.isfile(path):
+                return path
+    return unit.config_path or ""
 
 
 def _resolve_path(path: str, *, workdir: str, unit_dir: str) -> str:
@@ -399,9 +553,10 @@ def discover_units(
         fields = _parse_unit_file(text)
         workdir = fields.get("WorkingDirectory", "")
         exec_start = fields.get("ExecStart", "")
-        binary = _resolve_path(
+        raw_bin = _resolve_path(
             _first_token(exec_start), workdir=workdir, unit_dir=unit_dir
         )
+        binary = _resolve_real_binary(raw_bin, role=role)
         if role == "node":
             config = _config_from_exec(
                 exec_start, flags=("--config", "-config")
@@ -410,6 +565,10 @@ def discover_units(
             config = _config_from_exec(
                 exec_start, flags=("--configPath", "--config")
             )
+        if not config:
+            config = _config_from_environment(fields)
+        if not config and raw_bin:
+            config = _config_from_script(raw_bin)
         config_path = _resolve_path(config, workdir=workdir, unit_dir=unit_dir)
         discovered = DiscoveredUnit(
             role=role,
@@ -420,6 +579,11 @@ def discover_units(
             binary_path=binary,
             config_path=config_path,
         )
+        # Fill config via checkout heuristics when ExecStart omits --config.
+        if role == "node":
+            discovered.config_path = _find_node_config(discovered)
+        else:
+            discovered.config_path = _find_dkg_config(discovered) or discovered.config_path
         if role == "node" and node is None:
             node = discovered
         elif role == "dkg" and dkg is None:
@@ -431,9 +595,10 @@ def _find_fallback_secrets(
     *,
     workdir: str,
     config_path: str,
+    extra_roots: Optional[Sequence[str]] = None,
 ) -> Tuple[str, str]:
     """Locate encrypted_private_key.json + password near workdir/config."""
-    candidates = []
+    candidates: List[str] = []
     if config_path:
         candidates.append(os.path.dirname(config_path))
         # e.g. ~/ssv/config/config.yaml → ~/ssv
@@ -442,7 +607,11 @@ def _find_fallback_secrets(
             candidates.append(parent)
     if workdir:
         candidates.append(workdir)
+    if extra_roots:
+        candidates.extend(extra_roots)
     for base in candidates:
+        if not base:
+            continue
         key = os.path.join(base, "encrypted_private_key.json")
         pw = os.path.join(base, "password")
         if os.path.isfile(key) and os.path.isfile(pw):
@@ -456,21 +625,32 @@ def _find_dkg_config(
     """Resolve DKG config path from unit or operator-config/ heuristics."""
     if unit and unit.config_path and os.path.isfile(unit.config_path):
         return unit.config_path
-    search_roots: List[str] = []
-    if unit:
-        if unit.working_directory:
-            search_roots.append(unit.working_directory)
-        if unit.binary_path:
-            search_roots.append(os.path.dirname(unit.binary_path))
-            # bin/ → repo root
-            search_roots.append(os.path.dirname(os.path.dirname(unit.binary_path)))
-    for root in search_roots:
+    if not unit:
+        return ""
+    # Wrapper script (e.g. run_ssv-dkg.sh) often embeds --configPath.
+    raw = _first_token(unit.exec_start)
+    if raw:
+        raw_abs = _resolve_path(
+            raw, workdir=unit.working_directory, unit_dir=SYSTEMD_UNIT_DIR
+        )
+        script_cfg = _config_from_script(raw_abs)
+        if script_cfg:
+            resolved = _resolve_path(
+                script_cfg,
+                workdir=unit.working_directory
+                or os.path.dirname(raw_abs)
+                or os.path.dirname(unit.binary_path),
+                unit_dir=SYSTEMD_UNIT_DIR,
+            )
+            if os.path.isfile(resolved):
+                return resolved
+    for root in _search_roots_for_unit(unit):
         op_dir = os.path.join(root, "operator-config")
         if os.path.isdir(op_dir):
             for name in sorted(os.listdir(op_dir)):
                 if name.endswith((".yaml", ".yml")):
                     return os.path.join(op_dir, name)
-        for name in ("operator.yaml", "config.yaml"):
+        for name in ("operator.yaml", "config.yaml", "operator-config.yaml"):
             path = os.path.join(root, name)
             if os.path.isfile(path):
                 return path
@@ -646,7 +826,8 @@ def plan_ssv_migration(
         )
         return plan
 
-    node_cfg_path = node.config_path
+    node_cfg_path = _find_node_config(node)
+    node.config_path = node_cfg_path
     node_cfg = _read_text(node_cfg_path) if node_cfg_path else ""
     if not node_cfg:
         plan.errors.append(f"Could not read node config: {node_cfg_path or '(empty)'}")
@@ -678,12 +859,14 @@ def plan_ssv_migration(
 
     if not plan.private_key_path or not plan.password_path:
         fb_key, fb_pw = _find_fallback_secrets(
-            workdir=node.working_directory, config_path=node_cfg_path
+            workdir=node.working_directory,
+            config_path=node_cfg_path,
+            extra_roots=_search_roots_for_unit(node),
         )
         plan.private_key_path = plan.private_key_path or fb_key
         plan.password_path = plan.password_path or fb_pw
 
-    dkg_cfg_path = _find_dkg_config(dkg)
+    dkg_cfg_path = _find_dkg_config(dkg) if dkg else ""
     if dkg and dkg_cfg_path:
         dkg.config_path = dkg_cfg_path
         dkg_cfg = _read_text(dkg_cfg_path)
