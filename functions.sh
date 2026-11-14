@@ -2089,6 +2089,114 @@ runImportCharonKeySharesYes(){
     bash "${BASE_DIR}/manage_validator_keys.sh" charon-import-yes
 }
 
+# Migrate legacy systemd SSV (ssvnode/ssvdkg name variants) → EthPillar.
+# Quarantines old units as *.service.bak; preserves multi-endpoint BN/EL configs.
+migrateSsvFull(){
+    local plan_file _migrate_log_dir _migrate_log
+    local -a _run_args=()
+
+    if ! whiptail --title "Migrate SSV from systemd" --yesno \
+"Migrate an existing systemd SSV operator to EthPillar:
+
+  - Discover ssvnode / ssvdkg unit name variants
+  - Stop, disable, rename legacy units to *.service.bak
+  - Reuse binaries when they match GitHub LATEST (else rebuild/download)
+  - Copy keystore + DB into /var/lib/ssv/
+  - Keep BeaconNodeAddr / ETH1Addr (incl. multi EL/CL) in config.yaml
+
+WARNING: Do not run legacy and EthPillar SSV at the same time.
+
+Continue?" 20 78; then
+        return 0
+    fi
+
+    if [[ ! -e /usr/local/bin/ethpillar ]]; then
+        ohai "Installing ethpillar symlink"
+        sudo ln -sf "${BASE_DIR}/ethpillar.sh" /usr/local/bin/ethpillar
+    fi
+    ensure_python_deps
+
+    plan_file=$(mktemp)
+    set +e
+    PYTHONPATH="${BASE_DIR}" python3 -m deploy.ssv_migrate plan \
+        >"$plan_file" 2>/tmp/ethpillar-ssv-migrate-err
+    local rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "SSV migration error" --msgbox \
+"$(cat /tmp/ethpillar-ssv-migrate-err 2>/dev/null
+  echo ""
+  cat "$plan_file" 2>/dev/null || echo "Failed to build plan.")" 20 88
+        rm -f "$plan_file"
+        return 1
+    fi
+
+    whiptail --title "SSV migration plan" --textbox "$plan_file" 24 88
+
+    _migrate_log_dir="${HOME}/.ethpillar/logs"
+    mkdir -p "$_migrate_log_dir"
+    _migrate_log="${_migrate_log_dir}/ssv-migrate-$(date +%Y%m%d-%H%M%S).log"
+    {
+        echo "=== EthPillar SSV systemd migration $(date -Is) ==="
+        echo "log: ${_migrate_log}"
+        echo ""
+        cat "$plan_file"
+        echo ""
+    } >>"$_migrate_log"
+    ohai "Migration log: ${_migrate_log}"
+
+    if ! whiptail --title "Migrate SSV from systemd" --yesno \
+"Proceed with this plan?
+
+Legacy units will be renamed to *.service.bak (rollback documented in the plan)." 12 70; then
+        rm -f "$plan_file"
+        return 0
+    fi
+
+    if [[ -f /etc/systemd/system/ssv-node.service ]] \
+        && sudo test -f /var/lib/ssv/encrypted_private_key.json 2>/dev/null; then
+        if whiptail --title "EthPillar SSV already present" --yesno \
+"EthPillar ssv-node.service and a keystore already exist.
+
+Overwrite with --force?" 10 70; then
+            _run_args+=(--force)
+        else
+            rm -f "$plan_file"
+            return 0
+        fi
+    fi
+
+    if whiptail --title "Start after migrate" --yesno \
+"Start EthPillar ssv-node (and ssv-dkg if present) after migration?
+
+Choose No to enable units only and start manually after verifying config." 12 70; then
+        _run_args+=(--start)
+    fi
+
+    set +e
+    PYTHONPATH="${BASE_DIR}" python3 -m deploy.ssv_migrate run "${_run_args[@]}" \
+        2>&1 | tee -a "$_migrate_log"
+    rc=${PIPESTATUS[0]}
+    set -e
+    rm -f "$plan_file"
+    if [[ $rc -ne 0 ]]; then
+        whiptail --title "SSV migration failed" --msgbox \
+"Migration failed (exit ${rc}).
+
+See log:
+${_migrate_log}" 12 70
+        return 1
+    fi
+    whiptail --title "SSV migration complete" --msgbox \
+"Migration finished.
+
+Log: ${_migrate_log}
+
+Rollback: stop EthPillar ssv-*; rename *.service.bak → *.service;
+daemon-reload; start legacy units." 14 72
+    return 0
+}
+
 # Manual setup: copy a CDVN/DKG .charon tree into EthPillar's Charon datadir.
 # Import SSV operator encrypted key + password into /var/lib/ssv/.
 importSsvOperatorKeystore(){

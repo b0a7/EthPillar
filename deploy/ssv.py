@@ -399,6 +399,36 @@ def _sudo_write_text(path: str, content: str, mode: str = "600") -> None:
         os.unlink(tmp)
 
 
+def import_operator_keystore_files(
+    private_key_path: str,
+    password_path: str,
+) -> None:
+    """Copy operator key + password file paths into ``SSV_DATA_DIR``.
+
+    Args:
+        private_key_path: Path to ``encrypted_private_key.json``.
+        password_path: Path to the password file.
+
+    Raises:
+        FileNotFoundError: When either source file is missing.
+    """
+    if not os.path.isfile(private_key_path):
+        raise FileNotFoundError(f"Missing operator key: {private_key_path}")
+    if not os.path.isfile(password_path):
+        raise FileNotFoundError(f"Missing password file: {password_path}")
+    subprocess.run(["sudo", "mkdir", "-p", SSV_DATA_DIR], check=True)
+    subprocess.run(["sudo", "cp", "-f", private_key_path, SSV_PRIVATE_KEY_FILE], check=True)
+    subprocess.run(["sudo", "cp", "-f", password_path, SSV_PASSWORD_FILE], check=True)
+    subprocess.run(
+        ["sudo", "chown", f"{SSV_USER}:{SSV_USER}", SSV_PRIVATE_KEY_FILE, SSV_PASSWORD_FILE],
+        check=True,
+    )
+    subprocess.run(
+        ["sudo", "chmod", "600", SSV_PRIVATE_KEY_FILE, SSV_PASSWORD_FILE],
+        check=True,
+    )
+
+
 def import_operator_keystore(
     source_dir: str,
     *,
@@ -415,23 +445,32 @@ def import_operator_keystore(
     Raises:
         FileNotFoundError: When either source file is missing.
     """
-    src_key = os.path.join(source_dir, private_key_name)
-    src_pw = os.path.join(source_dir, password_name)
-    if not os.path.isfile(src_key):
-        raise FileNotFoundError(f"Missing operator key: {src_key}")
-    if not os.path.isfile(src_pw):
-        raise FileNotFoundError(f"Missing password file: {src_pw}")
-    subprocess.run(["sudo", "mkdir", "-p", SSV_DATA_DIR], check=True)
-    subprocess.run(["sudo", "cp", "-f", src_key, SSV_PRIVATE_KEY_FILE], check=True)
-    subprocess.run(["sudo", "cp", "-f", src_pw, SSV_PASSWORD_FILE], check=True)
+    import_operator_keystore_files(
+        os.path.join(source_dir, private_key_name),
+        os.path.join(source_dir, password_name),
+    )
+
+
+def install_binary_file(src: str, dest: str) -> None:
+    """Install an existing binary to *dest* as root-owned mode 755."""
+    if not os.path.isfile(src):
+        raise FileNotFoundError(f"Binary not found: {src}")
+    subprocess.run(["sudo", "mkdir", "-p", os.path.dirname(dest)], check=True)
+    subprocess.run(["sudo", "cp", "-f", src, dest], check=True)
+    subprocess.run(["sudo", "chmod", "755", dest], check=True)
+
+
+def ensure_ssv_datadir() -> None:
+    """Create ``/var/lib/ssv`` layout and ``ssv`` system user."""
+    setup_client_user_and_dir(SSV_USER, "ssv")
+    for path in (SSV_DATA_DIR, SSV_DB_DIR, SSV_DKG_OUTPUT_DIR):
+        subprocess.run(["sudo", "mkdir", "-p", path], check=True)
     subprocess.run(
-        ["sudo", "chown", f"{SSV_USER}:{SSV_USER}", SSV_PRIVATE_KEY_FILE, SSV_PASSWORD_FILE],
+        ["sudo", "chown", "-R", f"{SSV_USER}:{SSV_USER}", SSV_DATA_DIR],
         check=True,
     )
-    subprocess.run(
-        ["sudo", "chmod", "600", SSV_PRIVATE_KEY_FILE, SSV_PASSWORD_FILE],
-        check=True,
-    )
+    subprocess.run(["sudo", "chmod", "700", SSV_DATA_DIR], check=True)
+    subprocess.run(["sudo", "chmod", "700", SSV_DB_DIR], check=True)
 
 
 def write_dkg_operator_config(
@@ -490,15 +529,7 @@ def install_ssv(
     Returns:
         ``(ssv_version, ssv_node_service_path, ssv_dkg_service_path_or_empty)``
     """
-    setup_client_user_and_dir(SSV_USER, "ssv")
-    for path in (SSV_DATA_DIR, SSV_DB_DIR, SSV_DKG_OUTPUT_DIR):
-        subprocess.run(["sudo", "mkdir", "-p", path], check=True)
-    subprocess.run(
-        ["sudo", "chown", "-R", f"{SSV_USER}:{SSV_USER}", SSV_DATA_DIR],
-        check=True,
-    )
-    subprocess.run(["sudo", "chmod", "700", SSV_DATA_DIR], check=True)
-    subprocess.run(["sudo", "chmod", "700", SSV_DB_DIR], check=True)
+    ensure_ssv_datadir()
 
     arch_amd64 = get_machine_architecture() == "amd64"
     node_info = get_release_info("LATEST", arch_amd64)

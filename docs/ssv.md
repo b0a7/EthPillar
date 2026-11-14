@@ -30,6 +30,32 @@ Docker. DKG still uses the published zip assets.
 2. On the validator-mode prompt, choose **SSV Operator** (or pass `--with_ssv`).
 3. Not available as the Charon/Web3Signer *second* signer prompt.
 4. Mutually exclusive with Charon and Web3Signer.
+5. **SSV-only host** (remote BN/EL): use **Validator Client Only** → **SSV Operator**, or migrate an existing systemd operator (below).
+
+## Migrate from existing systemd SSV
+
+For a VM that already runs `ssvnode.service` / `ssvdkg.service` (or name variants
+like `ssv-node`, `ssv_node`, `ssv-dkg`), EthPillar can take over management without
+reinstalling EL/CL:
+
+```bash
+ethpillar --migrate_ssv
+# or:
+PYTHONPATH=. python3 -m deploy.ssv_migrate plan
+PYTHONPATH=. python3 -m deploy.ssv_migrate run          # enable only
+PYTHONPATH=. python3 -m deploy.ssv_migrate run --start  # enable + start
+```
+
+What it does:
+
+1. Discovers legacy node/DKG units under `/etc/systemd/system/`
+2. Reads `ExecStart` / `WorkingDirectory` to find config + binaries
+3. Preserves **full** `BeaconNodeAddr` / `ETH1Addr` (including multiple EL/CL pairs) and ports in `/var/lib/ssv/config.yaml` — not `.env.overrides`
+4. Stops, disables, and renames legacy units to `*.service.bak` (systemd will not load them)
+5. Copies keystore + `db/` (+ DKG output when present)
+6. Reuses legacy binaries when they match GitHub LATEST; otherwise rebuilds `ssvnode` / downloads `ssv-dkg` (`--rebuild-ssvnode`, `--allow-older-binary`)
+
+**Rollback:** stop EthPillar `ssv-node` / `ssv-dkg`, rename `*.service.bak` → `*.service`, `daemon-reload`, start the legacy units.
 
 ## Secrets
 

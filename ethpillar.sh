@@ -2145,6 +2145,20 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     exit $?
   fi
 
+  # ethpillar --migrate_ssv
+  if [[ "${1:-}" == "--migrate_ssv" ]]; then
+    setWhiptailColors
+    shift
+    if [[ $# -gt 0 ]]; then
+      echo "Unknown option: $1" >&2
+      echo "Usage: ethpillar --migrate_ssv" >&2
+      echo "Advanced: PYTHONPATH=. python3 -m deploy.ssv_migrate plan|run [flags]" >&2
+      exit 1
+    fi
+    migrateSsvFull
+    exit $?
+  fi
+
   # Non-interactive CLI (check-updates, help, logs, start/stop/restart, status,
   # update|upgrade, version; --version remains a compatibility alias)
   if cli_dispatch "$@"; then
