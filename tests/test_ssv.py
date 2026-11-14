@@ -55,6 +55,18 @@ def test_generate_ssv_config_paths_and_endpoints():
     assert "UdpPort: 12001" in cfg
 
 
+def test_generate_ssv_dkg_config_includes_tls_when_set():
+    cfg = generate_ssv_dkg_config(
+        "mainnet",
+        "http://127.0.0.1:8545",
+        operator_id="1",
+        tls_cert_path="/var/lib/ssv/ssl/tls.crt",
+        tls_key_path="/var/lib/ssv/ssl/tls.key",
+    )
+    assert "serverTLSCertPath: /var/lib/ssv/ssl/tls.crt" in cfg
+    assert "serverTLSKeyPath: /var/lib/ssv/ssl/tls.key" in cfg
+
+
 def test_generate_ssv_dkg_config_shares_keystore():
     cfg = generate_ssv_dkg_config(
         "mainnet",

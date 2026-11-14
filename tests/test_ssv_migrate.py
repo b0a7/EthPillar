@@ -138,6 +138,39 @@ def test_eth1_ws_to_http_preserves_semicolon_list():
     assert _eth1_ws_to_http(ws) == "http://a:8545;http://b:8545;http://c:8545"
 
 
+def test_parse_cli_flags_from_run_ssv_dkg_wrapper(tmp_path: Path):
+    from deploy.ssv_migrate import _dkg_settings_from_wrapper, _parse_cli_flags
+
+    script = tmp_path / "run_ssv-dkg.sh"
+    (tmp_path / "data").mkdir()
+    (tmp_path / "ssl").mkdir()
+    (tmp_path / "data" / "encrypted_private_key.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "data" / "password").write_text("pw", encoding="utf-8")
+    (tmp_path / "ssl" / "tls.crt").write_text("cert", encoding="utf-8")
+    (tmp_path / "ssl" / "tls.key").write_text("key", encoding="utf-8")
+    script.write_text(
+        """#!/bin/bash
+./bin/ssv-dkg start-operator \\
+            --privKey ./data/encrypted_private_key.json  \\
+            --privKeyPassword ./data/password \\
+            --operatorID 42 \\
+            --port 3030 \\
+            --outputPath ./operator-config/output \\
+            --serverTLSCertPath ./ssl/tls.crt \\
+            --serverTLSKeyPath ./ssl/tls.key \\
+            --ethEndpointURL http://100.118.113.11:8545
+""",
+        encoding="utf-8",
+    )
+    flags = _parse_cli_flags(script.read_text(encoding="utf-8"))
+    assert flags["operatorID"] == "42"
+    assert flags["ethEndpointURL"] == "http://100.118.113.11:8545"
+    settings = _dkg_settings_from_wrapper(str(script), workdir=str(tmp_path))
+    assert settings["operator_id"] == "42"
+    assert settings["tls_cert_path"].endswith("ssl/tls.crt")
+    assert settings["eth1_http_addr"] == "http://100.118.113.11:8545"
+
+
 def test_relative_db_path_resolves_via_config_dir(tmp_path: Path):
     from deploy.ssv_migrate import _resolve_path
 

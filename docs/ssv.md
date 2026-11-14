@@ -49,11 +49,14 @@ PYTHONPATH=. python3 -m deploy.ssv_migrate run --start  # enable + start
 What it does:
 
 1. Discovers legacy node/DKG units under `/etc/systemd/system/`
-2. Reads `ExecStart` / `WorkingDirectory` to find config + binaries
+2. Reads `ExecStart` / `WorkingDirectory` to find config + binaries (also parses
+   `run_ssv-dkg.sh` CLI flags when there is no YAML `operator-config`)
 3. Preserves **full** `BeaconNodeAddr` / `ETH1Addr` (including multiple EL/CL pairs) and ports in `/var/lib/ssv/config.yaml` — not `.env.overrides`
 4. Stops, disables, and renames legacy units to `*.service.bak` (systemd will not load them)
-5. Copies keystore + `db/` (+ DKG output when present)
+5. Copies keystore + `db/` (+ DKG output; TLS cert/key → `/var/lib/ssv/ssl/` when the wrapper uses `--serverTLSCertPath` / `--serverTLSKeyPath`)
 6. Reuses legacy binaries when they match GitHub LATEST; otherwise rebuilds `ssvnode` / downloads `ssv-dkg` (`--rebuild-ssvnode`, `--allow-older-binary`)
+
+DKG and the node **share** keystore/password/db under `/var/lib/ssv/`. DKG still gets its own `operator.yaml` (operator ID, ETH1 HTTP, TLS paths).
 
 **Rollback:** stop EthPillar `ssv-node` / `ssv-dkg`, rename `*.service.bak` → `*.service`, `daemon-reload`, start the legacy units.
 

@@ -41,6 +41,9 @@ SSV_PRIVATE_KEY_FILE = f"{SSV_DATA_DIR}/encrypted_private_key.json"
 SSV_PASSWORD_FILE = f"{SSV_DATA_DIR}/password"
 SSV_DB_DIR = f"{SSV_DATA_DIR}/db"
 SSV_DKG_OUTPUT_DIR = f"{SSV_DATA_DIR}/output"
+SSV_DKG_SSL_DIR = f"{SSV_DATA_DIR}/ssl"
+SSV_DKG_TLS_CERT = f"{SSV_DKG_SSL_DIR}/tls.crt"
+SSV_DKG_TLS_KEY = f"{SSV_DKG_SSL_DIR}/tls.key"
 SSV_NODE_SERVICE_PATH = "/etc/systemd/system/ssv-node.service"
 SSV_DKG_SERVICE_PATH = "/etc/systemd/system/ssv-dkg.service"
 SSV_NODE_BIN = f"{INSTALL_DIR}/ssvnode"
@@ -160,6 +163,8 @@ def generate_ssv_dkg_config(
     password_file: str = SSV_PASSWORD_FILE,
     output_path: str = SSV_DKG_OUTPUT_DIR,
     log_file: str = f"{SSV_DATA_DIR}/dkg-debug.log",
+    tls_cert_path: str = "",
+    tls_key_path: str = "",
 ) -> str:
     """Generate DKG ``operator.yaml`` sharing the node operator keystore.
 
@@ -172,27 +177,31 @@ def generate_ssv_dkg_config(
         password_file: Shared password file.
         output_path: Ceremony output directory.
         log_file: DKG debug log path.
+        tls_cert_path: Optional ``serverTLSCertPath`` (DKG HTTPS).
+        tls_key_path: Optional ``serverTLSKeyPath``.
 
     Returns:
         YAML config as a string.
     """
     _ = eth_network  # reserved for network-specific defaults
     op_id = (operator_id or "YOUR_OPERATOR_ID").strip() or "YOUR_OPERATOR_ID"
-    return "\n".join(
-        [
-            f"privKey: {private_key_file}",
-            f"privKeyPassword: {password_file}",
-            f"operatorID: {op_id}",
-            f"port: {int(dkg_port)}",
-            "logLevel: info",
-            "logFormat: json",
-            "logLevelFormat: capitalColor",
-            f"logFilePath: {log_file}",
-            f"outputPath: {output_path}",
-            f"ethEndpointURL: {eth1_http_addr}",
-            "",
-        ]
-    )
+    lines = [
+        f"privKey: {private_key_file}",
+        f"privKeyPassword: {password_file}",
+        f"operatorID: {op_id}",
+        f"port: {int(dkg_port)}",
+        "logLevel: info",
+        "logFormat: json",
+        "logLevelFormat: capitalColor",
+        f"logFilePath: {log_file}",
+        f"outputPath: {output_path}",
+        f"ethEndpointURL: {eth1_http_addr}",
+    ]
+    if tls_cert_path.strip() and tls_key_path.strip():
+        lines.append(f"serverTLSCertPath: {tls_cert_path.strip()}")
+        lines.append(f"serverTLSKeyPath: {tls_key_path.strip()}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def generate_ssv_node_service(

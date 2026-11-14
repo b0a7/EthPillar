@@ -39,6 +39,9 @@ from deploy.ssv import (
     SSV_DKG_CONFIG_FILE,
     SSV_DKG_OUTPUT_DIR,
     SSV_DKG_SERVICE_PATH,
+    SSV_DKG_SSL_DIR,
+    SSV_DKG_TLS_CERT,
+    SSV_DKG_TLS_KEY,
     SSV_NODE_BIN,
     SSV_NODE_SERVICE_PATH,
     SSV_PASSWORD_FILE,
@@ -119,6 +122,9 @@ class SsvMigratePlan:
     password_path: str = ""
     db_path: str = ""
     dkg_output_path: str = ""
+    dkg_script_path: str = ""
+    tls_cert_path: str = ""
+    tls_key_path: str = ""
     node_binary: Optional[BinaryPlan] = None
     dkg_binary: Optional[BinaryPlan] = None
     warnings: List[str] = field(default_factory=list)
@@ -138,6 +144,13 @@ class SsvMigratePlan:
             )
         else:
             lines.append(f"  dkg out:   (none found; EthPillar uses {SSV_DKG_OUTPUT_DIR})")
+        if self.tls_cert_path or self.tls_key_path:
+            lines.append(
+                f"  tls cert:  {self.tls_cert_path or '(missing)'} → {SSV_DKG_TLS_CERT}"
+            )
+            lines.append(
+                f"  tls key:   {self.tls_key_path or '(missing)'} → {SSV_DKG_TLS_KEY}"
+            )
         lines.append(
             "  note: keystore+password+db are shared; DKG also gets operator.yaml"
         )
@@ -327,6 +340,38 @@ def _config_from_environment(fields: Dict[str, str]) -> str:
     return ""
 
 
+def _flatten_shell_continuations(text: str) -> str:
+    """Join ``\\`` line continuations in a shell script into single lines."""
+    return re.sub(r"\\\s*\n", " ", text)
+
+
+def _parse_cli_flags(text: str) -> Dict[str, str]:
+    """Parse ``--flag value`` / ``--flag=value`` pairs from script or ExecStart text."""
+    flat = _flatten_shell_continuations(text)
+    # Drop comments.
+    flat = re.sub(r"(?m)#.*$", "", flat)
+    tokens = flat.split()
+    flags: Dict[str, str] = {}
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("--") and "=" in tok:
+            key, val = tok[2:].split("=", 1)
+            flags[key] = val.strip("'\"")
+            i += 1
+            continue
+        if tok.startswith("--") and i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
+            flags[tok[2:]] = tokens[i + 1].strip("'\"")
+            i += 2
+            continue
+        if tok.startswith("--"):
+            flags[tok[2:]] = "true"
+            i += 1
+            continue
+        i += 1
+    return flags
+
+
 def _config_from_script(script_path: str) -> str:
     """Extract --config / --configPath from a shell wrapper script."""
     if not script_path or not os.path.isfile(script_path):
@@ -344,8 +389,12 @@ def _config_from_script(script_path: str) -> str:
     text = _read_text(script_path)
     if not text:
         return ""
+    flags = _parse_cli_flags(text)
+    for key in ("configPath", "config"):
+        if flags.get(key):
+            return flags[key]
     found = _config_from_exec(
-        text.replace("\\\n", " "),
+        _flatten_shell_continuations(text),
         flags=("--configPath", "--config", "-config"),
     )
     if found:
@@ -362,6 +411,67 @@ def _config_from_script(script_path: str) -> str:
     ):
         return match.group(1)
     return ""
+
+
+def _find_dkg_wrapper_script(unit: Optional[DiscoveredUnit]) -> str:
+    """Locate run_ssv-dkg.sh (or ExecStart script) for CLI-flag parsing."""
+    if not unit:
+        return ""
+    raw = _first_token(unit.exec_start)
+    if raw:
+        raw_abs = _resolve_path(
+            raw, workdir=unit.working_directory, unit_dir=SYSTEMD_UNIT_DIR
+        )
+        if raw_abs.endswith((".sh", ".bash")) and os.path.isfile(raw_abs):
+            return raw_abs
+    for root in _search_roots_for_unit(unit):
+        for name in ("run_ssv-dkg.sh", "run-ssv-dkg.sh", "start-dkg.sh"):
+            path = os.path.join(root, name)
+            if os.path.isfile(path):
+                return path
+    return ""
+
+
+def _dkg_settings_from_wrapper(
+    script_path: str,
+    *,
+    workdir: str = "",
+) -> Dict[str, str]:
+    """Resolve DKG settings from a start-operator CLI wrapper script."""
+    text = _read_text(script_path)
+    if not text:
+        return {}
+    flags = _parse_cli_flags(text)
+    script_dir = os.path.dirname(script_path)
+    bases = [workdir, script_dir]
+    out: Dict[str, str] = {"script_path": script_path}
+    mapping = {
+        "privKey": "private_key_path",
+        "privKeyPassword": "password_path",
+        "operatorID": "operator_id",
+        "port": "dkg_port",
+        "ethEndpointURL": "eth1_http_addr",
+        "outputPath": "dkg_output_path",
+        "serverTLSCertPath": "tls_cert_path",
+        "serverTLSKeyPath": "tls_key_path",
+        "logFilePath": "dkg_log_path",
+    }
+    for flag, dest in mapping.items():
+        raw = flags.get(flag, "")
+        if not raw:
+            continue
+        if dest in {
+            "private_key_path",
+            "password_path",
+            "dkg_output_path",
+            "tls_cert_path",
+            "tls_key_path",
+            "dkg_log_path",
+        }:
+            out[dest] = _resolve_path(raw, workdir=workdir, bases=bases)
+        else:
+            out[dest] = raw
+    return out
 
 
 def _search_roots_for_unit(unit: DiscoveredUnit) -> List[str]:
@@ -983,8 +1093,48 @@ def plan_ssv_migration(
     # Default DKG HTTP from node WS (keystore is shared; operator.yaml is separate).
     plan.eth1_http_addr = _eth1_ws_to_http(plan.eth1_ws_addr)
 
+    # Prefer CLI flags from run_ssv-dkg.sh (common upstream layout; no YAML).
+    if dkg:
+        wrapper = _find_dkg_wrapper_script(dkg)
+        if wrapper:
+            plan.dkg_script_path = wrapper
+            dkg.config_path = dkg.config_path or f"{wrapper} (CLI flags)"
+            parsed_wrap = _dkg_settings_from_wrapper(
+                wrapper, workdir=dkg.working_directory
+            )
+            if parsed_wrap.get("operator_id"):
+                plan.operator_id = parsed_wrap["operator_id"]
+            if parsed_wrap.get("dkg_port"):
+                try:
+                    plan.dkg_port = int(parsed_wrap["dkg_port"])
+                except ValueError:
+                    pass
+            if parsed_wrap.get("eth1_http_addr"):
+                plan.eth1_http_addr = parsed_wrap["eth1_http_addr"]
+            if parsed_wrap.get("dkg_output_path"):
+                plan.dkg_output_path = parsed_wrap["dkg_output_path"]
+            if parsed_wrap.get("tls_cert_path"):
+                plan.tls_cert_path = parsed_wrap["tls_cert_path"]
+            if parsed_wrap.get("tls_key_path"):
+                plan.tls_key_path = parsed_wrap["tls_key_path"]
+            # DKG wrapper may point at its own copy of the keystore under ./data/.
+            if parsed_wrap.get("private_key_path") and os.path.isfile(
+                parsed_wrap["private_key_path"]
+            ):
+                # Prefer node keystore when both exist; keep wrapper path as fallback.
+                if not plan.private_key_path or not os.path.isfile(plan.private_key_path):
+                    plan.private_key_path = parsed_wrap["private_key_path"]
+            if parsed_wrap.get("password_path") and os.path.isfile(
+                parsed_wrap["password_path"]
+            ):
+                if not plan.password_path or not os.path.isfile(plan.password_path):
+                    plan.password_path = parsed_wrap["password_path"]
+
     dkg_cfg_path = _find_dkg_config(dkg) if dkg else ""
-    if dkg and dkg_cfg_path:
+    # Ignore synthetic "CLI flags" marker when looking for a real yaml path.
+    if dkg_cfg_path and "CLI flags" in dkg_cfg_path:
+        dkg_cfg_path = ""
+    if dkg and dkg_cfg_path and os.path.isfile(dkg_cfg_path):
         dkg.config_path = dkg_cfg_path
         dkg_bases = list(_search_roots_for_unit(dkg))
         dkg_bases.append(os.path.dirname(dkg_cfg_path))
@@ -1021,10 +1171,15 @@ def plan_ssv_migration(
                 "will synthesize operator.yaml (shared keystore + ETH1 from node WS)"
             )
             dkg.config_path = ""
-    elif dkg:
+    elif dkg and not plan.dkg_script_path:
         plan.warnings.append(
             "No separate DKG operator config found; will synthesize "
             f"{SSV_DKG_CONFIG_FILE} sharing node keystore + ETH1 HTTP derived from WS"
+        )
+    elif dkg and plan.dkg_script_path:
+        plan.warnings.append(
+            f"DKG settings from wrapper {plan.dkg_script_path} "
+            f"(will write {SSV_DKG_CONFIG_FILE}; TLS → {SSV_DKG_SSL_DIR}/ if present)"
         )
 
     # Heuristic DKG output dir when not set in config.
@@ -1225,11 +1380,19 @@ def run_ssv_migration(
         config_body,
         count=1,
     )
+    tls_cert_dest = ""
+    tls_key_dest = ""
+    if plan.tls_cert_path and plan.tls_key_path:
+        tls_cert_dest = SSV_DKG_TLS_CERT
+        tls_key_dest = SSV_DKG_TLS_KEY
+
     dkg_body = generate_ssv_dkg_config(
         eth_network,
         plan.eth1_http_addr,
         operator_id=plan.operator_id,
         dkg_port=plan.dkg_port,
+        tls_cert_path=tls_cert_dest,
+        tls_key_path=tls_key_dest,
     )
 
     if dry_run:
@@ -1242,6 +1405,9 @@ def run_ssv_migration(
             print(
                 f"[dry-run] Would copy DKG output {plan.dkg_output_path} → {SSV_DKG_OUTPUT_DIR}"
             )
+        if tls_cert_dest:
+            print(f"[dry-run] Would copy TLS cert {plan.tls_cert_path} → {tls_cert_dest}")
+            print(f"[dry-run] Would copy TLS key  {plan.tls_key_path} → {tls_key_dest}")
         print(f"[dry-run] Would write {SSV_NODE_SERVICE_PATH}")
         if plan.dkg_unit:
             print(f"[dry-run] Would write {SSV_DKG_SERVICE_PATH}")
@@ -1252,6 +1418,22 @@ def run_ssv_migration(
         _copy_tree(plan.db_path, SSV_DB_DIR)
     if plan.dkg_output_path and os.path.isdir(plan.dkg_output_path):
         _copy_tree(plan.dkg_output_path, SSV_DKG_OUTPUT_DIR)
+    if plan.tls_cert_path and plan.tls_key_path:
+        subprocess.run(["sudo", "mkdir", "-p", SSV_DKG_SSL_DIR], check=True)
+        subprocess.run(
+            ["sudo", "cp", "-f", plan.tls_cert_path, SSV_DKG_TLS_CERT], check=True
+        )
+        subprocess.run(
+            ["sudo", "cp", "-f", plan.tls_key_path, SSV_DKG_TLS_KEY], check=True
+        )
+        subprocess.run(
+            ["sudo", "chown", "-R", f"{SSV_USER}:{SSV_USER}", SSV_DKG_SSL_DIR],
+            check=True,
+        )
+        subprocess.run(["sudo", "chmod", "700", SSV_DKG_SSL_DIR], check=True)
+        subprocess.run(
+            ["sudo", "chmod", "600", SSV_DKG_TLS_CERT, SSV_DKG_TLS_KEY], check=True
+        )
 
     _sudo_write_text(SSV_CONFIG_FILE, config_body, "600")
     node_unit = generate_ssv_node_service(eth_network)
