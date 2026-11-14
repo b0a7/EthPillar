@@ -127,6 +127,21 @@ class SsvMigratePlan:
     def summary(self) -> str:
         """Human-readable plan text for TUI / CLI."""
         lines = ["SSV systemd → EthPillar migration plan", ""]
+        # Data first so whiptail shows DB/keystore without scrolling past long URLs.
+        lines.append("Data → /var/lib/ssv/ (shared by ssv-node + ssv-dkg):")
+        lines.append(f"  keystore:  {self.private_key_path or '(missing)'}")
+        lines.append(f"  password:  {self.password_path or '(missing)'}")
+        lines.append(f"  db:        {self.db_path or '(missing)'} → {SSV_DB_DIR}")
+        if self.dkg_output_path:
+            lines.append(
+                f"  dkg out:   {self.dkg_output_path} → {SSV_DKG_OUTPUT_DIR}"
+            )
+        else:
+            lines.append(f"  dkg out:   (none found; EthPillar uses {SSV_DKG_OUTPUT_DIR})")
+        lines.append(
+            "  note: keystore+password+db are shared; DKG also gets operator.yaml"
+        )
+        lines.append("")
         if self.node_unit:
             lines.append(
                 f"Node unit: {self.node_unit.unit_name} → {ETHPILLAR_NODE_UNIT}"
@@ -139,7 +154,8 @@ class SsvMigratePlan:
             lines.append(
                 f"DKG unit:  {self.dkg_unit.unit_name} → {ETHPILLAR_DKG_UNIT}"
             )
-            lines.append(f"  config: {self.dkg_unit.config_path or '(none)'}")
+            dkg_cfg = self.dkg_unit.config_path or "(none — will synthesize operator.yaml)"
+            lines.append(f"  config: {dkg_cfg}")
             lines.append(f"  binary: {self.dkg_unit.binary_path or '(none)'}")
         else:
             lines.append("DKG unit:  (not found — node-only migrate)")
@@ -156,12 +172,8 @@ class SsvMigratePlan:
             lines.append(f"HostAddress: {self.p2p_external_ip}")
         if self.operator_id:
             lines.append(f"operatorID:  {self.operator_id}")
-        lines.append("")
-        lines.append(f"Keystore:    {self.private_key_path or '(missing)'}")
-        lines.append(f"Password:    {self.password_path or '(missing)'}")
-        lines.append(f"DB:          {self.db_path or '(missing)'} → {SSV_DB_DIR}")
-        if self.dkg_output_path:
-            lines.append(f"DKG output:  {self.dkg_output_path} → {SSV_DKG_OUTPUT_DIR}")
+        else:
+            lines.append("operatorID:  (unset — edit /var/lib/ssv/operator.yaml after)")
         lines.append("")
         if self.node_binary:
             lines.append(
@@ -422,15 +434,48 @@ def _find_node_config(unit: DiscoveredUnit) -> str:
     return unit.config_path or ""
 
 
-def _resolve_path(path: str, *, workdir: str, unit_dir: str) -> str:
-    """Resolve relative paths against WorkingDirectory or the unit directory."""
+def _resolve_path(
+    path: str,
+    *,
+    workdir: str = "",
+    unit_dir: str = "",
+    bases: Optional[Sequence[str]] = None,
+) -> str:
+    """Resolve relative paths against preferred bases, then workdir/unit_dir."""
     if not path:
         return ""
     expanded = os.path.expanduser(path)
     if os.path.isabs(expanded):
         return os.path.normpath(expanded)
-    base = workdir or unit_dir or os.getcwd()
-    return os.path.normpath(os.path.join(base, expanded))
+    candidates: List[str] = []
+    if bases:
+        candidates.extend(b for b in bases if b)
+    if workdir:
+        candidates.append(workdir)
+    if unit_dir:
+        candidates.append(unit_dir)
+    if not candidates:
+        candidates.append(os.getcwd())
+    # Prefer a base where the path already exists (db dirs, key files).
+    for base in candidates:
+        joined = os.path.normpath(os.path.join(base, expanded))
+        if os.path.exists(joined):
+            return joined
+    return os.path.normpath(os.path.join(candidates[0], expanded))
+
+
+def _eth1_ws_to_http(eth1_ws: str) -> str:
+    """Derive DKG ethEndpointURL list from node ETH1Addr WebSocket URLs."""
+    if not eth1_ws.strip():
+        return "http://127.0.0.1:8545"
+    sep = ";" if ";" in eth1_ws else ","
+    parts = [p.strip() for p in re.split(r"[;,]", eth1_ws) if p.strip()]
+    converted: List[str] = []
+    for part in parts:
+        url = part.replace("ws://", "http://").replace("wss://", "https://")
+        url = re.sub(r":8546(?=/|$)", ":8545", url)
+        converted.append(url)
+    return sep.join(converted) if converted else "http://127.0.0.1:8545"
 
 
 def _looks_like_binary(path: str) -> bool:
@@ -686,9 +731,27 @@ def _find_dkg_config(
     for root in _search_roots_for_unit(unit):
         op_dir = os.path.join(root, "operator-config")
         if os.path.isdir(op_dir):
+            yaml_files = sorted(
+                n
+                for n in os.listdir(op_dir)
+                if n.endswith((".yaml", ".yml"))
+            )
+            # Prefer names that look like operator config.
+            for preferred in (
+                "operator.yaml",
+                "operator.yml",
+                "config.yaml",
+                "config.yml",
+            ):
+                if preferred in yaml_files:
+                    return os.path.join(op_dir, preferred)
+            if yaml_files:
+                return os.path.join(op_dir, yaml_files[0])
+            # Non-yaml operator config (rare): any file
             for name in sorted(os.listdir(op_dir)):
-                if name.endswith((".yaml", ".yml")):
-                    return os.path.join(op_dir, name)
+                path = os.path.join(op_dir, name)
+                if os.path.isfile(path) and not name.startswith("."):
+                    return path
         for name in ("operator.yaml", "config.yaml", "operator-config.yaml"):
             path = os.path.join(root, name)
             if os.path.isfile(path):
@@ -867,6 +930,15 @@ def plan_ssv_migration(
 
     node_cfg_path = _find_node_config(node)
     node.config_path = node_cfg_path
+    node_roots = _search_roots_for_unit(node)
+    node_bases: List[str] = []
+    if node_cfg_path:
+        cfg_dir = os.path.dirname(node_cfg_path)
+        node_bases.append(cfg_dir)
+        # config/config.yaml → repo root
+        node_bases.append(os.path.dirname(cfg_dir))
+    node_bases.extend(node_roots)
+
     node_cfg = _read_text(node_cfg_path) if node_cfg_path else ""
     if not node_cfg:
         plan.errors.append(f"Could not read node config: {node_cfg_path or '(empty)'}")
@@ -884,57 +956,98 @@ def plan_ssv_migration(
             str(parsed["db_path"]),
             workdir=node.working_directory,
             unit_dir=unit_dir,
+            bases=node_bases,
         )
         plan.private_key_path = _resolve_path(
             str(parsed["private_key_path"]),
             workdir=node.working_directory,
             unit_dir=unit_dir,
+            bases=node_bases,
         )
         plan.password_path = _resolve_path(
             str(parsed["password_path"]),
             workdir=node.working_directory,
             unit_dir=unit_dir,
+            bases=node_bases,
         )
 
     if not plan.private_key_path or not plan.password_path:
         fb_key, fb_pw = _find_fallback_secrets(
             workdir=node.working_directory,
             config_path=node_cfg_path,
-            extra_roots=_search_roots_for_unit(node),
+            extra_roots=node_bases,
         )
         plan.private_key_path = plan.private_key_path or fb_key
         plan.password_path = plan.password_path or fb_pw
 
+    # Default DKG HTTP from node WS (keystore is shared; operator.yaml is separate).
+    plan.eth1_http_addr = _eth1_ws_to_http(plan.eth1_ws_addr)
+
     dkg_cfg_path = _find_dkg_config(dkg) if dkg else ""
     if dkg and dkg_cfg_path:
         dkg.config_path = dkg_cfg_path
+        dkg_bases = list(_search_roots_for_unit(dkg))
+        dkg_bases.append(os.path.dirname(dkg_cfg_path))
         dkg_cfg = _read_text(dkg_cfg_path)
         if dkg_cfg:
             parsed_dkg = parse_dkg_config(dkg_cfg)
             plan.operator_id = str(parsed_dkg["operator_id"])
             plan.dkg_port = int(parsed_dkg["dkg_port"])
-            plan.eth1_http_addr = str(parsed_dkg["eth1_http_addr"])
+            if parsed_dkg["eth1_http_addr"]:
+                plan.eth1_http_addr = str(parsed_dkg["eth1_http_addr"])
             plan.dkg_output_path = _resolve_path(
                 str(parsed_dkg["dkg_output_path"]),
                 workdir=dkg.working_directory,
                 unit_dir=unit_dir,
+                bases=dkg_bases,
             )
             if not plan.private_key_path:
                 plan.private_key_path = _resolve_path(
                     str(parsed_dkg["private_key_path"]),
                     workdir=dkg.working_directory,
                     unit_dir=unit_dir,
+                    bases=dkg_bases + node_bases,
                 )
             if not plan.password_path:
                 plan.password_path = _resolve_path(
                     str(parsed_dkg["password_path"]),
                     workdir=dkg.working_directory,
                     unit_dir=unit_dir,
+                    bases=dkg_bases + node_bases,
                 )
         else:
-            plan.warnings.append(f"Could not read DKG config: {dkg_cfg_path}")
+            plan.warnings.append(
+                f"DKG config unreadable at {dkg_cfg_path}; "
+                "will synthesize operator.yaml (shared keystore + ETH1 from node WS)"
+            )
+            dkg.config_path = ""
     elif dkg:
-        plan.warnings.append("DKG unit found but no operator config located")
+        plan.warnings.append(
+            "No separate DKG operator config found; will synthesize "
+            f"{SSV_DKG_CONFIG_FILE} sharing node keystore + ETH1 HTTP derived from WS"
+        )
+
+    # Heuristic DKG output dir when not set in config.
+    if dkg and not plan.dkg_output_path:
+        for root in _search_roots_for_unit(dkg):
+            for rel in ("data", "output", "output/data"):
+                candidate = os.path.join(root, rel)
+                if os.path.isdir(candidate):
+                    plan.dkg_output_path = candidate
+                    break
+            if plan.dkg_output_path:
+                break
+
+    # Common relative db layout when Path was empty or unresolved.
+    if not plan.db_path or not os.path.isdir(plan.db_path):
+        for root in node_bases:
+            for rel in ("data/db", "db", "data"):
+                candidate = os.path.join(root, rel)
+                if os.path.isdir(candidate):
+                    plan.db_path = candidate
+                    break
+            if plan.db_path and os.path.isdir(plan.db_path):
+                break
 
     if not plan.beacon_node_addr:
         plan.errors.append("BeaconNodeAddr missing from node config")
@@ -945,7 +1058,8 @@ def plan_ssv_migration(
     if not plan.db_path or not os.path.isdir(plan.db_path):
         plan.warnings.append(
             f"DB path missing or not a directory: {plan.db_path or '(empty)'} "
-            "(migrate will create an empty EthPillar db/)"
+            "(migrate will create an empty EthPillar db/ — do not start if you "
+            "expected an existing operator DB)"
         )
 
     if os.path.isfile(os.path.join(unit_dir, ETHPILLAR_NODE_UNIT)) and operator_keystore_present():

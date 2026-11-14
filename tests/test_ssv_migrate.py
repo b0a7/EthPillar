@@ -131,6 +131,27 @@ def test_versions_match_normalizes_v_prefix():
     assert not versions_match("", "v2.5.1")
 
 
+def test_eth1_ws_to_http_preserves_semicolon_list():
+    from deploy.ssv_migrate import _eth1_ws_to_http
+
+    ws = "ws://a:8546;ws://b:8546;ws://c:8546"
+    assert _eth1_ws_to_http(ws) == "http://a:8545;http://b:8545;http://c:8545"
+
+
+def test_relative_db_path_resolves_via_config_dir(tmp_path: Path):
+    from deploy.ssv_migrate import _resolve_path
+
+    cfg_dir = tmp_path / "ssv" / "config"
+    db = tmp_path / "ssv" / "data" / "db"
+    db.mkdir(parents=True)
+    cfg_dir.mkdir(parents=True)
+    resolved = _resolve_path(
+        "./data/db",
+        bases=[str(cfg_dir), str(tmp_path / "ssv")],
+    )
+    assert resolved == str(db)
+
+
 def test_config_from_script_skips_elf_binary(tmp_path: Path):
     from deploy.ssv_migrate import _config_from_script
 
