@@ -87,6 +87,22 @@ On first start without existing files, the node can generate
 **Back up both files on a separate device.** Losing either file means losing
 the operator with no recovery path. The same files are required by `ssv-dkg`.
 
+## Uninstall
+
+Full-node uninstall (`uninstall.sh`) always **retires** `ssv-node` / `ssv-dkg`
+(stop → disable → `*.service.bak` → daemon-reload → verify absent) and removes
+binaries/`ssv` user.
+
+Wiping `/var/lib/ssv` is a **separate opt-in** (strong confirm, **default No**).
+If you choose to wipe:
+
+1. You are prompted to **back up first** (**default Yes**): keystore, password,
+   `config.yaml`, `operator.yaml`, and optionally `db/`
+2. Backup goes to a timestamped root-only directory outside the datadir
+   (e.g. `~/ssv-backup-<timestamp>/` or `/root/ssv-backup-<timestamp>/`,
+   mode `700` / files `600`); the path is printed
+3. If the backup fails, the wipe is **aborted** (datadir kept; units already retired)
+
 ## Ports / firewall
 
 | Port | Proto | Purpose | UFW |

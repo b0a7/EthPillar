@@ -15,8 +15,9 @@ BASE_DIR="${BASE_DIR:-$SCRIPT_DIR}"
 # accidentally restart via boot or Wants=.
 retireSystemdUnit(){
 	local unit="${1:?unit name required}"
-	[[ -f "/etc/systemd/system/${unit}.service" ]] || return 0
-	if ! PYTHONPATH="${BASE_DIR}" python3 -m deploy.systemd_units retire "${unit}.service"; then
+	local unit_dir="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+	[[ -f "${unit_dir}/${unit}.service" ]] || return 0
+	if ! PYTHONPATH="${BASE_DIR}" python3 -m deploy.systemd_units retire "${unit}.service" --unit-dir "${unit_dir}"; then
 		echo "ERROR: Failed to retire ${unit}.service (refusing to continue uninstall)" >&2
 		exit 1
 	fi
@@ -179,17 +180,114 @@ function uninstallCharon(){
 	fi
 }
 
+# Copy SSV operator secrets/config (and optionally db/) to a root-only
+# timestamped directory outside the live datadir. Prints the path on success.
+# Args: include_db (0|1). Returns non-zero if the backup cannot be written.
+backupSsvDatadir(){
+	local include_db="${1:-0}"
+	local src="${SSV_DATA_DIR:-/var/lib/ssv}"
+	local parent="${SSV_BACKUP_PARENT:-${HOME:-/root}}"
+	[[ -z "$parent" || "$parent" == "/" ]] && parent="/root"
+	local ts
+	ts="$(date +%Y%m%d-%H%M%S)"
+	local dest="${parent}/ssv-backup-${ts}"
+	local f
+
+	if [[ ! -d "$src" ]]; then
+		echo "ERROR: SSV datadir missing ($src); nothing to back up" >&2
+		return 1
+	fi
+	if ! sudo mkdir -p "$dest"; then
+		echo "ERROR: Failed to create SSV backup directory $dest" >&2
+		return 1
+	fi
+	# Mode is mandatory; root ownership is best-effort (sudo normally succeeds).
+	if ! sudo chmod 700 "$dest"; then
+		echo "ERROR: Failed to lock down SSV backup directory $dest" >&2
+		sudo rm -rf "$dest" 2>/dev/null || true
+		return 1
+	fi
+	sudo chown root:root "$dest" 2>/dev/null || true
+
+	for f in encrypted_private_key.json password config.yaml operator.yaml; do
+		if [[ -e "${src}/${f}" ]]; then
+			if ! sudo cp -a "${src}/${f}" "${dest}/${f}"; then
+				echo "ERROR: Failed to back up ${src}/${f}" >&2
+				sudo rm -rf "$dest" 2>/dev/null || true
+				return 1
+			fi
+			sudo chmod 600 "${dest}/${f}" 2>/dev/null || true
+			sudo chown root:root "${dest}/${f}" 2>/dev/null || true
+		fi
+	done
+
+	if [[ "$include_db" == "1" && -d "${src}/db" ]]; then
+		if ! sudo cp -a "${src}/db" "${dest}/db"; then
+			echo "ERROR: Failed to back up ${src}/db" >&2
+			sudo rm -rf "$dest" 2>/dev/null || true
+			return 1
+		fi
+		sudo chmod -R u+rwX,go-rwx "${dest}/db" 2>/dev/null || true
+		sudo chown -R root:root "${dest}/db" 2>/dev/null || true
+	fi
+
+	# Path on stdout for callers; human-readable notice on stderr.
+	echo "SSV backup written to: ${dest}" >&2
+	printf '%s\n' "${dest}"
+}
+
 function uninstallSsv(){
-	if [[ -f /etc/systemd/system/ssv-dkg.service ]]; then
+	local ssv_data="${SSV_DATA_DIR:-/var/lib/ssv}"
+	local unit_dir="${SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
+	local bin_dir="${INSTALL_DIR:-/usr/local/bin}"
+	local include_db=0
+	local backup_path=""
+
+	# Units are always retired (stop/disable/.bak/verify), independent of wipe.
+	if [[ -f "${unit_dir}/ssv-dkg.service" ]]; then
 		retireSystemdUnit ssv-dkg
 	fi
-	if [[ -f /etc/systemd/system/ssv-node.service ]]; then
+	if [[ -f "${unit_dir}/ssv-node.service" ]]; then
 		retireSystemdUnit ssv-node
 	fi
-	if [[ -d /var/lib/ssv ]]; then
-		sudo rm -rf /var/lib/ssv
+
+	if [[ -d "$ssv_data" ]]; then
+		# Strong confirm; default No — keep operator secrets/DB unless explicitly wiped.
+		if whiptail --title "Wipe SSV datadir?" --defaultno --yesno \
+			"Permanently DELETE ${ssv_data}?\n\nThis destroys the operator keystore, password, configs, DKG data, and DB (slashing protection).\n\nUnits are already being retired. Default: No (keep datadir)." 14 78; then
+			# Backup prompt first (default Yes) before any destructive wipe.
+			if whiptail --title "Back up SSV before wipe?" --yesno \
+				"Back up operator key material and config before wiping ${ssv_data}?\n\nAlways included when present:\n  • encrypted_private_key.json\n  • password\n  • config.yaml\n  • operator.yaml (DKG)\n\nYou will next choose whether to include db/.\n\nDefault: Yes" 18 78; then
+				if [[ -d "${ssv_data}/db" ]]; then
+					if whiptail --title "Include SSV DB in backup?" --yesno \
+						"Include ${ssv_data}/db in the backup?\n(Slashing-critical. Default: Yes)" 10 78; then
+						include_db=1
+					fi
+				fi
+				if ! backup_path="$(backupSsvDatadir "$include_db")"; then
+					whiptail --title "SSV backup failed" --msgbox \
+						"Backup failed. Aborting wipe of ${ssv_data}.\n\nUnits were already retired; binaries will still be removed.\nDatadir left intact." 12 78
+					echo "ERROR: SSV backup failed; refusing to wipe ${ssv_data}" >&2
+				elif [[ -z "$backup_path" ]] || ! sudo test -d "$backup_path"; then
+					whiptail --title "SSV backup failed" --msgbox \
+						"Backup path missing after backupSsvDatadir. Aborting wipe of ${ssv_data}." 10 78
+					echo "ERROR: SSV backup path invalid; refusing to wipe ${ssv_data}" >&2
+				else
+					whiptail --title "SSV backup complete" --msgbox \
+						"SSV backup saved (root-only) to:\n\n${backup_path}" 11 78
+					echo "Wiping ${ssv_data}"
+					sudo rm -rf "$ssv_data"
+				fi
+			else
+				echo "Wiping ${ssv_data} without backup (user declined backup)"
+				sudo rm -rf "$ssv_data"
+			fi
+		else
+			echo "Keeping ${ssv_data} (wipe declined)"
+		fi
 	fi
-	sudo rm -f /usr/local/bin/ssvnode /usr/local/bin/ssv-dkg
+
+	sudo rm -f "${bin_dir}/ssvnode" "${bin_dir}/ssv-dkg"
 	sudo userdel ssv 2>/dev/null || true
 }
 
@@ -229,4 +327,7 @@ function uninstallMevboost(){
 	fi
 }
 
-promptYesNo
+# Interactive entry when executed directly (not when sourced by tests).
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	promptYesNo
+fi
