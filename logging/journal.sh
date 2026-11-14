@@ -151,7 +151,7 @@ show_rolling_consolidated_logs() {
     if [[ -d /opt/ethpillar/aztec ]] && [[ ! -f /etc/systemd/system/consensus.service ]]; then
           cd  /opt/ethpillar/aztec && docker compose logs -f --tail=233
     fi
-    view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u web3signer -u csm_nimbusvalidator --no-hostname -f
+    view_journal_logs -u validator -u consensus -u execution -u mevboost -u charon -u web3signer -u ssv-node -u ssv-dkg -u csm_nimbusvalidator --no-hostname -f
 }
 
 # Function to display log dialog and return the selected option
@@ -164,6 +164,8 @@ function journal_export_prompt() {
     test -f /etc/systemd/system/charon.service && OPTIONS+=("charon" "")
     test -f /etc/systemd/system/web3signer.service && OPTIONS+=("web3signer" "")
     test -f /etc/systemd/system/mevboost.service && OPTIONS+=("mevboost" "" )
+    test -f /etc/systemd/system/ssv-node.service && OPTIONS+=("ssv-node" "")
+    test -f /etc/systemd/system/ssv-dkg.service && OPTIONS+=("ssv-dkg" "")
     test -f /etc/systemd/system/csm_nimbusvalidator.service && OPTIONS+=("csm_nimbusvalidator" "")
     service=$(whiptail --title "Export journalctl service logs" --menu \
           "I want to export logs for:" 15 60 6 \

@@ -108,10 +108,10 @@ cli_resolve_targets() {
 
     arg="${arg,,}"
     if [[ "$mode" == "upgrade" ]]; then
-        allowed="all execution consensus validator mevboost charon web3signer ethpillar"
+        allowed="all execution consensus validator mevboost charon web3signer ssv-node ssv-dkg ssv ethpillar"
         installed=$(cli_upgradable_targets)
     else
-        allowed="all execution consensus validator mevboost charon web3signer"
+        allowed="all execution consensus validator mevboost charon web3signer ssv-node ssv-dkg ssv"
         installed=$(cli_installed_client_targets "$order_name")
     fi
 

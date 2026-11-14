@@ -1985,6 +1985,10 @@ function getBackTitle(){
       [[ "${isIntegrated:-false}" == "true" ]] && CLIENT_TEXT="| $CL_TEXT | 👥 $EL |"
       BACKTITLE="$NETWORK_TEXT | $EL_TEXT $CLIENT_TEXT | $END_TEXT"
       ;;
+    "SSV Operator")
+      getSsvCurrentVersion || true
+      BACKTITLE="$NETWORK_TEXT | 🟣 SSV ${VERSION:-unknown} | $END_TEXT"
+      ;;
     *)
       BACKTITLE="$NETWORK_TEXT"
       ;;
@@ -1999,9 +2003,9 @@ function checkV1StakingSetup(){
   fi
 }
 
-# If no execution, consensus or validator service and no Aztec install exist, start install workflow
+# If no execution, consensus, validator, SSV, or Aztec install exist, start install workflow
 function installNode(){
-  if [[ ! -f /etc/systemd/system/consensus.service && ! -f /etc/systemd/system/execution.service && ! -f /etc/systemd/system/validator.service && ! -d /opt/ethpillar/aztec ]]; then
+  if [[ ! -f /etc/systemd/system/consensus.service && ! -f /etc/systemd/system/execution.service && ! -f /etc/systemd/system/validator.service && ! -f /etc/systemd/system/ssv-node.service && ! -d /opt/ethpillar/aztec ]]; then
           local _ROLE cols lines width height
           # Stay inside an 80x24 terminal. Width is capped at 78 so the frame
           # fits; descriptions are short enough to sit beside the longest tag.
@@ -2098,6 +2102,9 @@ function setNodeMode(){
     else
         NODE_MODE="Validator Client Only"
     fi
+  elif [[ -f "${SSV_NODE_SERVICE_FILE:-/etc/systemd/system/ssv-node.service}" ]]; then
+    # SSV-only host (remote BN/EL) or migrate cutover without local EC/CC/VC units.
+    NODE_MODE="SSV Operator"
   elif [[ -d /opt/ethpillar/aztec ]] && [[ ! -f "$consensus_svc" ]]; then
       NODE_MODE="Aztec Node | Remote RPC"
   else
