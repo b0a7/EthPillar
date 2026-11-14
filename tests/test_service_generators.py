@@ -641,6 +641,7 @@ class TestErigonService:
             SYNC_URL, enable_ws=True,
         )
         assert "--ws \\" in result or "--ws\n" in result or re.search(r"(?m)--ws$", result)
+        assert "--ws.addr=127.0.0.1" in result
         assert "--ws.port=8546" in result
 
 
@@ -670,6 +671,7 @@ class TestErigonStandaloneService:
             "mainnet", EL_P2P_PORT, EL_RPC_PORT, EL_MAX_PEER_COUNT, JWTSECRET_PATH,
             enable_ws=True,
         )
+        assert "--ws.addr=127.0.0.1" in result
         assert "--ws.port=8546" in result
 
     def test_holesky_service(self):

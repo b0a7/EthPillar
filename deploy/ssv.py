@@ -443,9 +443,30 @@ def operator_keystore_present(
 
 
 def _path_exists(path: str) -> bool:
+    """True when *path* is a readable file (direct or via ``sudo test -f``)."""
+    return path_is_file(path)
+
+
+def path_is_file(path: str) -> bool:
+    """True when *path* is a file, using ``sudo test -f`` when not locally visible.
+
+    Needed for operator homes / ``/var/lib/ssv`` at mode ``700`` when the TUI
+    user is not ``ssv`` or root.
+    """
+    if not path:
+        return False
     if os.path.isfile(path):
         return True
     return subprocess.run(["sudo", "test", "-f", path], check=False).returncode == 0
+
+
+def path_is_dir(path: str) -> bool:
+    """True when *path* is a directory, using ``sudo test -d`` when not locally visible."""
+    if not path:
+        return False
+    if os.path.isdir(path):
+        return True
+    return subprocess.run(["sudo", "test", "-d", path], check=False).returncode == 0
 
 
 def _sudo_write_text(path: str, content: str, mode: str = "600") -> None:

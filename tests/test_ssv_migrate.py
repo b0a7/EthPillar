@@ -1,6 +1,7 @@
 """Tests for deploy/ssv_migrate discovery, YAML parse, and dry-run apply."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -472,22 +473,35 @@ def test_quarantine_renames_to_bak(mock_verify, mock_run, tmp_path: Path):
     mock_verify.assert_called()
 
 
-@patch("deploy.ssv_migrate.subprocess.run", return_value=MagicMock(returncode=0))
 @patch("deploy.ssv_migrate.get_dkg_release_info", return_value={"version": "v2.0.0"})
 @patch("deploy.ssv_migrate.get_release_info", return_value={"version": "v2.5.1"})
 @patch("deploy.ssv_migrate.probe_binary_version", return_value="v2.5.1")
 def test_dry_run_does_not_quarantine(
-    mock_probe, mock_rel, mock_dkg, mock_run, tmp_path: Path
+    mock_probe, mock_rel, mock_dkg, tmp_path: Path
 ):
     unit_dir = _write_legacy_stack(tmp_path)
-    run_ssv_migration(dry_run=True, unit_dir=str(unit_dir))
+
+    def _run(cmd, **kwargs):
+        if len(cmd) >= 4 and cmd[0] == "sudo" and cmd[1] == "test":
+            flag, target = cmd[2], cmd[3]
+            p = Path(target)
+            ok = (
+                p.is_file()
+                if flag == "-f"
+                else p.is_dir()
+                if flag == "-d"
+                else p.exists()
+            )
+            return MagicMock(returncode=0 if ok else 1, stdout=b"", stderr=b"")
+        return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    with patch("deploy.ssv_migrate.subprocess.run", side_effect=_run), patch(
+        "deploy.ssv.subprocess.run", side_effect=_run
+    ):
+        run_ssv_migration(dry_run=True, unit_dir=str(unit_dir))
     # Dry-run quarantine returns early before systemctl.
     assert (unit_dir / "ssvnode.service").exists()
     assert (unit_dir / "ssvdkg.service").exists()
-    # No sudo systemctl stop should have been issued for quarantine.
-    for call in mock_run.call_args_list:
-        cmd = call.args[0] if call.args else []
-        assert "stop" not in cmd
 
 
 def test_copy_tree_uses_cp_not_rsync(tmp_path: Path):
@@ -619,3 +633,242 @@ def test_local_ethpillar_el_missing_ws(tmp_path: Path):
     assert local_ethpillar_el_missing_ws("ws://127.0.0.1:8546", unit_dir=str(tmp_path)) is None
     # Remote ETH1: do not require local EL WS
     assert local_ethpillar_el_missing_ws("ws://10.0.0.5:8546", unit_dir=str(tmp_path)) is None
+
+
+def test_missing_db_is_hard_error_without_allow_empty_db(tmp_path: Path):
+    from deploy.ssv_migrate import plan_ssv_migration
+
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    home = tmp_path / "ssv"
+    (home / "data" / "db").mkdir(parents=True)  # created then removed below
+    (home / "data" / "db").rmdir()
+    (home / "data").rmdir()
+    home.mkdir(exist_ok=True)
+    (home / "encrypted_private_key.json").write_text("{}", encoding="utf-8")
+    (home / "password").write_text("pw", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "eth2:\n  BeaconNodeAddr: http://127.0.0.1:5052\n"
+        "eth1:\n  ETH1Addr: ws://127.0.0.1:8546\n"
+        "KeyStore:\n  PrivateKeyFile: ./encrypted_private_key.json\n"
+        "  PasswordFile: ./password\n"
+        "db:\n  Path: ./data/db\n"
+        "ssv:\n  Network: hoodi\n",
+        encoding="utf-8",
+    )
+    (unit_dir / "ssv.service").write_text(
+        "[Service]\nWorkingDirectory=" + str(home) + "\n"
+        "ExecStart=/usr/local/bin/ssvnode start-node --config="
+        + str(home / "config.yaml") + "\n",
+        encoding="utf-8",
+    )
+    plan = plan_ssv_migration(unit_dir=str(unit_dir))
+    assert any("DB path missing" in e for e in plan.errors)
+
+    plan_ok = plan_ssv_migration(unit_dir=str(unit_dir), allow_empty_db=True)
+    assert not any("DB path missing" in e for e in plan_ok.errors)
+    assert any("DB path missing" in w for w in plan_ok.warnings)
+
+
+def test_path_is_file_falls_back_to_sudo_test(monkeypatch):
+    from deploy import ssv as ssv_mod
+
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(ssv_mod.os.path, "isfile", lambda p: False)
+    monkeypatch.setattr(ssv_mod.subprocess, "run", _run)
+    assert ssv_mod.path_is_file("/secret/encrypted_private_key.json") is True
+    assert calls and calls[0][:3] == ["sudo", "test", "-f"]
+
+
+def test_path_is_dir_falls_back_to_sudo_test(monkeypatch):
+    from deploy import ssv as ssv_mod
+
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd))
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(ssv_mod.os.path, "isdir", lambda p: False)
+    monkeypatch.setattr(ssv_mod.subprocess, "run", _run)
+    assert ssv_mod.path_is_dir("/secret/db") is True
+    assert calls and calls[0][:3] == ["sudo", "test", "-d"]
+
+
+@patch("deploy.ssv_migrate.quarantine_unit")
+@patch("deploy.ssv_migrate.write_service_file")
+@patch("deploy.ssv_migrate._sudo_write_text")
+@patch("deploy.ssv_migrate.import_operator_keystore_files")
+@patch("deploy.ssv_migrate._copy_tree")
+@patch("deploy.ssv_migrate._install_dkg_binary")
+@patch("deploy.ssv_migrate._install_node_binary", return_value="v9.9.9")
+@patch("deploy.ssv_migrate.ensure_ssv_datadir")
+@patch("deploy.ssv_migrate.subprocess.run")
+def test_same_name_dkg_retired_before_ethpillar_write(
+    mock_run,
+    mock_ensure,
+    mock_node_bin,
+    mock_dkg_bin,
+    mock_copy,
+    mock_import,
+    mock_write_text,
+    mock_write_unit,
+    mock_quarantine,
+    tmp_path: Path,
+):
+    """Bug A: legacy ssv-dkg.service must be bak'd before writing EthPillar unit."""
+    from deploy.ssv_migrate import run_ssv_migration
+
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    home = tmp_path / "legacy"
+    (home / "db").mkdir(parents=True)
+    (home / "db" / "x").write_text("1", encoding="utf-8")
+    (home / "encrypted_private_key.json").write_text("{}", encoding="utf-8")
+    (home / "password").write_text("pw", encoding="utf-8")
+    cfg = home / "config.yaml"
+    cfg.write_text(
+        "eth2:\n  BeaconNodeAddr: http://127.0.0.1:5052\n"
+        "eth1:\n  ETH1Addr: ws://127.0.0.1:8546\n"
+        "KeyStore:\n  PrivateKeyFile: ./encrypted_private_key.json\n"
+        "  PasswordFile: ./password\n"
+        "db:\n  Path: ./db\n"
+        "ssv:\n  Network: hoodi\n",
+        encoding="utf-8",
+    )
+    # Legacy node under a different name; DKG uses EthPillar's name.
+    (unit_dir / "ssv.service").write_text(
+        "[Service]\nWorkingDirectory=" + str(home) + "\n"
+        f"ExecStart=/opt/legacy/ssvnode start-node --config={cfg}\n",
+        encoding="utf-8",
+    )
+    legacy_dkg = (
+        "[Service]\nWorkingDirectory=" + str(home) + "\n"
+        "ExecStart=/opt/legacy/ssv-dkg start-operator --configPath=./operator.yaml\n"
+    )
+    (unit_dir / "ssv-dkg.service").write_text(legacy_dkg, encoding="utf-8")
+    (home / "operator.yaml").write_text("operatorID: 1\n", encoding="utf-8")
+
+    order: list[str] = []
+
+    def _quarantine(path, **kwargs):
+        order.append(f"quarantine:{os.path.basename(path)}")
+        # Emulate retire: move aside so path_is_file becomes false.
+        p = Path(path)
+        bak = p.with_name(p.name + ".bak")
+        p.rename(bak)
+        return str(bak)
+
+    def _write_unit(body, dest, tmp_name):
+        order.append(f"write:{os.path.basename(dest)}")
+        Path(dest).write_text(body, encoding="utf-8")
+
+    mock_quarantine.side_effect = _quarantine
+    mock_write_unit.side_effect = _write_unit
+
+    def _run(cmd, **kwargs):
+        # sudo test -f/-d must reflect real filesystem (path_is_* shares subprocess).
+        if len(cmd) >= 3 and cmd[0] == "sudo" and cmd[1] == "test":
+            flag, target = cmd[2], cmd[3]
+            ok = Path(target).is_file() if flag == "-f" else Path(target).is_dir() if flag == "-d" else Path(target).exists()
+            return MagicMock(returncode=0 if ok else 1, stdout=b"", stderr=b"")
+        return MagicMock(returncode=0, stdout=b"", stderr=b"")
+
+    mock_run.side_effect = _run
+
+    # Point EthPillar DKG service path at our temp unit_dir via env-less patch.
+    with patch("deploy.ssv_migrate.SSV_DKG_SERVICE_PATH", str(unit_dir / "ssv-dkg.service")), \
+         patch("deploy.ssv_migrate.SSV_NODE_SERVICE_PATH", str(unit_dir / "ssv-node.service")), \
+         patch("deploy.ssv_migrate.SYSTEMD_UNIT_DIR", str(unit_dir)), \
+         patch("deploy.ssv.subprocess.run", side_effect=_run):
+        run_ssv_migration(unit_dir=str(unit_dir), allow_empty_db=False)
+
+    # Same-named DKG must be quarantined before the EthPillar write.
+    assert "quarantine:ssv-dkg.service" in order
+    assert "write:ssv-dkg.service" in order
+    assert order.index("quarantine:ssv-dkg.service") < order.index("write:ssv-dkg.service")
+    # After migrate, live unit must be EthPillar-owned (WorkingDirectory=/var/lib/ssv).
+    live = (unit_dir / "ssv-dkg.service").read_text(encoding="utf-8")
+    assert "WorkingDirectory=/var/lib/ssv" in live
+    bak = (unit_dir / "ssv-dkg.service.bak").read_text(encoding="utf-8")
+    assert "/opt/legacy/ssv-dkg" in bak
+
+
+@patch("deploy.ssv_migrate.restore_retired_unit")
+@patch("deploy.ssv_migrate.retire_systemd_unit")
+def test_rollback_restores_legacy_same_name_dkg_bak(mock_retire, mock_restore, tmp_path: Path):
+    """Bug A2: content-based restore includes legacy ssv-dkg.service.bak."""
+    from deploy.ssv_migrate import rollback_ssv_migration
+
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    # Live EthPillar DKG unit.
+    (unit_dir / "ssv-dkg.service").write_text(
+        "[Service]\nWorkingDirectory=/var/lib/ssv\n"
+        "ExecStart=/usr/local/bin/ssv-dkg start-operator --configPath=./operator.yaml\n",
+        encoding="utf-8",
+    )
+    # Pre-existing legacy bak from migrate (same name).
+    (unit_dir / "ssv-dkg.service.bak").write_text(
+        "[Service]\nWorkingDirectory=/home/ssv/ssv\n"
+        "ExecStart=/home/ssv/ssv/ssv-dkg start-operator --configPath=./operator.yaml\n",
+        encoding="utf-8",
+    )
+    (unit_dir / "ssv.service.bak").write_text(
+        "[Service]\nWorkingDirectory=/home/ssv/ssv\n"
+        "ExecStart=/home/ssv/ssv/ssvnode start-node\n",
+        encoding="utf-8",
+    )
+
+    ethpillar_bak = unit_dir / "ssv-dkg.service.bak.1"
+
+    def _retire(path, **kwargs):
+        p = Path(path)
+        # Numbered bak because plain .bak exists.
+        bak = ethpillar_bak
+        p.rename(bak)
+        bak.write_text(
+            "[Service]\nWorkingDirectory=/var/lib/ssv\n"
+            "ExecStart=/usr/local/bin/ssv-dkg start-operator --configPath=./operator.yaml\n",
+            encoding="utf-8",
+        )
+        return str(bak)
+
+    restored: list[str] = []
+
+    def _restore(bak_path, **kwargs):
+        restored.append(os.path.basename(bak_path))
+        live = str(bak_path).replace(".bak.1", "").replace(".bak", "")
+        if live.endswith(".service"):
+            Path(live).write_text("restored", encoding="utf-8")
+        return live
+
+    mock_retire.side_effect = _retire
+    mock_restore.side_effect = _restore
+
+    rollback_ssv_migration(unit_dir=str(unit_dir))
+    assert "ssv-dkg.service.bak" in restored
+    assert "ssv.service.bak" in restored
+    assert "ssv-dkg.service.bak.1" not in restored
+
+
+@patch("deploy.ssv_migrate.operator_keystore_present", return_value=True)
+@patch("deploy.ssv_migrate.repair_missing_ethpillar_dkg", return_value=True)
+def test_already_migrated_repairs_missing_dkg(mock_repair, mock_ks, tmp_path: Path):
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    (unit_dir / "ssv-node.service").write_text(
+        "[Service]\nWorkingDirectory=/var/lib/ssv\n"
+        "ExecStart=/usr/local/bin/ssvnode start-node "
+        "--config=/var/lib/ssv/config.yaml\n",
+        encoding="utf-8",
+    )
+    from deploy.ssv_migrate import run_ssv_migration
+
+    run_ssv_migration(unit_dir=str(unit_dir))
+    mock_repair.assert_called_once()

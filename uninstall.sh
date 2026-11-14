@@ -192,8 +192,10 @@ backupSsvDatadir(){
 	ts="$(date +%Y%m%d-%H%M%S)"
 	local dest="${parent}/ssv-backup-${ts}"
 	local f
+	local copied=0
 
-	if [[ ! -d "$src" ]]; then
+	# /var/lib/ssv is typically 700 ssv:ssv — every probe/copy must use sudo.
+	if ! sudo test -d "$src"; then
 		echo "ERROR: SSV datadir missing ($src); nothing to back up" >&2
 		return 1
 	fi
@@ -210,7 +212,7 @@ backupSsvDatadir(){
 	sudo chown root:root "$dest" 2>/dev/null || true
 
 	for f in encrypted_private_key.json password config.yaml operator.yaml; do
-		if [[ -e "${src}/${f}" ]]; then
+		if sudo test -e "${src}/${f}"; then
 			if ! sudo cp -a "${src}/${f}" "${dest}/${f}"; then
 				echo "ERROR: Failed to back up ${src}/${f}" >&2
 				sudo rm -rf "$dest" 2>/dev/null || true
@@ -218,10 +220,11 @@ backupSsvDatadir(){
 			fi
 			sudo chmod 600 "${dest}/${f}" 2>/dev/null || true
 			sudo chown root:root "${dest}/${f}" 2>/dev/null || true
+			copied=1
 		fi
 	done
 
-	if [[ "$include_db" == "1" && -d "${src}/db" ]]; then
+	if [[ "$include_db" == "1" ]] && sudo test -d "${src}/db"; then
 		if ! sudo cp -a "${src}/db" "${dest}/db"; then
 			echo "ERROR: Failed to back up ${src}/db" >&2
 			sudo rm -rf "$dest" 2>/dev/null || true
@@ -229,6 +232,14 @@ backupSsvDatadir(){
 		fi
 		sudo chmod -R u+rwX,go-rwx "${dest}/db" 2>/dev/null || true
 		sudo chown -R root:root "${dest}/db" 2>/dev/null || true
+		copied=1
+	fi
+
+	# Fail closed: never report success without the operator keystore.
+	if [[ "$copied" -eq 0 ]] || ! sudo test -e "${dest}/encrypted_private_key.json"; then
+		echo "ERROR: SSV backup missing operator keystore (nothing copied from ${src}?)" >&2
+		sudo rm -rf "$dest" 2>/dev/null || true
+		return 1
 	fi
 
 	# Path on stdout for callers; human-readable notice on stderr.
@@ -251,14 +262,15 @@ function uninstallSsv(){
 		retireSystemdUnit ssv-node
 	fi
 
-	if [[ -d "$ssv_data" ]]; then
+	# Datadir is often 700 ssv:ssv — use sudo for existence probes.
+	if sudo test -d "$ssv_data"; then
 		# Strong confirm; default No — keep operator secrets/DB unless explicitly wiped.
 		if whiptail --title "Wipe SSV datadir?" --defaultno --yesno \
 			"Permanently DELETE ${ssv_data}?\n\nThis destroys the operator keystore, password, configs, DKG data, and DB (slashing protection).\n\nUnits are already being retired. Default: No (keep datadir)." 14 78; then
 			# Backup prompt first (default Yes) before any destructive wipe.
 			if whiptail --title "Back up SSV before wipe?" --yesno \
 				"Back up operator key material and config before wiping ${ssv_data}?\n\nAlways included when present:\n  • encrypted_private_key.json\n  • password\n  • config.yaml\n  • operator.yaml (DKG)\n\nYou will next choose whether to include db/.\n\nDefault: Yes" 18 78; then
-				if [[ -d "${ssv_data}/db" ]]; then
+				if sudo test -d "${ssv_data}/db"; then
 					if whiptail --title "Include SSV DB in backup?" --yesno \
 						"Include ${ssv_data}/db in the backup?\n(Slashing-critical. Default: Yes)" 10 78; then
 						include_db=1
@@ -272,6 +284,10 @@ function uninstallSsv(){
 					whiptail --title "SSV backup failed" --msgbox \
 						"Backup path missing after backupSsvDatadir. Aborting wipe of ${ssv_data}." 10 78
 					echo "ERROR: SSV backup path invalid; refusing to wipe ${ssv_data}" >&2
+				elif ! sudo test -e "${backup_path}/encrypted_private_key.json"; then
+					whiptail --title "SSV backup failed" --msgbox \
+						"Backup is missing the operator keystore. Aborting wipe of ${ssv_data}." 10 78
+					echo "ERROR: SSV backup missing keystore; refusing to wipe ${ssv_data}" >&2
 				else
 					whiptail --title "SSV backup complete" --msgbox \
 						"SSV backup saved (root-only) to:\n\n${backup_path}" 11 78

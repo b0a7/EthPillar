@@ -62,8 +62,12 @@ from deploy.ssv import (
     import_operator_keystore_files,
     install_binary_file,
     operator_keystore_present,
+    path_is_dir,
+    path_is_file,
     _sudo_write_text,
 )
+
+_SERVICE_BAK_RE = re.compile(r"^(.+\.service)\.bak(?:\.\d+)?$")
 
 SYSTEMD_UNIT_DIR = "/etc/systemd/system"
 ETHPILLAR_NODE_UNIT = "ssv-node.service"
@@ -458,7 +462,7 @@ def _parse_cli_flags(text: str) -> Dict[str, str]:
 
 def _config_from_script(script_path: str) -> str:
     """Extract --config / --configPath from a shell wrapper script."""
-    if not script_path or not os.path.isfile(script_path):
+    if not script_path or not path_is_file(script_path):
         return ""
     # Never decode ELF/Go binaries as UTF-8 (ExecStart is often ssvnode itself).
     if _looks_like_binary(script_path):
@@ -506,12 +510,12 @@ def _find_dkg_wrapper_script(unit: Optional[DiscoveredUnit]) -> str:
         raw_abs = _resolve_path(
             raw, workdir=unit.working_directory, unit_dir=SYSTEMD_UNIT_DIR
         )
-        if raw_abs.endswith((".sh", ".bash")) and os.path.isfile(raw_abs):
+        if raw_abs.endswith((".sh", ".bash")) and path_is_file(raw_abs):
             return raw_abs
     for root in _search_roots_for_unit(unit):
         for name in ("run_ssv-dkg.sh", "run-ssv-dkg.sh", "start-dkg.sh"):
             path = os.path.join(root, name)
-            if os.path.isfile(path):
+            if path_is_file(path):
                 return path
     return ""
 
@@ -523,7 +527,7 @@ def _dkg_settings_from_wrapper(
 ) -> Dict[str, str]:
     """Resolve DKG settings from a start-operator CLI wrapper script."""
     text = _read_text(script_path)
-    if not text:
+    if not isinstance(text, str) or not text.strip():
         return {}
     flags = _parse_cli_flags(text)
     script_dir = os.path.dirname(script_path)
@@ -586,7 +590,7 @@ def _resolve_real_binary(path: str, *, role: str) -> str:
     """If ExecStart is a wrapper script, prefer a nearby real binary."""
     if not path:
         return ""
-    if os.path.isfile(path) and not path.endswith((".sh", ".bash")):
+    if path_is_file(path) and not path.endswith((".sh", ".bash")):
         base = os.path.basename(path)
         if role == "node" and "ssvnode" in base.lower():
             return path
@@ -603,17 +607,17 @@ def _resolve_real_binary(path: str, *, role: str) -> str:
     for root in roots:
         for name in names:
             candidate = os.path.join(root, name)
-            if os.path.isfile(candidate):
+            if path_is_file(candidate):
                 return candidate
             candidate = os.path.join(root, "bin", name)
-            if os.path.isfile(candidate):
+            if path_is_file(candidate):
                 return candidate
     return path
 
 
 def _find_node_config(unit: DiscoveredUnit) -> str:
     """Resolve node config.yaml from ExecStart or checkout heuristics."""
-    if unit.config_path and os.path.isfile(unit.config_path):
+    if unit.config_path and path_is_file(unit.config_path):
         return unit.config_path
     for root in _search_roots_for_unit(unit):
         for rel in (
@@ -623,7 +627,7 @@ def _find_node_config(unit: DiscoveredUnit) -> str:
             "config.yml",
         ):
             path = os.path.join(root, rel)
-            if os.path.isfile(path):
+            if path_is_file(path):
                 return path
     return unit.config_path or ""
 
@@ -715,12 +719,17 @@ def _read_text(path: str) -> str:
             capture_output=True,
             check=False,
         )
-        if result.returncode != 0 or not result.stdout:
+        if result.returncode != 0 or result.stdout in (None, b"", ""):
+            return ""
+        raw = result.stdout
+        if isinstance(raw, str):
+            return raw
+        if not isinstance(raw, (bytes, bytearray)):
             return ""
         try:
-            return result.stdout.decode("utf-8")
+            return raw.decode("utf-8")
         except UnicodeDecodeError:
-            return result.stdout.decode("latin-1", errors="replace")
+            return raw.decode("latin-1", errors="replace")
 
 
 def _yaml_scalar_or_list(content: str, key: str) -> str:
@@ -902,14 +911,14 @@ def _find_fallback_secrets(
             continue
         key = os.path.join(base, "encrypted_private_key.json")
         pw = os.path.join(base, "password")
-        if os.path.isfile(key) and os.path.isfile(pw):
+        if path_is_file(key) and path_is_file(pw):
             return key, pw
     return "", ""
 
 
 def _looks_like_yaml_config(path: str) -> bool:
     """True when *path* is an existing ``.yaml`` / ``.yml`` file (not a log)."""
-    if not path or not os.path.isfile(path):
+    if not path or not path_is_file(path):
         return False
     lower = path.lower()
     if lower.endswith((".yaml", ".yml")):
@@ -952,7 +961,7 @@ def _find_dkg_config(
                 return resolved
     for root in _search_roots_for_unit(unit):
         op_dir = os.path.join(root, "operator-config")
-        if os.path.isdir(op_dir):
+        if path_is_dir(op_dir):
             yaml_files = sorted(
                 n
                 for n in os.listdir(op_dir)
@@ -972,7 +981,7 @@ def _find_dkg_config(
             # Do not fall back to debug.log / other non-yaml files here.
         for name in ("operator.yaml", "config.yaml", "operator-config.yaml"):
             path = os.path.join(root, name)
-            if os.path.isfile(path):
+            if path_is_file(path):
                 return path
     if unit and _looks_like_yaml_config(unit.config_path):
         return unit.config_path
@@ -981,7 +990,7 @@ def _find_dkg_config(
 
 def probe_binary_version(binary_path: str, *, role: str) -> str:
     """Return a semver-ish version string from a binary, or empty."""
-    if not binary_path or not os.path.isfile(binary_path):
+    if not binary_path or not path_is_file(binary_path):
         return ""
     commands = (
         [binary_path, "version"],
@@ -1043,7 +1052,7 @@ def _plan_node_binary(
             latest_version=latest,
             note="--rebuild-ssvnode forced",
         )
-    if source_path and os.path.isfile(source_path) and versions_match(installed, latest):
+    if source_path and path_is_file(source_path) and versions_match(installed, latest):
         return BinaryPlan(
             role="node",
             action="copy",
@@ -1052,7 +1061,7 @@ def _plan_node_binary(
             latest_version=latest,
             note="legacy binary matches LATEST",
         )
-    if source_path and os.path.isfile(source_path) and allow_older and installed:
+    if source_path and path_is_file(source_path) and allow_older and installed:
         return BinaryPlan(
             role="node",
             action="copy",
@@ -1064,7 +1073,7 @@ def _plan_node_binary(
     note = "missing or not LATEST — will rebuild from source"
     if installed and latest and not versions_match(installed, latest):
         note = f"legacy {installed} != LATEST {latest} — will rebuild"
-    elif not source_path or not os.path.isfile(source_path):
+    elif not source_path or not path_is_file(source_path):
         note = "legacy binary missing — will rebuild"
     elif not installed:
         note = "could not parse legacy version — will rebuild"
@@ -1098,7 +1107,7 @@ def _plan_dkg_binary(
             note=f"could not resolve DKG LATEST ({exc}); will download",
         )
     installed = probe_binary_version(source_path, role="dkg")
-    if source_path and os.path.isfile(source_path) and versions_match(installed, latest):
+    if source_path and path_is_file(source_path) and versions_match(installed, latest):
         return BinaryPlan(
             role="dkg",
             action="copy",
@@ -1107,7 +1116,7 @@ def _plan_dkg_binary(
             latest_version=latest,
             note="legacy binary matches LATEST",
         )
-    if source_path and os.path.isfile(source_path) and allow_older and installed:
+    if source_path and path_is_file(source_path) and allow_older and installed:
         return BinaryPlan(
             role="dkg",
             action="copy",
@@ -1132,12 +1141,20 @@ def _plan_dkg_binary(
 def ethpillar_ssv_already_installed(unit_dir: str = SYSTEMD_UNIT_DIR) -> bool:
     """True when EthPillar ``ssv-node.service`` + keystore are already in place."""
     path = os.path.join(unit_dir, ETHPILLAR_NODE_UNIT)
-    if not os.path.isfile(path):
+    if not path_is_file(path):
         return False
     text = _read_text(path)
     if not _looks_like_ethpillar_ssv_unit(text, role="node"):
         return False
     return operator_keystore_present()
+
+
+def ethpillar_dkg_unit_present(unit_dir: str = SYSTEMD_UNIT_DIR) -> bool:
+    """True when EthPillar ``ssv-dkg.service`` exists and looks managed."""
+    path = os.path.join(unit_dir, ETHPILLAR_DKG_UNIT)
+    if not path_is_file(path):
+        return False
+    return _looks_like_ethpillar_ssv_unit(_read_text(path), role="dkg")
 
 
 def rewrite_legacy_node_config_for_ethpillar(
@@ -1218,7 +1235,7 @@ def local_ethpillar_el_missing_ws(
     if not endpoints_look_local(eth1_ws_addr):
         return None
     path = os.path.join(unit_dir, "execution.service")
-    if not os.path.isfile(path):
+    if not path_is_file(path):
         return None
     text = _read_text(path)
     # EthPillar EL units always run as User=execution.
@@ -1240,6 +1257,7 @@ def plan_ssv_migration(
     unit_dir: str = SYSTEMD_UNIT_DIR,
     rebuild_ssvnode: bool = False,
     allow_older_binary: bool = False,
+    allow_empty_db: bool = False,
 ) -> SsvMigratePlan:
     """Build a migration plan from discovered systemd units and YAML configs."""
     plan = SsvMigratePlan()
@@ -1254,6 +1272,11 @@ def plan_ssv_migration(
                 f"({ETHPILLAR_NODE_UNIT} + keystore present); nothing to do"
             )
             plan.eth_network = "mainnet"
+            if not ethpillar_dkg_unit_present(unit_dir):
+                plan.warnings.append(
+                    f"{ETHPILLAR_DKG_UNIT} missing — run will repair when "
+                    f"{SSV_DKG_CONFIG_FILE} or keystore is available"
+                )
             return plan
         plan.errors.append(
             "No legacy SSV node unit found "
@@ -1341,16 +1364,16 @@ def plan_ssv_migration(
             if parsed_wrap.get("tls_key_path"):
                 plan.tls_key_path = parsed_wrap["tls_key_path"]
             # DKG wrapper may point at its own copy of the keystore under ./data/.
-            if parsed_wrap.get("private_key_path") and os.path.isfile(
+            if parsed_wrap.get("private_key_path") and path_is_file(
                 parsed_wrap["private_key_path"]
             ):
                 # Prefer node keystore when both exist; keep wrapper path as fallback.
-                if not plan.private_key_path or not os.path.isfile(plan.private_key_path):
+                if not plan.private_key_path or not path_is_file(plan.private_key_path):
                     plan.private_key_path = parsed_wrap["private_key_path"]
-            if parsed_wrap.get("password_path") and os.path.isfile(
+            if parsed_wrap.get("password_path") and path_is_file(
                 parsed_wrap["password_path"]
             ):
-                if not plan.password_path or not os.path.isfile(plan.password_path):
+                if not plan.password_path or not path_is_file(plan.password_path):
                     plan.password_path = parsed_wrap["password_path"]
 
     dkg_cfg_path = _find_dkg_config(dkg) if dkg else ""
@@ -1418,37 +1441,41 @@ def plan_ssv_migration(
         for root in _search_roots_for_unit(dkg):
             for rel in ("data", "output", "output/data"):
                 candidate = os.path.join(root, rel)
-                if os.path.isdir(candidate):
+                if path_is_dir(candidate):
                     plan.dkg_output_path = candidate
                     break
             if plan.dkg_output_path:
                 break
 
     # Common relative db layout when Path was empty or unresolved.
-    if not plan.db_path or not os.path.isdir(plan.db_path):
+    if not plan.db_path or not path_is_dir(plan.db_path):
         for root in node_bases:
             for rel in ("data/db", "db", "data"):
                 candidate = os.path.join(root, rel)
-                if os.path.isdir(candidate):
+                if path_is_dir(candidate):
                     plan.db_path = candidate
                     break
-            if plan.db_path and os.path.isdir(plan.db_path):
+            if plan.db_path and path_is_dir(plan.db_path):
                 break
 
     if not plan.beacon_node_addr:
         plan.errors.append("BeaconNodeAddr missing from node config")
-    if not plan.private_key_path or not os.path.isfile(plan.private_key_path):
+    if not plan.private_key_path or not path_is_file(plan.private_key_path):
         plan.errors.append("Operator encrypted_private_key.json not found")
-    if not plan.password_path or not os.path.isfile(plan.password_path):
+    if not plan.password_path or not path_is_file(plan.password_path):
         plan.errors.append("Operator password file not found")
-    if not plan.db_path or not os.path.isdir(plan.db_path):
-        plan.warnings.append(
+    if not plan.db_path or not path_is_dir(plan.db_path):
+        msg = (
             f"DB path missing or not a directory: {plan.db_path or '(empty)'} "
-            "(migrate will create an empty EthPillar db/ — do not start if you "
-            "expected an existing operator DB)"
+            "(refusing to create an empty EthPillar db/ — pass --allow-empty-db "
+            "only if you intentionally have no legacy operator DB)"
         )
+        if allow_empty_db:
+            plan.warnings.append(msg)
+        else:
+            plan.errors.append(msg)
 
-    if os.path.isfile(os.path.join(unit_dir, ETHPILLAR_NODE_UNIT)) and operator_keystore_present():
+    if path_is_file(os.path.join(unit_dir, ETHPILLAR_NODE_UNIT)) and operator_keystore_present():
         plan.warnings.append(
             "EthPillar ssv-node.service already present with keystore; "
             "run with --force to overwrite"
@@ -1496,9 +1523,17 @@ def restore_quarantined_unit(
 
 
 def _same_realpath(a: str, b: str) -> bool:
-    """True when both paths exist and resolve to the same filesystem object."""
+    """True when both paths name the same location.
+
+    Uses ``normpath`` first so mode-700 parents (unreadable to the TUI user)
+    still compare equal when the string paths match after normalization.
+    """
+    if not a or not b:
+        return False
+    if os.path.normpath(a) == os.path.normpath(b):
+        return True
     try:
-        return bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
+        return os.path.realpath(a) == os.path.realpath(b)
     except OSError:
         return False
 
@@ -1593,6 +1628,100 @@ def _ssv_unit_after(plan: SsvMigratePlan) -> tuple:
     return [], []
 
 
+def _retire_same_name_legacy_before_write(
+    unit: Optional[DiscoveredUnit],
+    *,
+    ethpillar_name: str,
+    role: str,
+) -> bool:
+    """Retire a same-named legacy unit before writing the EthPillar unit.
+
+    Returns True when the path was retired (caller should write into the vacancy).
+    Never quarantines a file that already looks EthPillar-owned.
+    """
+    if not unit:
+        return False
+    if os.path.basename(unit.unit_path) != ethpillar_name:
+        return False
+    if not path_is_file(unit.unit_path):
+        return False
+    text = _read_text(unit.unit_path)
+    if _looks_like_ethpillar_ssv_unit(text, role=role):
+        print(
+            f"Skipping quarantine of {unit.unit_name}: already EthPillar-owned"
+        )
+        return False
+    bak = quarantine_unit(unit.unit_path, dry_run=False, verify=True)
+    print(f"Retired same-named legacy {unit.unit_name} → {bak} (before write)")
+    return True
+
+
+def _should_quarantine_legacy_unit(
+    unit: Optional[DiscoveredUnit],
+    *,
+    role: str,
+) -> bool:
+    """True when *unit* still exists on disk and is not EthPillar-owned."""
+    if not unit or not path_is_file(unit.unit_path):
+        return False
+    return not _looks_like_ethpillar_ssv_unit(_read_text(unit.unit_path), role=role)
+
+
+def repair_missing_ethpillar_dkg(
+    *,
+    unit_dir: str = SYSTEMD_UNIT_DIR,
+    dry_run: bool = False,
+) -> bool:
+    """Write EthPillar ``ssv-dkg.service`` when node+keystore exist but DKG unit is missing.
+
+    Returns True when a repair was performed (or would be, in dry-run).
+    """
+    if ethpillar_dkg_unit_present(unit_dir):
+        return False
+    if not ethpillar_ssv_already_installed(unit_dir):
+        return False
+    if not path_is_file(SSV_DKG_BIN):
+        print(
+            f"Cannot repair missing {ETHPILLAR_DKG_UNIT}: {SSV_DKG_BIN} not found"
+        )
+        return False
+    eth_network = "mainnet"
+    if path_is_file(SSV_CONFIG_FILE):
+        parsed = parse_node_config(_read_text(SSV_CONFIG_FILE))
+        eth_network = str(parsed.get("eth_network") or eth_network)
+    if not path_is_file(SSV_DKG_CONFIG_FILE):
+        # Synthesize a minimal operator.yaml from node ETH1 WS → HTTP.
+        eth1_ws = DEFAULT_EL_WS
+        if path_is_file(SSV_CONFIG_FILE):
+            eth1_ws = str(
+                parse_node_config(_read_text(SSV_CONFIG_FILE)).get("eth1_ws_addr")
+                or eth1_ws
+            )
+        body = generate_ssv_dkg_config(eth_network, _eth1_ws_to_http(eth1_ws))
+        if dry_run:
+            print(f"[dry-run] Would write {SSV_DKG_CONFIG_FILE}")
+        else:
+            ensure_ssv_datadir()
+            _sudo_write_text(SSV_DKG_CONFIG_FILE, body, "600")
+            print(f"Wrote {SSV_DKG_CONFIG_FILE}")
+    unit_body = generate_ssv_dkg_service(eth_network)
+    dest = os.path.join(unit_dir, ETHPILLAR_DKG_UNIT)
+    if dry_run:
+        print(f"[dry-run] Would write {dest} and enable ssv-dkg")
+        return True
+    # write_service_file always targets /etc/systemd/system; for tests with a
+    # custom unit_dir, write directly when dest differs.
+    if os.path.abspath(dest) == os.path.abspath(SSV_DKG_SERVICE_PATH):
+        write_service_file(unit_body, SSV_DKG_SERVICE_PATH, "ssv_dkg_repair_temp.service")
+    else:
+        with open(dest, "w", encoding="utf-8") as handle:
+            handle.write(unit_body)
+    subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
+    subprocess.run(["sudo", "systemctl", "enable", "ssv-dkg"], check=False)
+    print(f"Repaired missing EthPillar unit → {dest}")
+    return True
+
+
 def run_ssv_migration(
     *,
     dry_run: bool = False,
@@ -1600,6 +1729,7 @@ def run_ssv_migration(
     start: bool = False,
     rebuild_ssvnode: bool = False,
     allow_older_binary: bool = False,
+    allow_empty_db: bool = False,
     unit_dir: str = SYSTEMD_UNIT_DIR,
 ) -> SsvMigratePlan:
     """Execute (or dry-run) the SSV systemd migration.
@@ -1607,23 +1737,29 @@ def run_ssv_migration(
     Order (safety):
     1. Install EthPillar binaries (legacy may still run).
     2. Stop legacy units (files kept) so DB/keystore copy is consistent.
-    3. Copy secrets/DB + write EthPillar configs/units.
-    4. Retire legacy via ``retire_systemd_unit`` (disable+bak+verify).
-    5. Only then enable/start EthPillar units.
+    3. Copy secrets/DB + write EthPillar configs.
+    4. Retire same-named legacy units *before* writing EthPillar unit files.
+    5. Write EthPillar units; quarantine remaining non-EthPillar legacy units.
+    6. Only then enable/start EthPillar units.
     """
     plan = plan_ssv_migration(
         unit_dir=unit_dir,
         rebuild_ssvnode=rebuild_ssvnode,
         allow_older_binary=allow_older_binary,
+        allow_empty_db=allow_empty_db,
     )
-    # Already on EthPillar with no legacy unit → short-circuit success.
+    # Already on EthPillar with no legacy unit → short-circuit (repair DKG if needed).
     if (
         not plan.node_unit
         and not plan.errors
         and any("Already migrated" in w for w in plan.warnings)
     ):
         print(plan.summary())
-        print("\nAlready migrated to EthPillar; no changes made.")
+        repaired = repair_missing_ethpillar_dkg(unit_dir=unit_dir, dry_run=dry_run)
+        if repaired:
+            print("\nAlready migrated; repaired missing EthPillar ssv-dkg.service.")
+        else:
+            print("\nAlready migrated to EthPillar; no changes made.")
         return plan
     if plan.errors:
         raise ValueError("; ".join(plan.errors))
@@ -1631,7 +1767,7 @@ def run_ssv_migration(
     ethpillar_unit = os.path.join(unit_dir, ETHPILLAR_NODE_UNIT)
     if (
         not force
-        and os.path.isfile(ethpillar_unit)
+        and path_is_file(ethpillar_unit)
         and operator_keystore_present()
         and plan.node_unit
         and os.path.basename(plan.node_unit.unit_path) != ETHPILLAR_NODE_UNIT
@@ -1707,20 +1843,30 @@ def run_ssv_migration(
         if plan.dkg_unit:
             print(f"[dry-run] Would write {SSV_DKG_CONFIG_FILE}")
         print(f"[dry-run] Would import keystore from {plan.private_key_path}")
-        if plan.db_path and os.path.isdir(plan.db_path):
+        if plan.db_path and path_is_dir(plan.db_path):
             if _same_realpath(plan.db_path, SSV_DB_DIR):
                 print(f"[dry-run] DB already at {SSV_DB_DIR} (skip copy)")
             else:
                 print(f"[dry-run] Would copy DB {plan.db_path} → {SSV_DB_DIR}")
-        if plan.dkg_output_path and os.path.isdir(plan.dkg_output_path):
+        if plan.dkg_output_path and path_is_dir(plan.dkg_output_path):
             print(
                 f"[dry-run] Would copy DKG output {plan.dkg_output_path} → {SSV_DKG_OUTPUT_DIR}"
             )
         if tls_cert_dest:
             print(f"[dry-run] Would copy TLS cert {plan.tls_cert_path} → {tls_cert_dest}")
             print(f"[dry-run] Would copy TLS key  {plan.tls_key_path} → {tls_key_dest}")
+        if plan.node_unit and os.path.basename(plan.node_unit.unit_path) == ETHPILLAR_NODE_UNIT:
+            print(
+                f"[dry-run] Would retire same-named legacy {plan.node_unit.unit_name} "
+                "before writing EthPillar unit"
+            )
         print(f"[dry-run] Would write {SSV_NODE_SERVICE_PATH}")
         if plan.dkg_unit:
+            if os.path.basename(plan.dkg_unit.unit_path) == ETHPILLAR_DKG_UNIT:
+                print(
+                    f"[dry-run] Would retire same-named legacy {plan.dkg_unit.unit_name} "
+                    "before writing EthPillar unit"
+                )
             print(f"[dry-run] Would write {SSV_DKG_SERVICE_PATH}")
         return plan
 
@@ -1741,11 +1887,11 @@ def run_ssv_migration(
     # Consistent cutover: stop legacy before copying the live DB/keystore.
     stopped: List[str] = []
     try:
-        if plan.node_unit and os.path.isfile(plan.node_unit.unit_path):
+        if plan.node_unit and path_is_file(plan.node_unit.unit_path):
             print(f"Stopping {plan.node_unit.unit_name} for consistent data copy…")
             _stop_unit_keep_file(plan.node_unit.unit_path)
             stopped.append(plan.node_unit.unit_path)
-        if plan.dkg_unit and os.path.isfile(plan.dkg_unit.unit_path):
+        if plan.dkg_unit and path_is_file(plan.dkg_unit.unit_path):
             print(f"Stopping {plan.dkg_unit.unit_name} for consistent data copy…")
             _stop_unit_keep_file(plan.dkg_unit.unit_path)
             stopped.append(plan.dkg_unit.unit_path)
@@ -1765,10 +1911,10 @@ def run_ssv_migration(
                 check=False,
             )
 
-        if plan.db_path and os.path.isdir(plan.db_path):
+        if plan.db_path and path_is_dir(plan.db_path):
             print(f"Copying DB {plan.db_path} → {SSV_DB_DIR}")
             _copy_tree(plan.db_path, SSV_DB_DIR)
-        if plan.dkg_output_path and os.path.isdir(plan.dkg_output_path):
+        if plan.dkg_output_path and path_is_dir(plan.dkg_output_path):
             print(f"Copying DKG output {plan.dkg_output_path} → {SSV_DKG_OUTPUT_DIR}")
             _copy_tree(plan.dkg_output_path, SSV_DKG_OUTPUT_DIR)
         if plan.tls_cert_path and plan.tls_key_path:
@@ -1797,6 +1943,11 @@ def run_ssv_migration(
         node_unit_body = generate_ssv_node_service(
             eth_network, unit_after=node_after
         )
+        # Same-named legacy must be retired *before* writing EthPillar units,
+        # otherwise write overwrites the legacy body and quarantine bakes the new one.
+        _retire_same_name_legacy_before_write(
+            plan.node_unit, ethpillar_name=ETHPILLAR_NODE_UNIT, role="node"
+        )
         write_service_file(
             node_unit_body, SSV_NODE_SERVICE_PATH, "ssv_node_migrate_temp.service"
         )
@@ -1806,17 +1957,19 @@ def run_ssv_migration(
             dkg_unit_body = generate_ssv_dkg_service(
                 eth_network, unit_after=dkg_after
             )
+            _retire_same_name_legacy_before_write(
+                plan.dkg_unit, ethpillar_name=ETHPILLAR_DKG_UNIT, role="dkg"
+            )
             write_service_file(
                 dkg_unit_body, SSV_DKG_SERVICE_PATH, "ssv_dkg_migrate_temp.service"
             )
 
-        # Retire legacy only after EthPillar files are in place; verify gone
-        # before enabling/starting EthPillar (never dual-run).
-        if plan.node_unit and os.path.isfile(plan.node_unit.unit_path):
+        # Quarantine remaining differently-named legacy units. Never quarantine
+        # a file that already looks EthPillar-owned (just written above).
+        if _should_quarantine_legacy_unit(plan.node_unit, role="node"):
             bak = quarantine_unit(plan.node_unit.unit_path, dry_run=False, verify=True)
             print(f"Retired {plan.node_unit.unit_name} → {bak}")
-        if plan.dkg_unit and os.path.isfile(plan.dkg_unit.unit_path):
-            # Skip if DKG unit path is the same file we just retired as node.
+        if plan.dkg_unit and _should_quarantine_legacy_unit(plan.dkg_unit, role="dkg"):
             if plan.node_unit and _same_realpath(
                 plan.dkg_unit.unit_path, plan.node_unit.unit_path
             ):
@@ -1829,7 +1982,7 @@ def run_ssv_migration(
     except Exception:
         # Restart any legacy units we stopped but did not retire.
         for path in stopped:
-            if os.path.isfile(path):
+            if path_is_file(path):
                 print(f"Migrate failed — restarting {os.path.basename(path)}")
                 _start_unit_by_path(path)
         raise
@@ -1868,6 +2021,38 @@ def run_ssv_migration(
     return plan
 
 
+def _bak_role_from_name(bak_name: str) -> str:
+    """Guess node vs dkg role from a ``*.service.bak`` basename."""
+    lower = bak_name.lower()
+    if "dkg" in lower:
+        return "dkg"
+    return "node"
+
+
+def _is_legacy_service_bak(bak_path: str, *, skip_realpaths: Sequence[str]) -> bool:
+    """True when *bak_path* should be restored as a legacy unit.
+
+    Skips baks created in this rollback (EthPillar bodies just retired) and any
+    bak whose content already looks EthPillar-owned. Same-named legacy
+    ``ssv-dkg.service.bak`` / ``ssv-node.service.bak`` are restored when their
+    body is non-EthPillar.
+    """
+    try:
+        real = os.path.realpath(bak_path)
+    except OSError:
+        real = bak_path
+    if real in skip_realpaths:
+        return False
+    name = os.path.basename(bak_path)
+    if not _SERVICE_BAK_RE.match(name):
+        return False
+    role = _bak_role_from_name(name)
+    text = _read_text(bak_path)
+    if _looks_like_ethpillar_ssv_unit(text, role=role):
+        return False
+    return True
+
+
 def rollback_ssv_migration(
     *,
     unit_dir: str = SYSTEMD_UNIT_DIR,
@@ -1878,37 +2063,48 @@ def rollback_ssv_migration(
 
     EthPillar ``ssv-node`` / ``ssv-dkg`` are retired with the shared helper
     (stop+disable+bak+verify) *before* any legacy bak is restored, so two
-    operators cannot be loadable at once.
+    operators cannot be loadable at once. Legacy same-named baks
+    (``ssv-dkg.service.bak``) are restored when their body is not EthPillar.
     """
     eth_node = os.path.join(unit_dir, ETHPILLAR_NODE_UNIT)
     eth_dkg = os.path.join(unit_dir, ETHPILLAR_DKG_UNIT)
+    ethpillar_baks_this_run: List[str] = []
 
     for path in (eth_dkg, eth_node):
-        if os.path.isfile(path):
+        if path_is_file(path):
             if dry_run:
                 print(f"[dry-run] Would retire {path} → {path}.bak")
             else:
-                bak = retire_systemd_unit(path, verify=True)
+                bak = retire_systemd_unit(path, unit_dir=unit_dir, verify=True)
                 print(f"Retired EthPillar unit → {bak}")
+                try:
+                    ethpillar_baks_this_run.append(os.path.realpath(bak))
+                except OSError:
+                    ethpillar_baks_this_run.append(bak)
 
-    # Restore legacy bak files (prefer plain .bak over .bak.N).
+    # Restore legacy bak files (content-based; include same-named legacy baks).
     restored: List[str] = []
     try:
         names = sorted(os.listdir(unit_dir))
     except OSError as exc:
         raise RuntimeError(f"Cannot list {unit_dir}: {exc}") from exc
 
-    candidates = [
-        n
-        for n in names
-        if n.endswith(".service.bak")
-        and not n.startswith(("ssv-node.service", "ssv-dkg.service"))
-    ]
+    # Prefer plain ``.service.bak`` before numbered ``.bak.N``.
+    candidates = sorted(
+        (n for n in names if _SERVICE_BAK_RE.match(n)),
+        key=lambda n: (0 if n.endswith(".service.bak") else 1, n),
+    )
     for name in candidates:
         bak_path = os.path.join(unit_dir, name)
+        if not _is_legacy_service_bak(
+            bak_path, skip_realpaths=ethpillar_baks_this_run
+        ):
+            continue
         if dry_run:
             print(f"[dry-run] Would restore {bak_path}")
             continue
+        # If the live unit path already exists (shouldn't after EthPillar retire),
+        # restore_retired_unit raises — surface clearly.
         path = restore_retired_unit(bak_path, enable=True)
         print(f"Restored {path}")
         restored.append(path)
@@ -1937,6 +2133,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_plan.add_argument("--unit-dir", default=SYSTEMD_UNIT_DIR)
     p_plan.add_argument("--rebuild-ssvnode", action="store_true")
     p_plan.add_argument("--allow-older-binary", action="store_true")
+    p_plan.add_argument(
+        "--allow-empty-db",
+        action="store_true",
+        help="Allow migrate when no legacy operator DB is found (dangerous)",
+    )
 
     p_run = sub.add_parser("run", help="Apply migration")
     p_run.add_argument("--dry-run", action="store_true")
@@ -1945,6 +2146,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p_run.add_argument("--unit-dir", default=SYSTEMD_UNIT_DIR)
     p_run.add_argument("--rebuild-ssvnode", action="store_true")
     p_run.add_argument("--allow-older-binary", action="store_true")
+    p_run.add_argument(
+        "--allow-empty-db",
+        action="store_true",
+        help="Allow migrate when no legacy operator DB is found (dangerous)",
+    )
 
     p_rb = sub.add_parser(
         "rollback",
@@ -1961,6 +2167,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 unit_dir=args.unit_dir,
                 rebuild_ssvnode=args.rebuild_ssvnode,
                 allow_older_binary=args.allow_older_binary,
+                allow_empty_db=args.allow_empty_db,
             )
             if args.json:
                 print(json.dumps(asdict(plan), indent=2))
@@ -1977,6 +2184,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 start=args.start,
                 rebuild_ssvnode=args.rebuild_ssvnode,
                 allow_older_binary=args.allow_older_binary,
+                allow_empty_db=args.allow_empty_db,
                 unit_dir=args.unit_dir,
             )
             return 0

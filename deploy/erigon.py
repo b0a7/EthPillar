@@ -101,7 +101,7 @@ def generate_erigon_service(eth_network: str, el_p2p_port: str, el_rpc_port: str
         "--http.api=web3,eth,net,engine",
     ]
     if enable_ws:
-        _args.extend(["--ws", "--ws.port=8546"])
+        _args.extend(["--ws", "--ws.addr=127.0.0.1", "--ws.port=8546"])
     _args.extend([
         "--metrics",
         _METRICS_PORT_ARG,
@@ -185,7 +185,7 @@ def generate_erigon_standalone_service(eth_network: str, el_p2p_port: str, el_rp
         "--http.api=web3,eth,net,engine",
     ]
     if enable_ws:
-        _args.extend(["--ws", "--ws.port=8546"])
+        _args.extend(["--ws", "--ws.addr=127.0.0.1", "--ws.port=8546"])
     _args.extend([
         "--metrics",
         _METRICS_PORT_ARG,

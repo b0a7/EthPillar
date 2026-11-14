@@ -179,3 +179,112 @@ teardown() {
   # Ensure the backup yesno invocation itself is not default-No.
   ! grep 'Back up SSV before wipe' "$WHIPTAIL_LOG" | grep -q -- '--defaultno'
 }
+
+@test "backupSsvDatadir uses sudo probes on a 700 unreadable datadir" {
+  # Simulate /var/lib/ssv at 700 owned by another user: the test user cannot
+  # [[ -e ]] files inside, but sudo test/cp (stubbed) still can.
+  chmod 700 "$SSV_DATA_DIR"
+  # Drop local execute/read for the current user where possible. On some
+  # filesystems chown is unavailable; instead hide children behind a mode that
+  # blocks the test user while the sudo stub still runs test/cp as itself after
+  # briefly relaxing — so we use a nested unreadable layout:
+  #   SSV_DATA_DIR is 711 (traversable) but secrets live in a 700 subdir that
+  #   the unsudoed shell cannot list. Prefer the real 700-on-datadir case:
+  chmod 000 "$SSV_DATA_DIR/encrypted_private_key.json" 2>/dev/null || true
+  chmod 000 "$SSV_DATA_DIR/password" 2>/dev/null || true
+  chmod 000 "$SSV_DATA_DIR/config.yaml" 2>/dev/null || true
+  chmod 000 "$SSV_DATA_DIR/operator.yaml" 2>/dev/null || true
+  chmod 700 "$SSV_DATA_DIR/db"
+  chmod 000 "$SSV_DATA_DIR/db/state" 2>/dev/null || true
+
+  # Without sudo, the test user must not be able to read the keystore.
+  if cat "${SSV_DATA_DIR}/encrypted_private_key.json" >/dev/null 2>&1; then
+    skip "filesystem does not enforce mode-000 for owner (cannot simulate)"
+  fi
+
+  # sudo stub runs `test`/`cp` as the test user — restore readable mode only
+  # inside the stub so probes go through sudo while unsudoed [[ -e ]] fails.
+  sudo() {
+    echo "sudo $*" >> "$COMMAND_LOG"
+    case "$1" in
+      test)
+        # Temporarily make target readable for the privileged probe.
+        local target="${*: -1}"
+        if [[ -e "$target" ]]; then
+          chmod u+r "$target" 2>/dev/null || true
+          if [[ -d "$target" ]]; then
+            chmod u+rx "$target" 2>/dev/null || true
+          fi
+        fi
+        "$@"
+        local rc=$?
+        # Re-hide files after probe (best-effort).
+        if [[ -f "$target" ]]; then
+          chmod 000 "$target" 2>/dev/null || true
+        fi
+        return $rc
+        ;;
+      cp)
+        # Ensure sources are readable for the copy, then re-hide.
+        local src="" dest=""
+        # sudo cp -a src dest
+        src="$3"
+        dest="$4"
+        if [[ -e "$src" ]]; then
+          chmod -R u+rX "$src" 2>/dev/null || true
+        fi
+        "$@"
+        local rc=$?
+        if [[ -f "${SSV_DATA_DIR}/encrypted_private_key.json" ]]; then
+          chmod 000 "${SSV_DATA_DIR}/encrypted_private_key.json" \
+            "${SSV_DATA_DIR}/password" \
+            "${SSV_DATA_DIR}/config.yaml" \
+            "${SSV_DATA_DIR}/operator.yaml" 2>/dev/null || true
+        fi
+        return $rc
+        ;;
+      mkdir|chmod|rm)
+        "$@"
+        return $?
+        ;;
+      chown)
+        return 0
+        ;;
+      *)
+        return 0
+        ;;
+    esac
+  }
+  export -f sudo
+
+  # Unsudoed existence check must fail (the bug we are guarding against).
+  if [[ -r "${SSV_DATA_DIR}/encrypted_private_key.json" ]]; then
+    skip "could not make keystore unreadable to test user"
+  fi
+
+  run backupSsvDatadir 1
+  [ "$status" -eq 0 ]
+  local dest
+  dest=$(printf '%s\n' "$output" | tail -n1)
+  [ -f "$dest/encrypted_private_key.json" ]
+  [ -f "$dest/password" ]
+  [ -d "$dest/db" ]
+  grep -q 'sudo test -e' "$COMMAND_LOG"
+  grep -q 'sudo test -d' "$COMMAND_LOG"
+}
+
+@test "backupSsvDatadir fails when keystore cannot be copied" {
+  rm -f "${SSV_DATA_DIR}/encrypted_private_key.json"
+  run backupSsvDatadir 0
+  [ "$status" -ne 0 ]
+  grep -q 'missing operator keystore' <<<"$output"
+}
+
+@test "uninstallSsv include-db prompt uses sudo test -d" {
+  printf '0\n0\n0\n' > "$WHIPTAIL_YESNO_FILE"
+  run uninstallSsv
+  [ "$status" -eq 0 ]
+  grep -q 'Include SSV DB in backup' "$WHIPTAIL_LOG"
+  grep -q "sudo test -d ${SSV_DATA_DIR}/db" "$COMMAND_LOG" || \
+    grep -qF "test -d ${SSV_DATA_DIR}/db" "$COMMAND_LOG"
+}

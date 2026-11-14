@@ -57,14 +57,21 @@ What it does:
    find config + binaries (also parses `run_ssv-dkg.sh` CLI flags)
 3. Preserves legacy `config.yaml` knobs (rewrites only KeyStore/db/log paths) and
    full multi-endpoint `BeaconNodeAddr` / `ETH1Addr`
-4. Installs EthPillar binaries, **stops** legacy for a consistent DB copy, writes
-   EthPillar units, then **retires** legacy via the shared helper:
-   stop → disable → rename to `*.service.bak` → `daemon-reload` → **verify absent**
-5. Only after verification succeeds: enable (and optionally start) EthPillar units
-6. Reuses legacy binaries when they match GitHub LATEST; otherwise rebuilds
+4. Installs EthPillar binaries, **stops** legacy for a consistent DB copy
+5. If a legacy unit is already named `ssv-node` / `ssv-dkg`, **retires it first**
+   (body kept as `*.service.bak`), then writes the EthPillar unit into the vacant
+   path — never quarantines a file that already looks EthPillar-owned
+6. Differently-named legacy units are retired after the EthPillar write
+7. Only after verification succeeds: enable (and optionally start) EthPillar units
+8. Reuses legacy binaries when they match GitHub LATEST; otherwise rebuilds
+
+Existence probes for keystore / password / DB use `sudo test` so a mode-`750`
+operator home is still visible to the TUI user. A missing legacy DB is a
+**hard error** (pass `--allow-empty-db` only if intentional).
 
 If EthPillar SSV is already installed and no legacy unit remains, migrate
-short-circuits with “Already migrated” (no changes).
+short-circuits with “Already migrated”. A missing EthPillar `ssv-dkg.service`
+is **repaired** when feasible (keystore + `ssv-dkg` binary present).
 
 If `ETH1Addr` is local and EthPillar `execution.service` lacks WebSocket
 (Besu/Nethermind/Reth/Erigon without `enable_ws`), migrate **fails with a clear
@@ -72,7 +79,9 @@ error** rather than rewriting the live EL unit mid-migrate. Enable WS on the EL
 (e.g. reinstall EL together with a fresh SSV install, or regenerate the unit
 with `enable_ws=True`), then re-run migrate.
 
-**Rollback** (safe — EthPillar units are retired *before* legacy bak restore):
+**Rollback** (safe — EthPillar units are retired *before* legacy bak restore).
+Legacy `ssv-dkg.service.bak` / `ssv-node.service.bak` are restored when their
+**content** is not EthPillar-owned (baks created by this rollback are skipped).
 
 ```bash
 PYTHONPATH=. python3 -m deploy.ssv_migrate rollback [--start]
