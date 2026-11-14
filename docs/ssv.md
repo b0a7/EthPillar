@@ -14,7 +14,7 @@ local execution WebSocket and beacon REST API directly.
 | `/var/lib/ssv/password` | Keystore password |
 | `/var/lib/ssv/config.yaml` | Node config |
 | `/var/lib/ssv/db/` | Persistent DB (**slashing-critical** — back up) |
-| `/var/lib/ssv/operator.yaml` | DKG config (same key + password) |
+| `/var/lib/ssv/operator.yaml` | DKG config (same key + password; **relative** paths — `ssv-dkg` rejects absolute) |
 | `/var/lib/ssv/output/` | DKG ceremony artifacts |
 | `/usr/local/bin/ssvnode` | Node binary (built from source) |
 | `/usr/local/bin/ssv-dkg` | DKG binary (GitHub release zip) |

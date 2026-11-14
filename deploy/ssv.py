@@ -153,30 +153,54 @@ def generate_ssv_config(
     return "\n".join(lines)
 
 
+def _dkg_local_path(path: str, *, default_rel: str) -> str:
+    """Return a relative path under ``SSV_DATA_DIR`` for ssv-dkg.
+
+    Upstream ``ssv-dkg`` rejects absolute paths with
+    ``wrong configPath flag, should be local``. Unit ``WorkingDirectory`` is
+    ``SSV_DATA_DIR``, so configs must use ``./…`` relatives.
+    """
+    raw = (path or "").strip() or default_rel
+    if raw.startswith(("http://", "https://", "ws://", "wss://")):
+        return raw
+    data = SSV_DATA_DIR.rstrip("/") + "/"
+    if raw.startswith(data):
+        raw = "./" + raw[len(data) :]
+    elif raw.startswith("/"):
+        # Absolute outside the datadir cannot satisfy ssv-dkg; use default.
+        raw = default_rel
+    elif not raw.startswith("./"):
+        raw = f"./{raw.lstrip('./')}"
+    return raw
+
+
 def generate_ssv_dkg_config(
     eth_network: str,
     eth1_http_addr: str,
     operator_id: str = "",
     *,
     dkg_port: int = DEFAULT_DKG_PORT,
-    private_key_file: str = SSV_PRIVATE_KEY_FILE,
-    password_file: str = SSV_PASSWORD_FILE,
-    output_path: str = SSV_DKG_OUTPUT_DIR,
-    log_file: str = f"{SSV_DATA_DIR}/dkg-debug.log",
+    private_key_file: str = "./encrypted_private_key.json",
+    password_file: str = "./password",
+    output_path: str = "./output",
+    log_file: str = "./dkg-debug.log",
     tls_cert_path: str = "",
     tls_key_path: str = "",
 ) -> str:
     """Generate DKG ``operator.yaml`` sharing the node operator keystore.
+
+    Paths are relative to ``WorkingDirectory=/var/lib/ssv`` — absolute paths
+    make ``ssv-dkg`` exit with ``should be local``.
 
     Args:
         eth_network: Unused for DKG YAML today; kept for API symmetry / future use.
         eth1_http_addr: Execution HTTP URL for multisig owner lookups.
         operator_id: On-chain operator ID (empty until registration; operator fills in).
         dkg_port: DKG listen port.
-        private_key_file: Shared encrypted operator key.
-        password_file: Shared password file.
-        output_path: Ceremony output directory.
-        log_file: DKG debug log path.
+        private_key_file: Shared encrypted operator key (relative).
+        password_file: Shared password file (relative).
+        output_path: Ceremony output directory (relative).
+        log_file: DKG debug log path (relative).
         tls_cert_path: Optional ``serverTLSCertPath`` (DKG HTTPS).
         tls_key_path: Optional ``serverTLSKeyPath``.
 
@@ -186,20 +210,26 @@ def generate_ssv_dkg_config(
     _ = eth_network  # reserved for network-specific defaults
     op_id = (operator_id or "YOUR_OPERATOR_ID").strip() or "YOUR_OPERATOR_ID"
     lines = [
-        f"privKey: {private_key_file}",
-        f"privKeyPassword: {password_file}",
+        f"privKey: {_dkg_local_path(private_key_file, default_rel='./encrypted_private_key.json')}",
+        f"privKeyPassword: {_dkg_local_path(password_file, default_rel='./password')}",
         f"operatorID: {op_id}",
         f"port: {int(dkg_port)}",
         "logLevel: info",
         "logFormat: json",
         "logLevelFormat: capitalColor",
-        f"logFilePath: {log_file}",
-        f"outputPath: {output_path}",
+        f"logFilePath: {_dkg_local_path(log_file, default_rel='./dkg-debug.log')}",
+        f"outputPath: {_dkg_local_path(output_path, default_rel='./output')}",
         f"ethEndpointURL: {eth1_http_addr}",
     ]
     if tls_cert_path.strip() and tls_key_path.strip():
-        lines.append(f"serverTLSCertPath: {tls_cert_path.strip()}")
-        lines.append(f"serverTLSKeyPath: {tls_key_path.strip()}")
+        lines.append(
+            "serverTLSCertPath: "
+            f"{_dkg_local_path(tls_cert_path, default_rel='./ssl/tls.crt')}"
+        )
+        lines.append(
+            "serverTLSKeyPath: "
+            f"{_dkg_local_path(tls_key_path, default_rel='./ssl/tls.key')}"
+        )
     lines.append("")
     return "\n".join(lines)
 
@@ -253,10 +283,15 @@ def generate_ssv_dkg_service(
     Returns:
         Systemd unit file body.
     """
+    # Relative configPath required: ssv-dkg rejects absolute paths ("should be local").
+    if config_path == SSV_DKG_CONFIG_FILE or config_path.startswith(SSV_DATA_DIR):
+        config_flag = "./operator.yaml"
+    else:
+        config_flag = _dkg_local_path(config_path, default_rel="./operator.yaml")
     exec_start = form_exec_start(
         [
             f"{binary} start-operator",
-            f"--configPath={config_path}",
+            f"--configPath={config_flag}",
         ]
     )
     return generate_systemd_template(

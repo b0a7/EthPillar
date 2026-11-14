@@ -157,7 +157,7 @@ class TestSsvService:
         unit = generate_ssv_dkg_service("mainnet")
         assert "Description=SSV DKG Operator for MAINNET" in unit
         assert "ssv-dkg start-operator" in unit
-        assert f"--configPath={SSV_DATA_DIR}/operator.yaml" in unit
+        assert "--configPath=./operator.yaml" in unit
         check_constant_substitutions(unit)
 
 

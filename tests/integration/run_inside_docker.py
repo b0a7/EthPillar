@@ -1100,8 +1100,8 @@ def _verify_ssv_install() -> bool:
         ok = False
     else:
         for needle in (
-            "privKey: /var/lib/ssv/encrypted_private_key.json",
-            "privKeyPassword: /var/lib/ssv/password",
+            "privKey: ./encrypted_private_key.json",
+            "privKeyPassword: ./password",
         ):
             if needle not in dkg:
                 print(f"❌ operator.yaml missing {needle!r}")

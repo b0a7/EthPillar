@@ -63,8 +63,9 @@ def test_generate_ssv_dkg_config_includes_tls_when_set():
         tls_cert_path="/var/lib/ssv/ssl/tls.crt",
         tls_key_path="/var/lib/ssv/ssl/tls.key",
     )
-    assert "serverTLSCertPath: /var/lib/ssv/ssl/tls.crt" in cfg
-    assert "serverTLSKeyPath: /var/lib/ssv/ssl/tls.key" in cfg
+    # Absolute TLS paths under the datadir are rewritten to ./ relatives.
+    assert "serverTLSCertPath: ./ssl/tls.crt" in cfg
+    assert "serverTLSKeyPath: ./ssl/tls.key" in cfg
 
 
 def test_generate_ssv_dkg_config_shares_keystore():
@@ -73,11 +74,12 @@ def test_generate_ssv_dkg_config_shares_keystore():
         "http://127.0.0.1:8545",
         operator_id="42",
     )
-    assert f"privKey: {SSV_PRIVATE_KEY_FILE}" in cfg
-    assert f"privKeyPassword: {SSV_PASSWORD_FILE}" in cfg
+    assert "privKey: ./encrypted_private_key.json" in cfg
+    assert "privKeyPassword: ./password" in cfg
     assert "operatorID: 42" in cfg
     assert "port: 3030" in cfg
     assert "ethEndpointURL: http://127.0.0.1:8545" in cfg
+    assert "outputPath: ./output" in cfg
 
 
 def test_generate_ssv_services():
@@ -91,7 +93,8 @@ def test_generate_ssv_services():
     dkg = generate_ssv_dkg_service("mainnet")
     assert "Description=SSV DKG Operator for MAINNET" in dkg
     assert "ssv-dkg start-operator" in dkg
-    assert f"--configPath={SSV_DKG_CONFIG_FILE}" in dkg
+    assert "--configPath=./operator.yaml" in dkg
+    assert "WorkingDirectory=/var/lib/ssv" in dkg
 
 
 def test_ssv_excluded_from_charon_signer_menu():
