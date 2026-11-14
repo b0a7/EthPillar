@@ -326,7 +326,101 @@ def test_plan_multi_endpoints(mock_probe, mock_rel, mock_dkg, tmp_path: Path):
     assert plan.node_binary is not None
     assert plan.node_binary.action == "copy"
     assert plan.dkg_binary is not None
-    assert "sepolia" in plan.summary()
+    summary = plan.summary()
+    assert "sepolia" in summary
+    # BN/EL appear before unit blocks so whiptail shows them without scrolling.
+    assert summary.index("BeaconNode:") < summary.index("Node unit:")
+    assert summary.index("ETH1 WS:") < summary.index("Node unit:")
+
+
+@patch("deploy.ssv_migrate.get_dkg_release_info", return_value={"version": "v2.0.0"})
+@patch("deploy.ssv_migrate.get_release_info", return_value={"version": "v2.5.1"})
+@patch("deploy.ssv_migrate.probe_binary_version", return_value="v2.5.1")
+def test_plan_cli_wrapper_ignores_debug_log(mock_probe, mock_rel, mock_dkg, tmp_path: Path):
+    """run_ssv-dkg.sh + operator-config/debug.log must not be treated as YAML config."""
+    root = tmp_path / "home"
+    ssv = root / "ssv"
+    dkg = root / "ssv-dkg"
+    (ssv / "bin").mkdir(parents=True)
+    (ssv / "config").mkdir()
+    (ssv / "data" / "db").mkdir(parents=True)
+    (dkg / "bin").mkdir(parents=True)
+    (dkg / "operator-config" / "output").mkdir(parents=True)
+    (dkg / "data").mkdir()
+    (dkg / "ssl").mkdir()
+    (ssv / "encrypted_private_key.json").write_text('{"key":1}', encoding="utf-8")
+    (ssv / "password").write_text("secret-pass", encoding="utf-8")
+    (ssv / "data" / "db" / "marker").write_text("db", encoding="utf-8")
+    (ssv / "bin" / "ssvnode").write_text("#!/bin/true\n", encoding="utf-8")
+    (ssv / "bin" / "ssvnode").chmod(0o755)
+    (dkg / "bin" / "ssv-dkg").write_text("#!/bin/true\n", encoding="utf-8")
+    (dkg / "bin" / "ssv-dkg").chmod(0o755)
+    (dkg / "ssl" / "tls.crt").write_text("cert", encoding="utf-8")
+    (dkg / "ssl" / "tls.key").write_text("key", encoding="utf-8")
+    # Upstream DKG layout: log under operator-config/, no operator.yaml.
+    (dkg / "operator-config" / "debug.log").write_text(
+        '{"level":"info","msg":"started"}\n', encoding="utf-8"
+    )
+    (ssv / "config" / "config.yaml").write_text(
+        f"""
+db:
+  Path: {ssv / "data" / "db"}
+ssv:
+  Network: mainnet
+eth2:
+  BeaconNodeAddr: http://100.1.1.1:5052;http://100.1.1.2:5052
+eth1:
+  ETH1Addr: ws://100.1.1.1:8546;ws://100.1.1.2:8546
+KeyStore:
+  PrivateKeyFile: {ssv / "encrypted_private_key.json"}
+  PasswordFile: {ssv / "password"}
+""",
+        encoding="utf-8",
+    )
+    wrapper = dkg / "run_ssv-dkg.sh"
+    wrapper.write_text(
+        f"""#!/bin/bash
+./bin/ssv-dkg start-operator \\
+            --privKey ./data/encrypted_private_key.json \\
+            --privKeyPassword ./data/password \\
+            --operatorID 77 \\
+            --port 3030 \\
+            --logFilePath ./operator-config/debug.log \\
+            --outputPath ./operator-config/output \\
+            --serverTLSCertPath ./ssl/tls.crt \\
+            --serverTLSKeyPath ./ssl/tls.key \\
+            --ethEndpointURL http://100.118.113.11:8545
+""",
+        encoding="utf-8",
+    )
+    (dkg / "data" / "encrypted_private_key.json").write_text('{"key":1}', encoding="utf-8")
+    (dkg / "data" / "password").write_text("secret-pass", encoding="utf-8")
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    (unit_dir / "ssvnode.service").write_text(
+        f"[Service]\nWorkingDirectory={ssv}\n"
+        f"ExecStart={ssv / 'bin' / 'ssvnode'} start-node "
+        f"--config={ssv / 'config' / 'config.yaml'}\n",
+        encoding="utf-8",
+    )
+    (unit_dir / "ssvdkg.service").write_text(
+        f"[Service]\nWorkingDirectory={dkg}\nExecStart={wrapper}\n",
+        encoding="utf-8",
+    )
+
+    plan = plan_ssv_migration(unit_dir=str(unit_dir))
+    assert not plan.errors
+    assert plan.operator_id == "77"
+    assert plan.eth1_http_addr == "http://100.118.113.11:8545"
+    assert "100.1.1.1:5052" in plan.beacon_node_addr
+    assert plan.tls_cert_path.endswith("ssl/tls.crt")
+    assert plan.dkg_unit is not None
+    assert "debug.log" not in (plan.dkg_unit.config_path or "")
+    assert "CLI flags" in (plan.dkg_unit.config_path or "")
+    summary = plan.summary()
+    assert "BeaconNode:" in summary
+    assert "ETH1 HTTP:" in summary
+    assert summary.index("BeaconNode:") < summary.index("DKG unit:")
 
 
 @patch("deploy.ssv_migrate.get_dkg_release_info", return_value={"version": "v2.0.0"})

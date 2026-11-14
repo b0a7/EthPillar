@@ -133,7 +133,7 @@ class SsvMigratePlan:
     def summary(self) -> str:
         """Human-readable plan text for TUI / CLI."""
         lines = ["SSV systemd → EthPillar migration plan", ""]
-        # Data first so whiptail shows DB/keystore without scrolling past long URLs.
+        # Data + BN/EL first so whiptail shows them without scrolling past unit/binary noise.
         lines.append("Data → /var/lib/ssv/ (shared by ssv-node + ssv-dkg):")
         lines.append(f"  keystore:  {self.private_key_path or '(missing)'}")
         lines.append(f"  password:  {self.password_path or '(missing)'}")
@@ -155,6 +155,21 @@ class SsvMigratePlan:
             "  note: keystore+password+db are shared; DKG also gets operator.yaml"
         )
         lines.append("")
+        lines.append(f"Network:     {self.eth_network}")
+        lines.append(f"BeaconNode:  {self.beacon_node_addr or '(empty)'}")
+        lines.append(f"ETH1 WS:     {self.eth1_ws_addr}")
+        lines.append(f"ETH1 HTTP:   {self.eth1_http_addr}")
+        lines.append(
+            f"Ports:       p2p_tcp={self.p2p_tcp_port} p2p_udp={self.p2p_udp_port} "
+            f"metrics={self.metrics_port} api={self.api_port} dkg={self.dkg_port}"
+        )
+        if self.p2p_external_ip:
+            lines.append(f"HostAddress: {self.p2p_external_ip}")
+        if self.operator_id:
+            lines.append(f"operatorID:  {self.operator_id}")
+        else:
+            lines.append("operatorID:  (unset — edit /var/lib/ssv/operator.yaml after)")
+        lines.append("")
         if self.node_unit:
             lines.append(
                 f"Node unit: {self.node_unit.unit_name} → {ETHPILLAR_NODE_UNIT}"
@@ -172,21 +187,6 @@ class SsvMigratePlan:
             lines.append(f"  binary: {self.dkg_unit.binary_path or '(none)'}")
         else:
             lines.append("DKG unit:  (not found — node-only migrate)")
-        lines.append("")
-        lines.append(f"Network:     {self.eth_network}")
-        lines.append(f"BeaconNode:  {self.beacon_node_addr or '(empty)'}")
-        lines.append(f"ETH1 WS:     {self.eth1_ws_addr}")
-        lines.append(f"ETH1 HTTP:   {self.eth1_http_addr}")
-        lines.append(
-            f"Ports:       p2p_tcp={self.p2p_tcp_port} p2p_udp={self.p2p_udp_port} "
-            f"metrics={self.metrics_port} api={self.api_port} dkg={self.dkg_port}"
-        )
-        if self.p2p_external_ip:
-            lines.append(f"HostAddress: {self.p2p_external_ip}")
-        if self.operator_id:
-            lines.append(f"operatorID:  {self.operator_id}")
-        else:
-            lines.append("operatorID:  (unset — edit /var/lib/ssv/operator.yaml after)")
         lines.append("")
         if self.node_binary:
             lines.append(
@@ -777,7 +777,12 @@ def discover_units(
         if role == "node":
             discovered.config_path = _find_node_config(discovered)
         else:
-            discovered.config_path = _find_dkg_config(discovered) or discovered.config_path
+            yaml_cfg = _find_dkg_config(discovered)
+            if yaml_cfg:
+                discovered.config_path = yaml_cfg
+            elif not _looks_like_yaml_config(discovered.config_path):
+                # Drop logFilePath / non-yaml false positives (e.g. debug.log).
+                discovered.config_path = ""
         if role == "node" and node is None:
             node = discovered
         elif role == "dkg" and dkg is None:
@@ -813,11 +818,29 @@ def _find_fallback_secrets(
     return "", ""
 
 
+def _looks_like_yaml_config(path: str) -> bool:
+    """True when *path* is an existing ``.yaml`` / ``.yml`` file (not a log)."""
+    if not path or not os.path.isfile(path):
+        return False
+    lower = path.lower()
+    if lower.endswith((".yaml", ".yml")):
+        return True
+    # Reject logs / TLS / binaries that sometimes land next to operator-config/.
+    if lower.endswith((".log", ".crt", ".key", ".pem", ".json", ".txt")):
+        return False
+    return False
+
+
 def _find_dkg_config(
     unit: Optional[DiscoveredUnit],
 ) -> str:
-    """Resolve DKG config path from unit or operator-config/ heuristics."""
-    if unit and unit.config_path and os.path.isfile(unit.config_path):
+    """Resolve DKG YAML config path from unit or operator-config/ heuristics.
+
+    CLI-only wrappers (``run_ssv-dkg.sh`` with flags, no ``--configPath``) often
+    write ``--logFilePath ./operator-config/debug.log`` — never treat that as
+    the operator config.
+    """
+    if unit and _looks_like_yaml_config(unit.config_path):
         return unit.config_path
     if not unit:
         return ""
@@ -836,7 +859,7 @@ def _find_dkg_config(
                 or os.path.dirname(unit.binary_path),
                 unit_dir=SYSTEMD_UNIT_DIR,
             )
-            if os.path.isfile(resolved):
+            if _looks_like_yaml_config(resolved):
                 return resolved
     for root in _search_roots_for_unit(unit):
         op_dir = os.path.join(root, "operator-config")
@@ -857,16 +880,14 @@ def _find_dkg_config(
                     return os.path.join(op_dir, preferred)
             if yaml_files:
                 return os.path.join(op_dir, yaml_files[0])
-            # Non-yaml operator config (rare): any file
-            for name in sorted(os.listdir(op_dir)):
-                path = os.path.join(op_dir, name)
-                if os.path.isfile(path) and not name.startswith("."):
-                    return path
+            # Do not fall back to debug.log / other non-yaml files here.
         for name in ("operator.yaml", "config.yaml", "operator-config.yaml"):
             path = os.path.join(root, name)
             if os.path.isfile(path):
                 return path
-    return unit.config_path if unit else ""
+    if unit and _looks_like_yaml_config(unit.config_path):
+        return unit.config_path
+    return ""
 
 
 def probe_binary_version(binary_path: str, *, role: str) -> str:
@@ -1098,7 +1119,6 @@ def plan_ssv_migration(
         wrapper = _find_dkg_wrapper_script(dkg)
         if wrapper:
             plan.dkg_script_path = wrapper
-            dkg.config_path = dkg.config_path or f"{wrapper} (CLI flags)"
             parsed_wrap = _dkg_settings_from_wrapper(
                 wrapper, workdir=dkg.working_directory
             )
@@ -1131,34 +1151,38 @@ def plan_ssv_migration(
                     plan.password_path = parsed_wrap["password_path"]
 
     dkg_cfg_path = _find_dkg_config(dkg) if dkg else ""
-    # Ignore synthetic "CLI flags" marker when looking for a real yaml path.
-    if dkg_cfg_path and "CLI flags" in dkg_cfg_path:
-        dkg_cfg_path = ""
-    if dkg and dkg_cfg_path and os.path.isfile(dkg_cfg_path):
+    if dkg and dkg_cfg_path and _looks_like_yaml_config(dkg_cfg_path):
         dkg.config_path = dkg_cfg_path
         dkg_bases = list(_search_roots_for_unit(dkg))
         dkg_bases.append(os.path.dirname(dkg_cfg_path))
         dkg_cfg = _read_text(dkg_cfg_path)
         if dkg_cfg:
             parsed_dkg = parse_dkg_config(dkg_cfg)
-            plan.operator_id = str(parsed_dkg["operator_id"])
-            plan.dkg_port = int(parsed_dkg["dkg_port"])
-            if parsed_dkg["eth1_http_addr"]:
+            # YAML wins when present, but do not clobber wrapper values with empties.
+            if parsed_dkg.get("operator_id"):
+                plan.operator_id = str(parsed_dkg["operator_id"])
+            if parsed_dkg.get("dkg_port"):
+                try:
+                    plan.dkg_port = int(parsed_dkg["dkg_port"])
+                except (TypeError, ValueError):
+                    pass
+            if parsed_dkg.get("eth1_http_addr"):
                 plan.eth1_http_addr = str(parsed_dkg["eth1_http_addr"])
-            plan.dkg_output_path = _resolve_path(
-                str(parsed_dkg["dkg_output_path"]),
-                workdir=dkg.working_directory,
-                unit_dir=unit_dir,
-                bases=dkg_bases,
-            )
-            if not plan.private_key_path:
+            if parsed_dkg.get("dkg_output_path"):
+                plan.dkg_output_path = _resolve_path(
+                    str(parsed_dkg["dkg_output_path"]),
+                    workdir=dkg.working_directory,
+                    unit_dir=unit_dir,
+                    bases=dkg_bases,
+                )
+            if not plan.private_key_path and parsed_dkg.get("private_key_path"):
                 plan.private_key_path = _resolve_path(
                     str(parsed_dkg["private_key_path"]),
                     workdir=dkg.working_directory,
                     unit_dir=unit_dir,
                     bases=dkg_bases + node_bases,
                 )
-            if not plan.password_path:
+            if not plan.password_path and parsed_dkg.get("password_path"):
                 plan.password_path = _resolve_path(
                     str(parsed_dkg["password_path"]),
                     workdir=dkg.working_directory,
@@ -1171,16 +1195,20 @@ def plan_ssv_migration(
                 "will synthesize operator.yaml (shared keystore + ETH1 from node WS)"
             )
             dkg.config_path = ""
-    elif dkg and not plan.dkg_script_path:
-        plan.warnings.append(
-            "No separate DKG operator config found; will synthesize "
-            f"{SSV_DKG_CONFIG_FILE} sharing node keystore + ETH1 HTTP derived from WS"
-        )
     elif dkg and plan.dkg_script_path:
+        # CLI-flag wrapper with no operator YAML (e.g. logFilePath → debug.log only).
+        dkg.config_path = f"{plan.dkg_script_path} (CLI flags)"
         plan.warnings.append(
             f"DKG settings from wrapper {plan.dkg_script_path} "
             f"(will write {SSV_DKG_CONFIG_FILE}; TLS → {SSV_DKG_SSL_DIR}/ if present)"
         )
+    elif dkg:
+        plan.warnings.append(
+            "No separate DKG operator config found; will synthesize "
+            f"{SSV_DKG_CONFIG_FILE} sharing node keystore + ETH1 HTTP derived from WS"
+        )
+        if dkg.config_path and not _looks_like_yaml_config(dkg.config_path):
+            dkg.config_path = ""
 
     # Heuristic DKG output dir when not set in config.
     if dkg and not plan.dkg_output_path:
