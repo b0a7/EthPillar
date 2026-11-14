@@ -626,15 +626,21 @@ def get_go_version() -> Optional[Tuple[int, int]]:
     return int(match.group(1)), int(match.group(2))
 
 
-def ensure_go_available(min_minor_series: Tuple[int, int] = (1, 26)) -> bool:
+def ensure_go_available(
+    min_minor_series: Tuple[int, int] = (1, 22),
+    *,
+    install_version: Optional[str] = None,
+) -> bool:
     """Ensure a Go toolchain of at least *min_minor_series* is on PATH.
 
-    SSV builds require a recent toolchain (``go 1.26`` / ``toolchain go1.26.10``
-    in upstream ``go.mod``). Distro packages often lag, so this installs the
-    official tarball under ``/usr/local/go`` when needed.
+    Distro packages often lag, so this installs the official tarball under
+    ``/usr/local/go`` when needed.
 
     Args:
         min_minor_series: Minimum ``(major, minor)`` accepted (patch ignored).
+        install_version: Exact ``X.Y.Z`` (or ``goX.Y.Z``) tarball to install
+            when the host is below *min_minor_series*. Defaults to
+            ``{major}.{minor}.0`` from *min_minor_series*.
 
     Returns:
         True when a suitable Go is available (already or after install).
@@ -644,8 +650,8 @@ def ensure_go_available(min_minor_series: Tuple[int, int] = (1, 26)) -> bool:
         print(f">> Go {current[0]}.{current[1]} already available (>= {min_minor_series[0]}.{min_minor_series[1]})")
         return True
 
-    # Pin to a patch that satisfies current SSV toolchain directives.
-    go_full = "1.26.10"
+    maj, minor = min_minor_series
+    go_full = (install_version or f"{maj}.{minor}.0").removeprefix("go")
     arch = get_machine_architecture()  # amd64 | arm64
     tarball = f"go{go_full}.linux-{arch}.tar.gz"
     url = f"https://go.dev/dl/{tarball}"

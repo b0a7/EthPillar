@@ -60,6 +60,7 @@ SSV_GITHUB_REPO = "ssvlabs/ssv"
 SSV_DKG_GITHUB_REPO = "ssvlabs/ssv-dkg"
 # Matches upstream go.mod ``go 1.26`` / toolchain go1.26.x.
 SSV_MIN_GO = (1, 26)
+SSV_GO_INSTALL_VERSION = "1.26.10"
 
 
 def ssv_network_name(eth_network: str) -> str:
@@ -385,7 +386,9 @@ def build_ssvnode_from_source(version_tag: str, dest: str = SSV_NODE_BIN) -> Non
     Raises:
         RuntimeError: When Go/build tools are missing or the build fails.
     """
-    if not ensure_go_available(SSV_MIN_GO):
+    if not ensure_go_available(
+        SSV_MIN_GO, install_version=SSV_GO_INSTALL_VERSION
+    ):
         raise RuntimeError(
             f"Go {SSV_MIN_GO[0]}.{SSV_MIN_GO[1]}+ is required to build ssvnode "
             "(upstream publishes no Linux binaries)."
