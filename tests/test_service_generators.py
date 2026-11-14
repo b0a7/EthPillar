@@ -5,6 +5,7 @@ Tier 1 — Pure function tests using golden-string comparisons.
 These verify that each generator produces the exact service file content
 that the original deploy scripts produced.
 """
+import re
 import sys
 import os
 from unittest import result
@@ -248,6 +249,15 @@ class TestBesuService:
         assert "--data-storage-format=BONSAI" in result
         assert 'Environment="JAVA_OPTS=-Xmx5g"' in result
         assert "User=execution" in result
+        # Default: no WS (SSV passes enable_ws=True)
+        assert "--rpc-ws-enabled" not in result
+        assert "--rpc-ws-port" not in result
+
+    def test_mainnet_service_enable_ws(self):
+        result = generate_besu_service(
+            "mainnet", EL_P2P_PORT, EL_RPC_PORT, EL_MAX_PEER_COUNT, JWTSECRET_PATH,
+            enable_ws=True,
+        )
         assert "--rpc-ws-enabled=true" in result
         assert "--rpc-ws-host=127.0.0.1" in result
         assert "--rpc-ws-port=8546" in result
@@ -437,13 +447,21 @@ class TestNethermindService:
         assert f"--Network.P2PPort {EL_P2P_PORT}" in result
         assert f"--Network.MaxActivePeers {EL_MAX_PEER_COUNT}" in result
         assert f"--JsonRpc.Port {EL_RPC_PORT}" in result
-        assert "--JsonRpc.Host 127.0.0.1" in result
-        assert "--JsonRpc.WebSocketsPort 8546" in result
+        assert "--JsonRpc.Host 127.0.0.1" not in result
+        assert "--JsonRpc.WebSocketsPort" not in result
         assert f"--JsonRpc.JwtSecretFile {JWTSECRET_PATH}" in result
         assert f"WorkingDirectory={BASE_DATA_DIR}/nethermind" in result
         assert f"Environment=\"DOTNET_BUNDLE_EXTRACT_BASE_DIR={BASE_DATA_DIR}/nethermind/bundle-extract\"" in result
         assert "--Sync.AncientBodiesBarrier=15537394" in result
         check_constant_substitutions(result)
+
+    def test_mainnet_service_enable_ws(self):
+        result = generate_nethermind_service(
+            "mainnet", EL_P2P_PORT, EL_RPC_PORT, EL_MAX_PEER_COUNT,
+            JWTSECRET_PATH, enable_ws=True,
+        )
+        assert "--JsonRpc.Host 127.0.0.1" in result
+        assert "--JsonRpc.WebSocketsPort 8546" in result
 
     def test_sepolia_service(self):
         sync_params = '--Sync.AncientBodiesBarrier=1450408 --Sync.AncientReceiptsBarrier=1450408'
@@ -488,11 +506,20 @@ class TestRethService:
         assert "--enable-discv5-discovery" not in result
         assert f"--max-outbound-peers {reth_max_peers}" in result
         assert f"--max-inbound-peers {reth_max_peers}" in result
+        assert "--ws" not in result
+        assert "--ws.addr" not in result
+        assert "--ws.port" not in result
+        assert "Environment=RUST_LOG=info" in result
+        assert "--prune.bodies.pre-merge" in result
+
+    def test_mainnet_service_enable_ws(self):
+        result = generate_reth_service(
+            "mainnet", EL_P2P_PORT, EL_P2P_PORT_2, EL_RPC_PORT,
+            25, JWTSECRET_PATH, enable_ws=True,
+        )
         assert "--ws \\" in result or "--ws\n" in result or "--ws " in result
         assert "--ws.addr 127.0.0.1" in result
         assert "--ws.port 8546" in result
-        assert "Environment=RUST_LOG=info" in result
-        assert "--prune.bodies.pre-merge" in result
 
     def test_ephemery_custom_network(self):
         custom_network = '--chain /opt/ethpillar/testnet/genesis.json --bootnodes enr1,enr2'
@@ -534,8 +561,9 @@ def assert_erigon_metrics_port_matches_scrape(unit: str) -> None:
     assert "--pprof.addr" not in unit
     assert "--metrics.addr" not in unit
     assert "--http.api=web3,eth,net,engine" in unit
-    assert "--ws" in unit
-    assert "--ws.port=8546" in unit
+    # Default Erigon units omit WS; SSV installs pass enable_ws=True.
+    assert re.search(r"(?m)(?:^|[\s\\])--ws(?:[=\s.\\]|$)", unit) is None
+    assert "--ws.port=8546" not in unit
 
 
 class TestErigonService:
@@ -606,6 +634,15 @@ class TestErigonService:
         )
         assert_erigon_metrics_port_matches_scrape(result)
 
+    def test_enable_ws(self):
+        result = generate_erigon_service(
+            "mainnet", EL_P2P_PORT, EL_RPC_PORT, EL_MAX_PEER_COUNT,
+            JWTSECRET_PATH, CL_P2P_PORT, CL_REST_PORT, CL_MAX_PEER_COUNT,
+            SYNC_URL, enable_ws=True,
+        )
+        assert "--ws \\" in result or "--ws\n" in result or re.search(r"(?m)--ws$", result)
+        assert "--ws.port=8546" in result
+
 
 # ═══════════════════════════════════════════════
 # Erigon Standalone (no Caplin) service tests
@@ -626,6 +663,14 @@ class TestErigonStandaloneService:
         assert f"--authrpc.jwtsecret={JWTSECRET_PATH}" in result
         assert "--externalcl" in result
         assert "User=execution" in result
+        assert "--ws.port=8546" not in result
+
+    def test_enable_ws(self):
+        result = generate_erigon_standalone_service(
+            "mainnet", EL_P2P_PORT, EL_RPC_PORT, EL_MAX_PEER_COUNT, JWTSECRET_PATH,
+            enable_ws=True,
+        )
+        assert "--ws.port=8546" in result
 
     def test_holesky_service(self):
         result = generate_erigon_standalone_service(

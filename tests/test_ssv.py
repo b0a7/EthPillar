@@ -222,3 +222,78 @@ def test_run_install_ssv_skips_validator_and_calls_install(monkeypatch):
     assert calls["finish"].get("ssv_enabled") is True
     # validator_enabled is a positional arg to finish_install (index 12).
     assert calls["finish_args"][12] is False
+
+
+def test_run_install_ssv_passes_enable_ws_to_besu(monkeypatch):
+    """Fresh SSV install opts Besu into localhost WS; non-SSV does not."""
+    el_calls = []
+
+    def _fake_besu(*args, **kwargs):
+        el_calls.append(kwargs)
+        return ("v0", "/tmp/execution.service")
+
+    monkeypatch.setattr("deploy.besu.download_and_install_besu", _fake_besu)
+    monkeypatch.setattr("deploy.ssv.install_ssv", lambda *a, **k: ("v1", "n", "d"))
+    monkeypatch.setattr("deploy.common.setup_node", lambda *a, **k: None)
+    monkeypatch.setattr("deploy.common.finish_install", lambda *a, **k: None)
+    monkeypatch.setattr("deploy.lighthouse.download_lighthouse", lambda *a, **k: "v0")
+    monkeypatch.setattr(
+        "deploy.lighthouse.install_lighthouse_bn",
+        lambda *a, **k: "/tmp/consensus.service",
+    )
+    monkeypatch.setattr(
+        "deploy.lighthouse.install_lighthouse_vc",
+        lambda *a, **k: "/tmp/validator.service",
+    )
+
+    params = {
+        "fee_recipient": "0xabc",
+        "graffiti": "x",
+        "bn_address": "",
+        "jwtsecret_path": "/tmp/jwt",
+        "sync_url": "http://checkpoint",
+        "el_p2p_port": "30303",
+        "el_rpc_port": "8545",
+        "el_max_peers": "50",
+        "cl_p2p_port": "9000",
+        "cl_rest_port": "5052",
+        "cl_max_peers": "100",
+        "mev_min_bid": "0",
+        "skip_prompts": "true",
+    }
+    base_flags = {
+        "charon": False,
+        "web3signer": False,
+        "validator": False,
+        "validator_only": False,
+        "node_only": False,
+        "mevboost": False,
+        "builder_api": False,
+        "epbs": False,
+        "switch_client": False,
+    }
+
+    run_install(
+        role="Custom Setup",
+        network="hoodi",
+        ec_name="Besu",
+        cc_name="Lighthouse",
+        vc_name=SSV_VC_LABEL,
+        flags={**base_flags, "ssv": True},
+        params=params,
+        env_vars={"CL_IP_ADDRESS": "127.0.0.1", "EL_IP_ADDRESS": "127.0.0.1"},
+    )
+    assert el_calls[-1].get("enable_ws") is True
+
+    el_calls.clear()
+    run_install(
+        role="Custom Setup",
+        network="hoodi",
+        ec_name="Besu",
+        cc_name="Lighthouse",
+        vc_name="Lighthouse",
+        flags={**base_flags, "ssv": False, "validator": True},
+        params=params,
+        env_vars={"CL_IP_ADDRESS": "127.0.0.1"},
+    )
+    assert el_calls[-1].get("enable_ws") is False

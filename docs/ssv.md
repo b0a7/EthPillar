@@ -26,8 +26,9 @@ Docker. DKG still uses the published zip assets.
 
 ## Install
 
-1. Install EL + CL as usual (EL must expose WebSocket on localhost `:8546` —
-   EthPillar enables localhost WS for Geth, Besu, Nethermind, Reth, Erigon, ethrex).
+1. Install EL + CL as usual. SSV needs ETH1 over WebSocket on localhost `:8546`.
+   Geth and ethrex already expose WS; Besu/Nethermind/Reth/Erigon enable localhost
+   WS only when the install includes **SSV Operator** (`enable_ws`).
 2. On the validator-mode prompt, choose **SSV Operator** (or pass `--with_ssv`).
 3. Not available as the Charon/Web3Signer *second* signer prompt.
 4. Mutually exclusive with Charon and Web3Signer.
@@ -64,6 +65,12 @@ What it does:
 
 If EthPillar SSV is already installed and no legacy unit remains, migrate
 short-circuits with “Already migrated” (no changes).
+
+If `ETH1Addr` is local and EthPillar `execution.service` lacks WebSocket
+(Besu/Nethermind/Reth/Erigon without `enable_ws`), migrate **fails with a clear
+error** rather than rewriting the live EL unit mid-migrate. Enable WS on the EL
+(e.g. reinstall EL together with a fresh SSV install, or regenerate the unit
+with `enable_ws=True`), then re-run migrate.
 
 **Rollback** (safe — EthPillar units are retired *before* legacy bak restore):
 

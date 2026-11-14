@@ -588,3 +588,34 @@ def test_endpoints_look_local():
 
     assert endpoints_look_local("http://127.0.0.1:5052", "ws://127.0.0.1:8546")
     assert not endpoints_look_local("http://10.0.0.1:5052", "ws://127.0.0.1:8546")
+
+
+def test_execution_unit_exposes_ws():
+    from deploy.ssv_migrate import execution_unit_exposes_ws
+
+    assert execution_unit_exposes_ws("--ws \\\n    --ws.port 8546")
+    assert execution_unit_exposes_ws("--rpc-ws-enabled=true")
+    assert execution_unit_exposes_ws("--JsonRpc.WebSocketsPort 8546")
+    assert execution_unit_exposes_ws("--ws.enabled \\\n")
+    assert not execution_unit_exposes_ws("--http --metrics")
+
+
+def test_local_ethpillar_el_missing_ws(tmp_path: Path):
+    from deploy.ssv_migrate import local_ethpillar_el_missing_ws
+
+    unit = tmp_path / "execution.service"
+    unit.write_text(
+        "[Service]\nUser=execution\nExecStart=/usr/local/bin/besu --rpc-http-enabled=true\n",
+        encoding="utf-8",
+    )
+    err = local_ethpillar_el_missing_ws("ws://127.0.0.1:8546", unit_dir=str(tmp_path))
+    assert err is not None
+    assert "does not expose WebSocket" in err
+
+    unit.write_text(
+        "[Service]\nUser=execution\nExecStart=/usr/local/bin/geth --ws --ws.port 8546\n",
+        encoding="utf-8",
+    )
+    assert local_ethpillar_el_missing_ws("ws://127.0.0.1:8546", unit_dir=str(tmp_path)) is None
+    # Remote ETH1: do not require local EL WS
+    assert local_ethpillar_el_missing_ws("ws://10.0.0.5:8546", unit_dir=str(tmp_path)) is None

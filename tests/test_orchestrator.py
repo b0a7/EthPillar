@@ -366,6 +366,11 @@ class TestRunInstallRouting:
         mocks = self._run("Custom Setup", "Besu", "Teku", "Teku", flags_override={"validator": True})
         # Note: tk_dl should only be called ONCE (assert_called_once is in _verify_only_called)
         self._verify_only_called(mocks, ['besu', 'tk_dl', 'tk_bn', 'tk_vc'])
+        assert mocks['besu'].call_args.kwargs.get('enable_ws') is False
+
+    def test_non_ssv_reth_does_not_enable_ws(self):
+        mocks = self._run("Solo Staking Node", "Reth", "Lighthouse")
+        assert mocks['reth'].call_args.kwargs.get('enable_ws') is False
 
     def test_custom_no_validator_skips_vc_entirely(self):
         mocks = self._run("Custom Setup", "Nethermind", "Lighthouse", None, flags_override={"validator": False})

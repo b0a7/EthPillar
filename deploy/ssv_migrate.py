@@ -1189,6 +1189,52 @@ def endpoints_look_local(*urls: str) -> bool:
     return found_any
 
 
+def execution_unit_exposes_ws(unit_text: str) -> bool:
+    """True when an execution unit body enables eth1 WebSocket for SSV.
+
+    Matches Geth/Reth/Erigon ``--ws``, ethrex ``--ws.enabled``, Besu
+    ``--rpc-ws-enabled``, and Nethermind ``JsonRpc.WebSocketsPort``.
+    """
+    text = unit_text or ""
+    if re.search(r"(?m)(?:^|[\s\\])--ws(?:[=\s.\\]|$)", text):
+        return True
+    if "--ws.enabled" in text or "--rpc-ws-enabled" in text:
+        return True
+    if "WebSocketsPort" in text:
+        return True
+    return False
+
+
+def local_ethpillar_el_missing_ws(
+    eth1_ws_addr: str,
+    unit_dir: str = SYSTEMD_UNIT_DIR,
+) -> Optional[str]:
+    """Return an error message when local EthPillar EL lacks WS for SSV migrate.
+
+    Safer than rewriting a live ``execution.service`` mid-migrate: fail clearly
+    and ask the operator to enable WS (fresh SSV install passes ``enable_ws``)
+    before retrying. Remote ETH1 endpoints and non-EthPillar EL units are ignored.
+    """
+    if not endpoints_look_local(eth1_ws_addr):
+        return None
+    path = os.path.join(unit_dir, "execution.service")
+    if not os.path.isfile(path):
+        return None
+    text = _read_text(path)
+    # EthPillar EL units always run as User=execution.
+    if "User=execution" not in text:
+        return None
+    if execution_unit_exposes_ws(text):
+        return None
+    return (
+        "Local EthPillar execution.service does not expose WebSocket on :8546 "
+        "(required for SSV ETH1Addr). Geth and ethrex already enable WS; for "
+        "Besu/Nethermind/Reth/Erigon, regenerate the EL unit with enable_ws "
+        "(a fresh SSV install does this automatically), then re-run migrate. "
+        "Refusing to mutate a running EL during SSV migrate."
+    )
+
+
 def plan_ssv_migration(
     *,
     unit_dir: str = SYSTEMD_UNIT_DIR,
@@ -1418,6 +1464,11 @@ def plan_ssv_migration(
         allow_older=allow_older_binary,
         want_dkg=dkg is not None,
     )
+
+    missing_ws = local_ethpillar_el_missing_ws(plan.eth1_ws_addr, unit_dir=unit_dir)
+    if missing_ws:
+        plan.errors.append(missing_ws)
+
     return plan
 
 

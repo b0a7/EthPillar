@@ -442,15 +442,28 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
         mev_ver, mev_path = mevboost.install_mevboost(network, mev_min_bid, list(relay_options))
 
     el_ver, el_path = "", ""
+    # SSV needs ETH1 over WebSocket. Geth/ethrex already expose localhost WS;
+    # Besu/Nethermind/Reth/Erigon only enable it when installing with SSV.
+    enable_el_ws = bool(flags.get("ssv"))
     if not flags['validator_only'] and ec_name:
         if ec_name == 'Besu':
-            el_ver, el_path = besu.download_and_install_besu(network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path, network_override=el_override)
+            el_ver, el_path = besu.download_and_install_besu(
+                network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path,
+                network_override=el_override, enable_ws=enable_el_ws,
+            )
         elif ec_name == 'Nethermind':
             import config
             sync_params = getattr(config, f"{network}_nethermind_sync_parameters", '')
-            el_ver, el_path = nethermind.download_and_install_nethermind(network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path, network_override=el_override, sync_parameters=sync_params)
+            el_ver, el_path = nethermind.download_and_install_nethermind(
+                network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path,
+                network_override=el_override, sync_parameters=sync_params,
+                enable_ws=enable_el_ws,
+            )
         elif ec_name == 'Reth':
-            el_ver, el_path = reth.download_and_install_reth(network, el_p2p_port, el_p2p_port_2, el_rpc_port, el_max_peers, jwtsecret_path, network_override=el_override)
+            el_ver, el_path = reth.download_and_install_reth(
+                network, el_p2p_port, el_p2p_port_2, el_rpc_port, el_max_peers,
+                jwtsecret_path, network_override=el_override, enable_ws=enable_el_ws,
+            )
         elif ec_name == 'Erigon':
             if cc_name == 'Caplin' or cc_name == 'Caplin (integrated)':
                 mev_params = f'--caplin.mev-relay-url=http://127.0.0.1:18550' if flags['mevboost'] else ''
@@ -460,12 +473,12 @@ def run_install(role: str, network: str, ec_name: Optional[str], cc_name: Option
                     network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path,
                     cl_p2p_port, cl_rest_port, cl_max_peers, sync_url,
                     mev_parameters=mev_params, cl_quic_port=cl_quic_port,
-                    network_override=el_override,
+                    network_override=el_override, enable_ws=enable_el_ws,
                 )
             else:
                 el_ver, el_path = erigon.download_and_install_erigon_standalone(
                     network, el_p2p_port, el_rpc_port, el_max_peers, jwtsecret_path,
-                    network_override=el_override,
+                    network_override=el_override, enable_ws=enable_el_ws,
                 )
         elif ec_name == 'Geth':
             el_ver, el_path = geth.download_and_install_geth(network, str(el_p2p_port), str(el_rpc_port), str(el_max_peers), jwtsecret_path, network_override=el_override)
