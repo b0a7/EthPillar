@@ -155,12 +155,14 @@ def provision_ssv_dashboard(
     dest = dashboards_dir / SSV_DASHBOARD_FILENAME
     download_grafana_dashboard(dest, url)
     try:
-        raw = dest.read_text(encoding="utf-8")
+        raw = read_privileged_text(dest)
+        if raw is None:
+            raise FileNotFoundError(dest)
         data = json.loads(raw)
         rewrite_ssv_dashboard_pod_variable(data)
-        dest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        write_privileged_file(dest, json.dumps(data, indent=2) + "\n")
         finalize_grafana_provisioned_file(dest)
-    except (OSError, json.JSONDecodeError, TypeError) as exc:
+    except (OSError, json.JSONDecodeError, TypeError, PermissionError) as exc:
         print(
             f"Warning: could not rewrite SSV dashboard pod variable: {exc}",
             file=sys.stderr,
