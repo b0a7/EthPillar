@@ -8,6 +8,7 @@ the official SSV Operational dashboard from ``ssvlabs/ssv-stack``.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -19,6 +20,7 @@ from manage.grafana import (
     DEFAULT_GRAFANA_DASHBOARDS,
     download_grafana_dashboard,
     ensure_prometheus_datasource_uid,
+    finalize_grafana_provisioned_file,
     read_privileged_text,
     write_privileged_file,
 )
@@ -107,6 +109,36 @@ def ensure_ssv_scrape(prometheus_yml: Path, metrics_port: Optional[int] = None) 
     return True
 
 
+def rewrite_ssv_dashboard_pod_variable(dashboard: dict) -> dict:
+    """Point the ``pod`` template at scraped SSV series, not OTel-only metrics.
+
+    Upstream SSV Operational uses
+    ``label_values(otel_scope_info{otel_scope_name=~"github.com/ssvlabs/.*"}, pod)``.
+    Bare-metal EthPillar scrapes ``/metrics`` with a static ``pod`` relabel; many
+    nodes never emit ``otel_scope_info``, so the dropdown stays empty and every
+    panel filters to nothing. Prefer ``up{job="ssv"}`` (always present when the
+    scrape succeeds).
+    """
+    templating = dashboard.get("templating") or {}
+    variables = templating.get("list") or []
+    for var in variables:
+        if var.get("name") != "pod":
+            continue
+        new_query = 'label_values(up{job="ssv"}, pod)'
+        query = var.get("query")
+        if isinstance(query, dict):
+            query["query"] = new_query
+            var["query"] = query
+        else:
+            var["query"] = new_query
+        var["definition"] = new_query
+        var["refresh"] = var.get("refresh") or 2
+        var["includeAll"] = True
+        if not var.get("allValue"):
+            var["allValue"] = ".*"
+    return dashboard
+
+
 def provision_ssv_dashboard(
     dashboards_dir: Path,
     url: str = SSV_OPERATIONAL_URL,
@@ -122,6 +154,17 @@ def provision_ssv_dashboard(
     """
     dest = dashboards_dir / SSV_DASHBOARD_FILENAME
     download_grafana_dashboard(dest, url)
+    try:
+        raw = dest.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        rewrite_ssv_dashboard_pod_variable(data)
+        dest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        finalize_grafana_provisioned_file(dest)
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        print(
+            f"Warning: could not rewrite SSV dashboard pod variable: {exc}",
+            file=sys.stderr,
+        )
     return True
 
 

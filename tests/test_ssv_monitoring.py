@@ -78,7 +78,10 @@ def test_provision_ssv_monitoring_noop_without_prometheus(tmp_path: Path):
 
 def test_provision_dashboard_writes_file(tmp_path: Path):
     dash_dir = tmp_path / "dashboards"
-    payload = b'{"uid":"ssv","title":"SSV Operational"}'
+    payload = (
+        b'{"uid":"ssv","title":"SSV Operational","templating":{"list":['
+        b'{"name":"pod","query":"label_values(otel_scope_info,pod)"}]}}'
+    )
 
     def _fake_download(dest: Path, url: str = "") -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -86,4 +89,28 @@ def test_provision_dashboard_writes_file(tmp_path: Path):
 
     with patch("manage.ssv_monitoring.download_grafana_dashboard", side_effect=_fake_download):
         assert provision_ssv_dashboard(dash_dir) is True
-        assert (dash_dir / "ssv_operational.json").read_bytes() == payload
+        text = (dash_dir / "ssv_operational.json").read_text(encoding="utf-8")
+        assert 'label_values(up{job="ssv"}, pod)' in text
+        assert "otel_scope_info" not in text
+
+
+def test_rewrite_ssv_dashboard_pod_variable_dict_query():
+    from manage.ssv_monitoring import rewrite_ssv_dashboard_pod_variable
+
+    dash = {
+        "templating": {
+            "list": [
+                {
+                    "name": "pod",
+                    "query": {
+                        "query": 'label_values(otel_scope_info{otel_scope_name=~"github.com/ssvlabs/.*"},pod)',
+                        "refId": "PrometheusVariableQueryEditor-VariableQuery",
+                    },
+                }
+            ]
+        }
+    }
+    out = rewrite_ssv_dashboard_pod_variable(dash)
+    assert out["templating"]["list"][0]["query"]["query"] == (
+        'label_values(up{job="ssv"}, pod)'
+    )
